@@ -513,31 +513,34 @@ def main():
 
     # --- 修正ポイント：ここから ---
     # GitHub Actions から "--ticker 7203.T" のように渡されるケースに対応
+# --- 修正ポイント：ここから ---
     args = sys.argv[1:]
     tickers = []
     
     if args:
-        # もし引数に "--ticker" が含まれていたら除去し、その次の値を採用する
+        # 引数リスト全体を一度文字列として結合し、全角スペースを考慮して分割し直す
+        # これにより "AMAT　XOM" (全角) も ["AMAT", "XOM"] に分解されます
+        combined_args = " ".join(args).replace('　', ' ')
+        raw_list = combined_args.split()
+        
         temp_tickers = []
         skip_next = False
-        for i, arg in enumerate(args):
+        for i, arg in enumerate(raw_list):
             if skip_next:
                 skip_next = False
                 continue
-            if arg == "--ticker":
-                if i + 1 < len(args):
-                    temp_tickers.append(args[i+1].upper())
+            if arg.lower() == "--ticker":
+                if i + 1 < len(raw_list):
+                    temp_tickers.append(raw_list[i+1].upper())
                     skip_next = True
             else:
-                temp_tickers.append(arg.upper())
+                # -- から始まらない純粋な銘柄コードだけを追加
+                if not arg.startswith("--"):
+                    temp_tickers.append(arg.upper())
         tickers = temp_tickers
     else:
         # 対話モード
-        print("\n🤖 AI投資司令塔")
-        raw = input("分析したい銘柄コードを入力（例: 7203.T または AAPL）> ").strip()
-        tickers = [t.strip().upper() for t in raw.replace(',', ' ').split() if t.strip()]
-    # --- 修正ポイント：ここまで ---
-
+        print("\n🤖 AI投資司令")
     if not tickers:
         print("❌ 銘柄コードが入力されていません")
         sys.exit(1)
