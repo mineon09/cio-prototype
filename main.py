@@ -503,20 +503,40 @@ def main():
         try:
             scopes = ['https://www.googleapis.com/auth/spreadsheets',
                       'https://www.googleapis.com/auth/drive']
-            creds = Credentials.from_service_account_info(
-                json.loads(GOOGLE_SERVICE_ACCOUNT_JSON), scopes=scopes)
+            # JSON文字列を正しくパースして認証
+            creds_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
             gc = gspread.authorize(creds)
             print("✅ Google Sheets 認証成功")
         except Exception as e:
             print(f"⚠️ Google Sheets 認証失敗（出力なしで続行）: {e}")
 
-    # 銘柄の取得
-    if len(sys.argv) > 1:
-        tickers = [t.upper() for t in sys.argv[1:]]
+    # --- 修正ポイント：ここから ---
+    # GitHub Actions から "--ticker 7203.T" のように渡されるケースに対応
+    args = sys.argv[1:]
+    tickers = []
+    
+    if args:
+        # もし引数に "--ticker" が含まれていたら除去し、その次の値を採用する
+        temp_tickers = []
+        skip_next = False
+        for i, arg in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "--ticker":
+                if i + 1 < len(args):
+                    temp_tickers.append(args[i+1].upper())
+                    skip_next = True
+            else:
+                temp_tickers.append(arg.upper())
+        tickers = temp_tickers
     else:
+        # 対話モード
         print("\n🤖 AI投資司令塔")
         raw = input("分析したい銘柄コードを入力（例: 7203.T または AAPL）> ").strip()
         tickers = [t.strip().upper() for t in raw.replace(',', ' ').split() if t.strip()]
+    # --- 修正ポイント：ここまで ---
 
     if not tickers:
         print("❌ 銘柄コードが入力されていません")
@@ -524,15 +544,19 @@ def main():
 
     # 全銘柄を分析
     for i, ticker in enumerate(tickers):
+        # 万が一 "--TICKER" という文字列が混入していたらスキップ
+        if ticker.startswith("--"):
+            continue
+            
         print(f"\n[{i+1}/{len(tickers)}] {ticker}")
-        run(ticker, gc)
+        try:
+            run(ticker, gc)
+        except Exception as e:
+            print(f"❌ {ticker} の分析中にエラーが発生しました: {e}")
+            
         if i < len(tickers) - 1:
             print("⏳ 5秒待機...")
             time.sleep(5)
 
     if gc:
         print(f"\n📊 結果: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}")
-
-
-if __name__ == "__main__":
-    main()
