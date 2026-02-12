@@ -1,0 +1,24 @@
+# 環境変数・認証情報（絶対にコミットしない）
+.env
+*.json
+!config.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+venv/
+env/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# ログ
+*.log

@@ -1,0 +1,22 @@
+{
+  "spreadsheet_id": "11q5zORCYlP9ZeNjZLopoeiQhuM5_hXeSE4Evp0NNChA",
+  "sheets": {
+    "output": "分析結果"
+  },
+  "competitor_selection": {
+    "direct_count": 3,
+    "substitute_count": 2,
+    "benchmark_count": 2
+  },
+  "thresholds": {
+    "cf_quality_good": 1.0,
+    "rsi_overbought": 70,
+    "rsi_oversold": 30,
+    "ma75_overheated": 20
+  },
+  "signals": {
+    "BUY":   {"min_score": 7},
+    "WATCH": {"min_score": 4},
+    "SELL":  {"max_score": 3}
+  }
+}
