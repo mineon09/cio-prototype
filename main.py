@@ -6,8 +6,9 @@ API呼び出し: 2回のみ
   2回目: 対戦表 + 地力分析 + タイミング分析 + 最終判断を一括生成
 
 修正点:
-  - 対戦表のヘッダーをティッカーではなく企業略称で表示
-  - nan / N/A の統一処理（math.isnan チェック）
+  - 対戦表の日本語表示ズレを補正（unicodedataによる幅計算）
+  - 対戦表のヘッダーを企業略称で表示
+  - nan / N/A の統一処理
 
 使い方:
   python main.py 7203.T
@@ -16,6 +17,7 @@ API呼び出し: 2回のみ
 """
 
 import os, sys, re, json, time, math, gspread, yfinance as yf
+import unicodedata
 from datetime import datetime, timedelta
 from google import genai
 from google.oauth2.service_account import Credentials
@@ -41,6 +43,21 @@ except Exception:
 # ユーティリティ
 # ==========================================
 
+def get_east_asian_width_count(text: str) -> int:
+    """全角文字を2、半角文字を1としてカウントする"""
+    count = 0
+    for char in text:
+        if unicodedata.east_asian_width(char) in 'FWA':
+            count += 2
+        else:
+            count += 1
+    return count
+
+def pad_east_asian(text: str, width: int) -> str:
+    """全角文字を考慮して指定の幅まで半角スペースで埋める"""
+    cur_len = get_east_asian_width_count(text)
+    return text + ' ' * max(0, width - cur_len)
+
 def clean_val(v) -> str:
     """nan / None / 空文字 をすべて '-' に統一して返す"""
     if v is None:
@@ -58,8 +75,6 @@ def clean_val(v) -> str:
 def short_name(name: str) -> str:
     """
     企業名を対戦表に収まる略称（最大12文字）に短縮する。
-    例: "Mitsubishi UFJ Financial Group, Inc." → "MUFG"
-        "JPMorgan Chase & Co."                → "JPMorgan"
     """
     replacements = [
         (" Financial Group", ""), (" Financial", ""), (" Holdings", ""),
@@ -76,7 +91,6 @@ def short_name(name: str) -> str:
     for old, new in replacements:
         result = result.replace(old, new)
     result = result.strip().strip(",").strip()
-    # 12文字以内に収める
     return result[:12] if len(result) > 12 else result
 
 
@@ -131,14 +145,12 @@ def fetch_stock_data(ticker: str) -> dict:
                 "metrics": {}, "technical": {}, "news": [], "description": ""}
 
     def sg(df, row):
-        """財務データを安全に取得（nan は None として返す）"""
         try:
             v = df.loc[row].iloc[0]
             return None if (v is None or (isinstance(v, float) and math.isnan(v))) else v
         except:
             return None
 
-    # 財務指標
     metrics = {}
     op, rev, ni = sg(fin,'Operating Income'), sg(fin,'Total Revenue'), sg(fin,'Net Income')
     ocf, eq, ta = sg(cf,'Operating Cash Flow'), sg(bs,'Stockholders Equity'), sg(bs,'Total Assets')
@@ -170,7 +182,6 @@ def fetch_stock_data(ticker: str) -> dict:
     metrics['pbr']            = safe_info('priceToBook')
     metrics['dividend_yield'] = safe_pct('dividendYield')
 
-    # テクニカル
     technical = {}
     if not hist.empty:
         cur  = hist['Close'].iloc[-1]
@@ -193,7 +204,6 @@ def fetch_stock_data(ticker: str) -> dict:
             'analyst_target': safe_info('targetMeanPrice'),
         }
 
-    # ニュース（7日）
     cutoff = datetime.now() - timedelta(days=7)
     news = [
         f"[{datetime.fromtimestamp(n.get('providerPublishTime',0)).strftime('%m/%d')}] {n.get('title','')} ({n.get('publisher','')})"
@@ -249,10 +259,6 @@ def select_competitors(target: dict) -> dict:
 # ==========================================
 
 def analyze_all(target_ticker: str, all_data: dict, competitors: dict) -> tuple[str, str]:
-    """
-    地力分析 + タイミング分析 + 最終判断を1回のAPIで一括生成。
-    (report_text, table_str) を返す。
-    """
     labels = {
         'op_margin':     '営業利益率(%)',
         'net_margin':    '純利益率(%)',
@@ -267,36 +273,35 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict) -> tuple[
     }
 
     tickers = list(all_data.keys())
+    name_map = {t: short_name(all_data[t].get('name', t)) for t in tickers}
+    
+    # 幅の設定
+    label_w = 22  # 指標ラベル（全角対応）
+    col_w   = 13  # 各銘柄列
 
-    # ── 企業略称ヘッダーを生成 ──────────────────────
-    # ティッカー → 略称のマッピングを作成
-    name_map = {
-        t: short_name(all_data[t].get('name', t))
-        for t in tickers
-    }
-    col_w = 13  # 列幅
-    sep_w = (col_w + 3) * len(tickers) + 25
-
-    header_row = f"{'指標':<24} | " + " | ".join(f"{name_map[t]:<{col_w}}" for t in tickers)
-    ticker_row = f"{'(ティッカー)':<24} | " + " | ".join(f"{t:<{col_w}}" for t in tickers)
+    # ヘッダー作成
+    header_row = pad_east_asian('指標', label_w) + " | " + " | ".join(f"{name_map[t]:<{col_w}}" for t in tickers)
+    ticker_row = pad_east_asian('(ティッカー)', label_w) + " | " + " | ".join(f"{t:<{col_w}}" for t in tickers)
+    
+    # セパレーターの長さをヘッダーに合わせる
+    line_len = get_east_asian_width_count(header_row)
+    sep_line = "=" * line_len
+    sub_line = "-" * line_len
 
     table_lines = [
-        "=" * sep_w,
+        sep_line,
         f"📊 対戦表: {all_data[target_ticker].get('name', target_ticker)}",
-        "=" * sep_w,
+        sep_line,
         header_row,
         ticker_row,
-        "-" * sep_w,
+        sub_line,
     ]
 
     for key, label in labels.items():
-        vals = [
-            f"{clean_val(all_data[t].get('metrics', {}).get(key)):<{col_w}}"
-            for t in tickers
-        ]
-        table_lines.append(f"{label:<24} | " + " | ".join(vals))
+        vals = [f"{clean_val(all_data[t].get('metrics', {}).get(key)):<{col_w}}" for t in tickers]
+        table_lines.append(pad_east_asian(label, label_w) + " | " + " | ".join(vals))
 
-    table_lines.append("=" * sep_w)
+    table_lines.append(sep_line)
     table_str = "\n".join(table_lines)
 
     target    = all_data[target_ticker]
@@ -404,7 +409,7 @@ def run(ticker: str, gc=None):
     print(f"\n{'='*60}\n🚀 {ticker} の司令塔分析を開始\n{'='*60}")
 
     target_data = fetch_stock_data(ticker)
-    competitors = select_competitors(target_data)   # API 1/2
+    competitors = select_competitors(target_data)
 
     comp_tickers = list(set(
         competitors.get('direct',    []) +
@@ -417,7 +422,7 @@ def run(ticker: str, gc=None):
         all_data[t] = fetch_stock_data(t)
         time.sleep(0.3)
 
-    report, table_str = analyze_all(ticker, all_data, competitors)  # API 2/2
+    report, table_str = analyze_all(ticker, all_data, competitors)
 
     if gc:
         write_to_sheets(gc, ticker, target_data, competitors, report, table_str)
@@ -443,7 +448,6 @@ def main():
         except Exception as e:
             print(f"⚠️ Sheets認証失敗（出力なしで続行）: {e}")
 
-    # 銘柄コード取得（--ticker AMAT / 7203.T / 複数対応）
     args = sys.argv[1:]
     tickers, skip = [], False
     for i, arg in enumerate(args):
