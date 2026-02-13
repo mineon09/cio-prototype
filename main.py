@@ -5,13 +5,17 @@ API呼び出し: 2回のみ
   1回目: Geminiが比較対象を自動選定（JSON）
   2回目: 対戦表 + 地力分析 + タイミング分析 + 最終判断を一括生成
 
+修正点:
+  - 対戦表のヘッダーをティッカーではなく企業略称で表示
+  - nan / N/A の統一処理（math.isnan チェック）
+
 使い方:
   python main.py 7203.T
   python main.py 7203.T 8306.T AAPL
   python main.py --ticker AMAT
 """
 
-import os, sys, re, json, time, gspread, yfinance as yf
+import os, sys, re, json, time, math, gspread, yfinance as yf
 from datetime import datetime, timedelta
 from google import genai
 from google.oauth2.service_account import Credentials
@@ -31,6 +35,49 @@ except Exception:
         "competitor_selection": {"direct_count": 3, "substitute_count": 2, "benchmark_count": 2},
         "sheets": {"output": "分析結果"}
     }
+
+
+# ==========================================
+# ユーティリティ
+# ==========================================
+
+def clean_val(v) -> str:
+    """nan / None / 空文字 をすべて '-' に統一して返す"""
+    if v is None:
+        return "-"
+    try:
+        if math.isnan(float(v)):
+            return "-"
+    except (TypeError, ValueError):
+        pass
+    if str(v).strip().lower() in ("nan", "none", "n/a", ""):
+        return "-"
+    return str(v)
+
+
+def short_name(name: str) -> str:
+    """
+    企業名を対戦表に収まる略称（最大12文字）に短縮する。
+    例: "Mitsubishi UFJ Financial Group, Inc." → "MUFG"
+        "JPMorgan Chase & Co."                → "JPMorgan"
+    """
+    replacements = [
+        (" Financial Group", ""), (" Financial", ""), (" Holdings", ""),
+        (" Corporation", ""), (" Incorporated", ""), (", Inc.", ""),
+        (" Inc.", ""), (" Ltd.", ""), (" Co.", ""), (" & Co.", ""),
+        (" Group", ""), (" International", "Intl"), (" Technologies", "Tech"),
+        (" Technology", "Tech"), (" Services", "Svc"), (" Solutions", "Sol"),
+        ("Applied Materials", "AMAT"), ("Mitsubishi UFJ", "MUFG"),
+        ("Sumitomo Mitsui", "SMFG"), ("Mizuho", "Mizuho"),
+        ("Morgan Stanley", "M.Stanley"), ("JPMorgan Chase", "JPMorgan"),
+        ("PayPal", "PayPal"), ("Orix", "ORIX"), ("Rakuten", "Rakuten"),
+    ]
+    result = name
+    for old, new in replacements:
+        result = result.replace(old, new)
+    result = result.strip().strip(",").strip()
+    # 12文字以内に収める
+    return result[:12] if len(result) > 12 else result
 
 
 # ==========================================
@@ -84,26 +131,44 @@ def fetch_stock_data(ticker: str) -> dict:
                 "metrics": {}, "technical": {}, "news": [], "description": ""}
 
     def sg(df, row):
-        try: return df.loc[row].iloc[0]
-        except: return None
+        """財務データを安全に取得（nan は None として返す）"""
+        try:
+            v = df.loc[row].iloc[0]
+            return None if (v is None or (isinstance(v, float) and math.isnan(v))) else v
+        except:
+            return None
 
+    # 財務指標
     metrics = {}
     op, rev, ni = sg(fin,'Operating Income'), sg(fin,'Total Revenue'), sg(fin,'Net Income')
     ocf, eq, ta = sg(cf,'Operating Cash Flow'), sg(bs,'Stockholders Equity'), sg(bs,'Total Assets')
     rd = sg(fin, 'Research And Development')
 
-    if op  and rev: metrics['op_margin']    = round(op  / rev * 100, 1)
-    if ni  and rev: metrics['net_margin']   = round(ni  / rev * 100, 1)
-    if rd  and rev: metrics['rd_ratio']     = round(abs(rd) / rev * 100, 1)
-    if ocf and ni:  metrics['cf_quality']   = round(ocf / ni, 2)
-    if eq  and ta:  metrics['equity_ratio'] = round(eq  / ta * 100, 1)
+    if op  and rev and rev != 0: metrics['op_margin']    = round(op  / rev * 100, 1)
+    if ni  and rev and rev != 0: metrics['net_margin']   = round(ni  / rev * 100, 1)
+    if rd  and rev and rev != 0: metrics['rd_ratio']     = round(abs(rd) / rev * 100, 1)
+    if ocf and ni  and ni  != 0: metrics['cf_quality']   = round(ocf / ni, 2)
+    if eq  and ta  and ta  != 0: metrics['equity_ratio'] = round(eq  / ta * 100, 1)
 
-    metrics['roe']             = round(info.get('returnOnEquity',  0) * 100, 1) if info.get('returnOnEquity')  else None
-    metrics['revenue_growth']  = round(info.get('revenueGrowth',   0) * 100, 1) if info.get('revenueGrowth')   else None
-    metrics['earnings_growth'] = round(info.get('earningsGrowth',  0) * 100, 1) if info.get('earningsGrowth')  else None
-    metrics['per']             = info.get('forwardPE')
-    metrics['pbr']             = info.get('priceToBook')
-    metrics['dividend_yield']  = round(info.get('dividendYield', 0) * 100, 2)   if info.get('dividendYield')   else None
+    def safe_pct(key, mult=100):
+        v = info.get(key)
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return None
+        return round(v * mult, 1)
+
+    metrics['roe']             = safe_pct('returnOnEquity')
+    metrics['revenue_growth']  = safe_pct('revenueGrowth')
+    metrics['earnings_growth'] = safe_pct('earningsGrowth')
+
+    def safe_info(key):
+        v = info.get(key)
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return None
+        return v
+
+    metrics['per']            = safe_info('forwardPE')
+    metrics['pbr']            = safe_info('priceToBook')
+    metrics['dividend_yield'] = safe_pct('dividendYield')
 
     # テクニカル
     technical = {}
@@ -124,8 +189,8 @@ def fetch_stock_data(ticker: str) -> dict:
             'rsi':            rsi,
             'bb_position':    round((cur-bb_l)/(bb_u-bb_l)*100, 1) if (bb_u-bb_l) != 0 else 50,
             'volatility':     round(hist['Close'].pct_change().std() * (252**0.5) * 100, 1),
-            'volume_ratio':   round(info.get('volume', 0) / max(info.get('averageVolume', 1), 1), 2),
-            'analyst_target': info.get('targetMeanPrice'),
+            'volume_ratio':   round(safe_info('volume') / max(safe_info('averageVolume') or 1, 1), 2),
+            'analyst_target': safe_info('targetMeanPrice'),
         }
 
     # ニュース（7日）
@@ -137,11 +202,15 @@ def fetch_stock_data(ticker: str) -> dict:
     ]
 
     return {
-        'ticker': ticker, 'name': info.get('longName', ticker),
-        'sector': info.get('sector','不明'), 'country': info.get('country','不明'),
-        'currency': info.get('currency','USD'),
+        'ticker':      ticker,
+        'name':        info.get('longName', ticker),
+        'sector':      info.get('sector', '不明'),
+        'country':     info.get('country', '不明'),
+        'currency':    info.get('currency', 'USD'),
         'description': (info.get('longBusinessSummary') or '')[:200],
-        'metrics': metrics, 'technical': technical, 'news': news,
+        'metrics':     metrics,
+        'technical':   technical,
+        'news':        news,
     }
 
 
@@ -152,7 +221,7 @@ def fetch_stock_data(ticker: str) -> dict:
 def select_competitors(target: dict) -> dict:
     cfg = CONFIG['competitor_selection']
     prompt = f"""
-投資委員会CIOとして、以下の銘銘柄の「真の競争力」を評価するための比較対象をJSONで選定せよ。
+投資委員会CIOとして、以下の銘柄の「真の競争力」を評価するための比較対象をJSONで選定せよ。
 
 銘柄: {target['ticker']} / {target['name']} / {target.get('sector','不明')} / {target.get('country','不明')}
 概要: {target.get('description','')[:150]}
@@ -185,30 +254,56 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict) -> tuple[
     (report_text, table_str) を返す。
     """
     labels = {
-        'op_margin':'営業利益率(%)', 'net_margin':'純利益率(%)', 'roe':'ROE(%)',
-        'revenue_growth':'売上成長率(%)', 'rd_ratio':'R&D/売上(%)',
-        'cf_quality':'CF品質', 'equity_ratio':'自己資本比率(%)',
-        'per':'PER(倍)', 'pbr':'PBR(倍)', 'dividend_yield':'配当利回り(%)',
+        'op_margin':     '営業利益率(%)',
+        'net_margin':    '純利益率(%)',
+        'roe':           'ROE(%)',
+        'revenue_growth':'売上成長率(%)',
+        'rd_ratio':      'R&D/売上(%)',
+        'cf_quality':    'CF品質',
+        'equity_ratio':  '自己資本比率(%)',
+        'per':           'PER(倍)',
+        'pbr':           'PBR(倍)',
+        'dividend_yield':'配当利回り(%)',
     }
+
     tickers = list(all_data.keys())
+
+    # ── 企業略称ヘッダーを生成 ──────────────────────
+    # ティッカー → 略称のマッピングを作成
+    name_map = {
+        t: short_name(all_data[t].get('name', t))
+        for t in tickers
+    }
+    col_w = 13  # 列幅
+    sep_w = (col_w + 3) * len(tickers) + 25
+
+    header_row = f"{'指標':<24} | " + " | ".join(f"{name_map[t]:<{col_w}}" for t in tickers)
+    ticker_row = f"{'(ティッカー)':<24} | " + " | ".join(f"{t:<{col_w}}" for t in tickers)
+
     table_lines = [
-        "=" * 70,
+        "=" * sep_w,
         f"📊 対戦表: {all_data[target_ticker].get('name', target_ticker)}",
-        "=" * 70,
-        f"{'指標':<22} | " + " | ".join(f"{t:<10}" for t in tickers),
-        "-" * 70,
+        "=" * sep_w,
+        header_row,
+        ticker_row,
+        "-" * sep_w,
     ]
+
     for key, label in labels.items():
-        vals = [f"{str(all_data[t].get('metrics',{}).get(key) or 'N/A'):<10}" for t in tickers]
-        table_lines.append(f"{label:<22} | " + " | ".join(vals))
-    table_lines.append("=" * 70)
+        vals = [
+            f"{clean_val(all_data[t].get('metrics', {}).get(key)):<{col_w}}"
+            for t in tickers
+        ]
+        table_lines.append(f"{label:<24} | " + " | ".join(vals))
+
+    table_lines.append("=" * sep_w)
     table_str = "\n".join(table_lines)
 
-    target   = all_data[target_ticker]
-    tech     = target.get('technical', {})
+    target    = all_data[target_ticker]
+    tech      = target.get('technical', {})
     news_text = "\n".join(target.get('news', [])) or "ニュースなし"
-    cur      = tech.get('current_price', 'N/A')
-    currency = target.get('currency', 'USD')
+    cur       = tech.get('current_price', 'N/A')
+    currency  = target.get('currency', 'USD')
 
     print("🚀 [API 2/2] 全分析を一括生成中...")
     prompt = f"""
@@ -226,6 +321,8 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 
 【ニュース（7日）】
 {news_text}
+
+【注意】"-"はデータ未取得を意味する。銀行・金融業はcf_qualityが異常値になりやすいため、ROE・PBR・純利益率を重視して判断せよ。
 
 【出力形式（厳守）】
 
@@ -307,7 +404,7 @@ def run(ticker: str, gc=None):
     print(f"\n{'='*60}\n🚀 {ticker} の司令塔分析を開始\n{'='*60}")
 
     target_data = fetch_stock_data(ticker)
-    competitors = select_competitors(target_data)  # API 1/2
+    competitors = select_competitors(target_data)   # API 1/2
 
     comp_tickers = list(set(
         competitors.get('direct',    []) +
