@@ -117,11 +117,19 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
 
     target    = all_data[target_ticker]
     tech      = target.get('technical', {})
-    news_text = "\n".join(target.get('news', [])) or "ニュースなし"
+    
+    # ニュースの切り詰め（最新10件程度または文字数制限）
+    news_list = target.get('news', [])
+    news_text = "\n".join(news_list[:10]) or "ニュースなし"
+    if len(news_text) > 2000:
+        news_text = news_text[:2000] + "\n...(以下略)"
+    
     cur       = tech.get('current_price', 'N/A')
     currency  = target.get('currency', 'USD')
 
     yuho_text = format_yuho_for_prompt(yuho_data) if yuho_data else ""
+    if len(yuho_text) > 4000:
+        yuho_text = yuho_text[:4000] + "\n...(有報/10-Kデータを一部省略)"
     yuho_section = f"\n{yuho_text}\n" if yuho_text else "\n【有価証券報告書/10-K】対象外または未取得\n"
 
     scorecard_text = scorecard.get('summary_text', '') if scorecard else ''
@@ -192,7 +200,23 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 - 損切り条件: [価格 AND ファンダメンタル変化]
 【監視ポイント】1. 2.
 """
-    report = call_gemini(prompt) or "分析失敗"
+    report = call_gemini(prompt)
+    if not report or report == "分析失敗":
+        print("  ⚠️ Gemini/Groq ともに失敗。ローカルでの簡易要約に切り替えます...")
+        report = f"""
+━━━ ⚔️ Layer1: 地力分析 ━━━
+💪 競争優位性: 対戦表の数値を参照（要手動確認）
+📊 本質的価値スコア: {scorecard.get('fundamental', {}).get('score', 0)}/10
+
+━━━ ⏱️ Layer2: タイミング分析 ━━━
+📈 テクニカル: RSI {tech.get('rsi', '-')} / MA25乖離 {tech.get('ma25_deviation', '-')}
+⏱️ タイミングスコア: {scorecard.get('technical', {}).get('score', 0)}/10
+
+━━━ ✅ 最終投資判断 ━━━
+🎯 シグナル: {scorecard.get('signal', 'WATCH')}
+🔢 総合スコア: {scorecard.get('total_score', 0)}/10
+【注意】AIによる詳細レポート生成に失敗しました。スコアカードの数値を優先して確認してください。
+"""
     return report, table_str
 
 
