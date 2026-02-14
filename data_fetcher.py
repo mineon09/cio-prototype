@@ -61,6 +61,18 @@ def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b
 
     except Exception as e:
         print(f"❌ Groq エラー: {e}")
+        # デバッグログ
+        try:
+            import traceback
+            debug_path = os.path.join(os.path.dirname(__file__), "data", "debug_api.log")
+            os.makedirs(os.path.dirname(debug_path), exist_ok=True)
+            with open(debug_path, "a", encoding="utf-8") as dbg:
+                dbg.write(f"\n--- GROQ ERROR ---\n")
+                dbg.write(f"model: {model}\n")
+                dbg.write(f"error: {e}\n")
+                dbg.write(traceback.format_exc())
+        except Exception:
+            pass
         return None
 
 

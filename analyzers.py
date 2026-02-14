@@ -586,7 +586,16 @@ def score_qualitative(yuho_data: dict) -> dict:
         total += _clamp(s)
         count += 1
 
-    score = _clamp(total / max(count, 1))
+    # 各項目が空（解析待ち）の場合は中立スコア 5.0 をベースにする
+    if count == 0:
+        return {
+            "layer": "Qualitative",
+            "score": 5.0,
+            "details": ["有報/10-Kデータあり（詳細はAIレポートを参照）"],
+            "data_points": 0,
+        }
+
+    score = _clamp(total / count)
     return {
         "layer": "Qualitative",
         "score": score,

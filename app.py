@@ -129,6 +129,18 @@ with st.sidebar:
     run_analysis = st.button("🚀 分析実行", type="primary", width="stretch")
 
     st.markdown("---")
+    st.subheader("🔑 APIステータス")
+    from data_fetcher import _get_gemini_key, _get_groq_key
+    gemini_ok = bool(_get_gemini_key())
+    groq_ok = bool(_get_groq_key())
+    
+    st.write(f"Gemini: {'✅' if gemini_ok else '❌'}")
+    st.write(f"Groq (Fallback): {'✅' if groq_ok else '❌'}")
+
+    if not gemini_ok and not groq_ok:
+        st.error("APIキーが設定されていません。 .env ファイルを確認してください。")
+
+    st.markdown("---")
 
     # Past Analysis History
     st.subheader("📋 分析履歴")

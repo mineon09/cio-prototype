@@ -171,16 +171,40 @@ def extract_sec_data(ticker: str) -> dict:
 
     print(f"  📝 テキスト取得: {len(text):,} 文字")
 
-    # 生テキストをそのまま返す（AI解析は最終レポートで一括）
+    # 最初の10万文字からリスクセクション（Item 1A）を探す
+    filing_text = text # Use the downloaded text
+    filing_text = filing_text.replace("\n", " ")
+    risk_start = filing_text.find("Item 1A.")
+    if risk_start == -1:
+        risk_start = filing_text.find("ITEM 1A.")
+    
+    filing_summary = ""
+    if risk_start != -1:
+        # リスクセクション周辺を抽出
+        filing_summary = filing_text[risk_start:risk_start+10000]
+    else:
+        # 見つらなければ冒頭
+        filing_summary = filing_text[:10000]
+
+    # doc_info を構築 (filing と form_type から)
+    doc_info = {
+        "form": form_type,
+        "date": filing['date'],
+        "accession": filing['accession'],
+        "primary_doc": filing['primary_doc'],
+        "cik": filing['cik'],
+    }
+
     return {
         "available": True,
-        "source": f"SEC EDGAR {form_type}",
-        "filing_date": filing['date'],
-        "raw_text": text[:8000],  # 最終プロンプトに詰める分量に制限
+        "doc_info": doc_info,
+        "raw_text": filing_summary,
         "risk_top3": [],
         "moat": {},
-        "rd_focus": "",
         "management_tone": "不明",
+        "rd_focus": [],
+        "management_challenges": "",
+        "summary": "SEC 10-K/10-Q Raw Text Extracted",
     }
 
 
