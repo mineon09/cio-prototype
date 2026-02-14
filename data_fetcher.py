@@ -94,21 +94,26 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
 
     # モデル名の解決
     # モデル名の解決
+    # モデル名の解決
+    # APIで確認された正規のモデルIDを使用
     MODEL_MAP = {
-        "flash": "gemini-2.0-flash",    # 最新のFlashモデル
-        "pro":   "gemini-2.0-pro-exp-02-05",  # 最新のProモデル（または1.5-pro）
+        "flash": "gemini-3-flash-preview",
+        "pro":   "gemini-3-pro-preview",
     }
-    # ユーザー指定がなければマップから、あればそのまま使う
-    model_name = MODEL_MAP.get(model, model)
+    target_model = MODEL_MAP.get(model, model)
+    
+    # フォールバック用: Pro で失敗したら Flash に切り替える
+    fallback_model = None
+    if target_model == MODEL_MAP["pro"]:
+        fallback_model = MODEL_MAP["flash"]
+
+    current_model = target_model
     
     for attempt in range(max_retries):
         try:
             # generate_content の呼び出し
-            # google-genai SDK の場合: client.models.generate_content
-            # google-generativeai SDK の場合: model.generate_content (構成が違う)
-            # ここでは既存コードに合わせて client.models.generate_content を使用
             response = client.models.generate_content(
-                model=model_name,
+                model=current_model,
                 contents=prompt
             )
             
@@ -119,10 +124,8 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
 
             # JSONパースモード
             if parse_json:
-                # マークダウンのコードブロック ```json ... ``` を除去
                 cleaned_text = re.sub(r'```json\s*', '', text)
                 cleaned_text = re.sub(r'```\s*$', '', cleaned_text)
-                # 波括弧の範囲を抽出
                 m = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
                 if m:
                     return json.loads(m.group(0))
@@ -132,19 +135,24 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
 
         except Exception as e:
             err_msg = str(e)
-            print(f"  ⚠️ Gemini リカバリ ({attempt+1}/{max_retries}): {err_msg[:100]}...")
+            print(f"  ⚠️ Gemini リカバリ ({current_model}) ({attempt+1}/{max_retries}): {err_msg[:100]}...")
             
             # レート制限 (429) または 容量超過 (RESOURCE_EXHAUSTED)
             if '429' in err_msg or 'RESOURCE_EXHAUSTED' in err_msg:
-                # 指数バックオフ: 10s -> 20s -> 40s -> 80s...
-                wait_time = 10 * (2 ** attempt)
-                # エラーメッセージに "retry in Xs" があればそれを優先
+                # 指数バックオフ: 5s -> 10s -> 20s...
+                wait_time = 5 * (2 ** attempt)
                 m = re.search(r'retry.*?in.*?(\d+)', err_msg)
                 if m:
                     wait_time = max(wait_time, int(m.group(1)) + 2)
                 
                 print(f"    ⏳ レート制限待機: {wait_time}秒...")
                 time.sleep(wait_time)
+                
+                # Pro で失敗し続けている場合、残り回数が少なくなったら Flash に切り替え
+                if fallback_model and current_model == target_model and attempt >= max_retries // 2:
+                    print(f"    🔄 Pro の制限が厳しいため、Flash ({fallback_model}) に切り替えてリトライします...")
+                    current_model = fallback_model
+                
                 continue
             
             # サーバーエラー (5xx)
@@ -152,7 +160,6 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 time.sleep(5)
                 continue
                 
-            # その他のエラーはリトライせず終了（認証エラーなど）
             print(f"❌ Gemini 致命的エラー: {e}")
             return None
             
