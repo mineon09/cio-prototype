@@ -66,10 +66,13 @@ def _download_edinet_code_list() -> bool:
     url = f"{EDINET_BASE_URL}/EdinetcodeDlInfo.json"
     params = {"type": 2, "Subscription-Key": EDINET_API_KEY}
 
+    session = requests.Session()
+    session.max_redirects = 5  # リダイレクトループ防止
+
     for attempt in range(2):
         try:
             print("  📋 EDINETコードリストをダウンロード中...")
-            resp = requests.get(url, params=params, timeout=30, allow_redirects=True)
+            resp = session.get(url, params=params, timeout=30)
             
             if resp.status_code == 429:
                 print(f"  ⏳ EDINET レート制限 (DL) — 65秒待機... ({attempt+1}/2)")
@@ -95,6 +98,9 @@ def _download_edinet_code_list() -> bool:
             print(f"  ✅ EDINETコードリスト保存完了 ({_CODE_LIST_PATH.name})")
             return True
 
+        except requests.TooManyRedirects:
+            print("  ⚠️ コードリスト取得: リダイレクトループ — スキップ（secCodeで照合します）")
+            return False
         except Exception as e:
             print(f"  ⚠️ コードリストダウンロードエラー: {e}")
             if attempt < 1:
