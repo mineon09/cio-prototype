@@ -24,7 +24,7 @@ SEC_HEADERS = {
 
 # Gemini（data_fetcherから借用）
 try:
-    from data_fetcher import call_gemini
+    from .data_fetcher import call_gemini
 except ImportError:
     def call_gemini(prompt, parse_json=False):
         print("⚠️ Gemini API 未設定（SEC定性分析スキップ）")

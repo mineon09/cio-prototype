@@ -648,7 +648,7 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
     regime_label = ""
     if macro_data and macro_data.get("regime"):
         try:
-            from macro_regime import get_weight_adjustments
+            from .macro_regime import get_weight_adjustments
             adj = get_weight_adjustments(macro_data["regime"], sector)
             for axis in weights:
                 weights[axis] = max(0, weights[axis] + adj.get(axis, 0))

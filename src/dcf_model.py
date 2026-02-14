@@ -24,7 +24,7 @@ import math
 import yfinance as yf
 
 try:
-    from data_fetcher import call_gemini
+    from .data_fetcher import call_gemini
 except ImportError:
     def call_gemini(prompt, parse_json=False):
         return None

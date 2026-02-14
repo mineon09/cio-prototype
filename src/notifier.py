@@ -42,7 +42,7 @@ def _load_credentials() -> tuple[str | None, str | None]:
     1行目: Channel Access Token
     2行目: User ID
     """
-    token_file = os.path.join(os.path.dirname(__file__), "line_secret.txt")
+    token_file = os.path.join(os.path.dirname(__file__), "..", "extra", "line_secret.txt")
     if os.path.exists(token_file):
         with open(token_file, "r") as f:
             lines = [l.strip() for l in f.readlines() if l.strip()]
@@ -88,7 +88,7 @@ def check_and_notify():
     data/results.json を読み込み、直近1週間に分析した銘柄で
     BUYシグナルの銘柄を LINE 通知する。
     """
-    results_file = os.path.join(os.path.dirname(__file__), "data", "results.json")
+    results_file = os.path.join(os.path.dirname(__file__), "..", "data", "results.json")
     if not os.path.exists(results_file):
         print("ℹ️ 分析データがありません")
         return

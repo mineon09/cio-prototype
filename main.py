@@ -39,17 +39,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # モジュールインポート
-from data_fetcher import (
+from src.data_fetcher import (
     fetch_stock_data, select_competitors, call_gemini,
     short_name, clean_val, pad_east_asian, get_east_asian_width_count,
 )
-from sheets_writer import get_sheets_client, write_to_sheets
-from edinet_client import extract_yuho_data, is_japanese_stock
-from analyzers import generate_scorecard, format_yuho_for_prompt
+from src.sheets_writer import get_sheets_client, write_to_sheets
+from src.edinet_client import extract_yuho_data, is_japanese_stock
+from src.analyzers import generate_scorecard, format_yuho_for_prompt
 
-# SEC EDGARï¼利用可能な場合のみ）
+# SEC EDGARï¼ˆ利用可能な場合のみ）
 try:
-    from sec_client import extract_sec_data, is_us_stock
+    from src.sec_client import extract_sec_data, is_us_stock
     HAS_SEC = True
 except ImportError:
     HAS_SEC = False
@@ -58,7 +58,7 @@ except ImportError:
 
 # DCF理論株価
 try:
-    from dcf_model import estimate_fair_value
+    from src.dcf_model import estimate_fair_value
     HAS_DCF = True
 except ImportError:
     HAS_DCF = False
@@ -66,7 +66,7 @@ except ImportError:
 
 # マクロ環境判定
 try:
-    from macro_regime import detect_regime
+    from src.macro_regime import detect_regime
     HAS_MACRO = True
 except ImportError:
     HAS_MACRO = False

@@ -39,27 +39,28 @@ try:
 except Exception:
     pass  # st.secrets が使えない場合（ローカル）はスキップ
 
-from data_fetcher import fetch_stock_data, select_competitors, call_gemini
-from analyzers import generate_scorecard, format_yuho_for_prompt
-from edinet_client import extract_yuho_data, is_japanese_stock
+from src.data_fetcher import fetch_stock_data, select_competitors, call_gemini
+from src.analyzers import generate_scorecard, format_yuho_for_prompt
+from src.edinet_client import extract_yuho_data, is_japanese_stock
 
 try:
-    from sec_client import extract_sec_data, is_us_stock
+    from src.sec_client import extract_sec_data, is_us_stock
 except ImportError:
     def is_us_stock(ticker): return not ticker.endswith('.T')
     def extract_sec_data(ticker): return {}
 
 try:
-    from dcf_model import estimate_fair_value
+    from src.dcf_model import estimate_fair_value
 except ImportError:
     def estimate_fair_value(ticker): return {"available": False}
 
 try:
-    from macro_regime import detect_regime
+    from src.macro_regime import detect_regime
 except ImportError:
     def detect_regime(): return {}
 
-from notifier import send_line_push
+from src.notifier import send_line_push
+from main import analyze_all, save_to_dashboard_json
 
 
 # ============================================================

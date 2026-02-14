@@ -23,7 +23,7 @@ from io import BytesIO
 
 # 循環インポート回避のため関数内でインポートするか、data_fetcher側でedinet_clientを使わない構成にする
 # 今回は edinet_client -> data_fetcher (call_gemini) の依存のみとする
-import data_fetcher
+from . import data_fetcher
 
 load_dotenv()
 
@@ -37,7 +37,7 @@ DOC_TYPE_YUHO          = "120"   # 有価証券報告書
 DOC_TYPE_QUARTERLY     = "140"   # 四半期報告書
 
 # EDINETコードリストのキャッシュパス
-_CACHE_DIR = Path(__file__).parent / ".edinet_cache"
+_CACHE_DIR = Path(__file__).parent.parent / ".edinet_cache"
 _CODE_LIST_PATH = _CACHE_DIR / "edinet_code_list.csv"
 _LIST_CACHE_DIR = _CACHE_DIR / "lists"
 
