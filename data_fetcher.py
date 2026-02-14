@@ -138,7 +138,16 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
             
             # レート制限 (429) または 容量超過 (RESOURCE_EXHAUSTED)
             if '429' in err_msg or 'RESOURCE_EXHAUSTED' in err_msg:
-                # 指数バックオフ
+                # "quota" (1日上限) エラーか判定
+                is_quota_error = "quota" in err_msg.lower()
+                
+                # Quotaエラーなら待っても無駄なので、即座に安定版へ切り替え
+                if is_quota_error and current_model != stable_model:
+                    print(f"    🚫 1日上限(Quota)に到達しました。待機時間をスキップして安定版 ({stable_model}) に切り替えます...")
+                    current_model = stable_model
+                    continue  # sleepせずに即リトライ
+
+                # それ以外のレート制限(RPM)なら待機する
                 wait_time = 5 * (2 ** attempt)
                 m = re.search(r'retry.*?in.*?(\d+)', err_msg)
                 if m:
@@ -147,12 +156,9 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 print(f"    ⏳ レート制限待機: {wait_time}秒...")
                 time.sleep(wait_time)
                 
-                # 3回目以降、または RPD (1日上限) エラーの場合は即座に安定版へ切り替え
-                # "You exceeded your current quota" は RPD エラーの可能性大
-                limit_hit = attempt >= 2 or "quota" in err_msg.lower()
-                
-                if limit_hit and current_model != stable_model:
-                    print(f"    🔄 上限到達のため、制限の緩い安定版 ({stable_model}) に切り替えて進行します...")
+                # Pro で失敗し続けている場合 (RPM制限)、回数を重ねたら切り替え
+                if current_model != stable_model and attempt >= 1:
+                    print(f"    🔄 レート制限が続いているため、安定版 ({stable_model}) に切り替えます...")
                     current_model = stable_model
                 
                 continue
