@@ -3,6 +3,7 @@
 *.json
 !config.json
 !data/results.json
+.env.example
 
 # クレデンシャル・秘密情報
 google_json.txt
