@@ -94,7 +94,6 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
 
     # モデル名の解決
     # モデル名の解決
-    # モデル名の解決
     # APIで確認された正規のモデルIDを使用
     MODEL_MAP = {
         "flash": "gemini-3-flash-preview",
@@ -102,10 +101,10 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
     }
     target_model = MODEL_MAP.get(model, model)
     
-    # フォールバック用: Pro で失敗したら Flash に切り替える
-    fallback_model = None
-    if target_model == MODEL_MAP["pro"]:
-        fallback_model = MODEL_MAP["flash"]
+    # フォールバック用: 
+    # 3系がダメなら 2.0 Flash (制限が緩い) に逃げる
+    # Proがダメなら Flash に逃げる
+    stable_model = "gemini-2.0-flash"
 
     current_model = target_model
     
@@ -139,7 +138,7 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
             
             # レート制限 (429) または 容量超過 (RESOURCE_EXHAUSTED)
             if '429' in err_msg or 'RESOURCE_EXHAUSTED' in err_msg:
-                # 指数バックオフ: 5s -> 10s -> 20s...
+                # 指数バックオフ
                 wait_time = 5 * (2 ** attempt)
                 m = re.search(r'retry.*?in.*?(\d+)', err_msg)
                 if m:
@@ -148,10 +147,13 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 print(f"    ⏳ レート制限待機: {wait_time}秒...")
                 time.sleep(wait_time)
                 
-                # Pro で失敗し続けている場合、残り回数が少なくなったら Flash に切り替え
-                if fallback_model and current_model == target_model and attempt >= max_retries // 2:
-                    print(f"    🔄 Pro の制限が厳しいため、Flash ({fallback_model}) に切り替えてリトライします...")
-                    current_model = fallback_model
+                # 3回目以降、または RPD (1日上限) エラーの場合は即座に安定版へ切り替え
+                # "You exceeded your current quota" は RPD エラーの可能性大
+                limit_hit = attempt >= 2 or "quota" in err_msg.lower()
+                
+                if limit_hit and current_model != stable_model:
+                    print(f"    🔄 上限到達のため、制限の緩い安定版 ({stable_model}) に切り替えて進行します...")
+                    current_model = stable_model
                 
                 continue
             
