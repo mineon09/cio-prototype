@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CIO Intelligence Dashboard</title>
+    <meta name="description" content="Professional CIO Edition - 4-Axis Stock Analysis Dashboard">
+    <link rel="stylesheet" href="dashboard.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&family=Noto+Sans+JP:wght@300;400;500;700&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>CIO Dash</h1>
+                <p>Intelligence Platform</p>
+            </div>
+            <div class="ticker-list-container">
+                <h3>分析履歴</h3>
+                <ul id="ticker-list"></ul>
+            </div>
+            <div class="sidebar-footer">
+                <button id="btn-compare" class="btn-compare" onclick="toggleCompare()">📊 比較モード</button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Single View -->
+            <div id="single-view">
+                <header class="main-header">
+                    <div class="ticker-info">
+                        <h2 id="display-ticker">銘柄を選択してください</h2>
+                        <p id="display-name"></p>
+                    </div>
+                    <div class="meta-info">
+                        <span id="display-date"></span>
+                        <span id="display-signal" class="signal-badge"></span>
+                    </div>
+                </header>
+
+                <div class="dashboard-grid">
+                    <!-- Radar Chart -->
+                    <section class="visual-section card">
+                        <div class="card-header">
+                            <h3>4-Axis Scorecard</h3>
+                        </div>
+                        <div class="chart-container">
+                            <canvas id="scoreChart"></canvas>
+                        </div>
+                        <div class="total-score-container">
+                            <span class="total-score-label">TOTAL SCORE</span>
+                            <span id="display-total-score" class="total-score-value">0.0</span>
+                        </div>
+                    </section>
+
+                    <!-- Score Cards + Key Metrics -->
+                    <div class="right-panel">
+                        <section class="scores-section">
+                            <div class="score-card" id="card-fundamental">
+                                <span class="score-icon">📊</span>
+                                <span class="score-label">Fundamental</span>
+                                <span id="score-fundamental" class="score-value">-</span>
+                                <div class="score-bar">
+                                    <div class="score-bar-fill" id="bar-fundamental"></div>
+                                </div>
+                            </div>
+                            <div class="score-card" id="card-valuation">
+                                <span class="score-icon">💰</span>
+                                <span class="score-label">Valuation</span>
+                                <span id="score-valuation" class="score-value">-</span>
+                                <div class="score-bar">
+                                    <div class="score-bar-fill" id="bar-valuation"></div>
+                                </div>
+                            </div>
+                            <div class="score-card" id="card-technical">
+                                <span class="score-icon">⏱️</span>
+                                <span class="score-label">Technical</span>
+                                <span id="score-technical" class="score-value">-</span>
+                                <div class="score-bar">
+                                    <div class="score-bar-fill" id="bar-technical"></div>
+                                </div>
+                            </div>
+                            <div class="score-card" id="card-qualitative">
+                                <span class="score-icon">📋</span>
+                                <span class="score-label">Qualitative</span>
+                                <span id="score-qualitative" class="score-value">-</span>
+                                <div class="score-bar">
+                                    <div class="score-bar-fill" id="bar-qualitative"></div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Key Metrics -->
+                        <section class="metrics-section card">
+                            <div class="card-header">
+                                <h3>Key Metrics</h3>
+                            </div>
+                            <div class="metrics-grid" id="metrics-grid"></div>
+                        </section>
+                    </div>
+
+                    <!-- Trend Chart (Time-Series) -->
+                    <section id="trend-section" class="card full-width" style="display:none;">
+                        <div class="card-header">
+                            <h3>Score Trend</h3>
+                        </div>
+                        <div class="trend-chart-container">
+                            <canvas id="trendChart"></canvas>
+                        </div>
+                    </section>
+
+                    <!-- Report -->
+                    <section class="report-section card full-width">
+                        <div class="card-header">
+                            <h3>Analysis Report</h3>
+                        </div>
+                        <div id="display-report" class="report-content"></div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Compare View -->
+            <div id="compare-view" style="display:none;">
+                <header class="main-header">
+                    <div class="ticker-info">
+                        <h2>銘柄比較</h2>
+                    </div>
+                </header>
+                <div class="compare-table-container">
+                    <table id="compare-table" class="compare-table">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="dashboard.js"></script>
+</body>
+
+</html>

@@ -2,6 +2,14 @@
 .env
 *.json
 !config.json
+!data/results.json
+
+# クレデンシャル・秘密情報
+google_json.txt
+edinet_api.txt
+*_key*.txt
+*_secret*.txt
+.streamlit/secrets.toml
 
 # Python
 __pycache__/
@@ -9,8 +17,12 @@ __pycache__/
 *.pyo
 .Python
 venv/
+.venv/
 env/
 *.egg-info/
+
+# EDINET キャッシュ
+.edinet_cache/
 
 # OS
 .DS_Store

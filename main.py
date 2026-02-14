@@ -1,14 +1,17 @@
 """
-main.py - CIO司令塔 エントリーポイント
-=======================================
-API呼び出し: 2回のみ
+main.py - CIO司令塔 オーケストレーター (Professional CIO Edition)
+================================================================
+API呼び出し: 最大3回
   1回目: Geminiが比較対象を自動選定（JSON）
-  2回目: 対戦表 + 地力分析 + タイミング分析 + 最終判断を一括生成
+  2回目: (日本株のみ) EDINET有報をGeminiで解析
+       (米国株のみ) SEC 10-K/10-QをGeminiで解析
+  3回目: 対戦表 + 4軸分析 + 有報/10-Kインサイト + 最終判断を一括生成
 
-修正点:
-  - 対戦表の日本語表示ズレを補正（unicodedataによる幅計算）
-  - 対戦表のヘッダーを企業略称で表示
-  - nan / N/A の統一処理
+4軸分析:
+  - Fundamental（地力）: ROE, 営業利益率, 自己資本比率
+  - Valuation（割安度）: PER, PBR, 目標価格乖離
+  - Technical（タイミング）: RSI, MA乖離, BB位置
+  - Qualitative（定性）: 有報/10-Kリスク, 堀, R&D
 
 使い方:
   python main.py 7203.T
@@ -16,18 +19,49 @@ API呼び出し: 2回のみ
   python main.py --ticker AMAT
 """
 
-import os, sys, re, json, time, math, gspread, yfinance as yf
-import unicodedata
-from datetime import datetime, timedelta
-from google import genai
-from google.oauth2.service_account import Credentials
+import os, sys, re, json, time
+from datetime import datetime
 from dotenv import load_dotenv
 
+# 環境変数を先にロード（モジュールが import 時に参照するため）
 load_dotenv()
 
-GEMINI_API_KEY              = os.environ.get('GEMINI_API_KEY')
-SPREADSHEET_ID              = os.environ.get('SPREADSHEET_ID')
-GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')
+# モジュールインポート
+from data_fetcher import (
+    fetch_stock_data, select_competitors, call_gemini,
+    short_name, clean_val, pad_east_asian, get_east_asian_width_count,
+)
+from sheets_writer import get_sheets_client, write_to_sheets
+from edinet_client import extract_yuho_data, is_japanese_stock
+from analyzers import generate_scorecard, format_yuho_for_prompt
+
+# SEC EDGARï¼利用可能な場合のみ）
+try:
+    from sec_client import extract_sec_data, is_us_stock
+    HAS_SEC = True
+except ImportError:
+    HAS_SEC = False
+    def is_us_stock(ticker): return not ticker.endswith('.T')
+    def extract_sec_data(ticker): return {}
+
+# DCF理論株価
+try:
+    from dcf_model import estimate_fair_value
+    HAS_DCF = True
+except ImportError:
+    HAS_DCF = False
+    def estimate_fair_value(ticker): return {"available": False}
+
+# マクロ環境判定
+try:
+    from macro_regime import detect_regime
+    HAS_MACRO = True
+except ImportError:
+    HAS_MACRO = False
+    def detect_regime(): return {}
+
+
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 try:
     with open("config.json", encoding="utf-8") as f:
@@ -40,225 +74,11 @@ except Exception:
 
 
 # ==========================================
-# ユーティリティ
+# 全分析一括生成
 # ==========================================
 
-def get_east_asian_width_count(text: str) -> int:
-    """全角文字を2、半角文字を1としてカウントする"""
-    count = 0
-    for char in text:
-        if unicodedata.east_asian_width(char) in 'FWA':
-            count += 2
-        else:
-            count += 1
-    return count
-
-def pad_east_asian(text: str, width: int) -> str:
-    """全角文字を考慮して指定の幅まで半角スペースで埋める"""
-    cur_len = get_east_asian_width_count(text)
-    return text + ' ' * max(0, width - cur_len)
-
-def clean_val(v) -> str:
-    """nan / None / 空文字 をすべて '-' に統一して返す"""
-    if v is None:
-        return "-"
-    try:
-        if math.isnan(float(v)):
-            return "-"
-    except (TypeError, ValueError):
-        pass
-    if str(v).strip().lower() in ("nan", "none", "n/a", ""):
-        return "-"
-    return str(v)
-
-
-def short_name(name: str) -> str:
-    """
-    企業名を対戦表に収まる略称（最大12文字）に短縮する。
-    """
-    replacements = [
-        (" Financial Group", ""), (" Financial", ""), (" Holdings", ""),
-        (" Corporation", ""), (" Incorporated", ""), (", Inc.", ""),
-        (" Inc.", ""), (" Ltd.", ""), (" Co.", ""), (" & Co.", ""),
-        (" Group", ""), (" International", "Intl"), (" Technologies", "Tech"),
-        (" Technology", "Tech"), (" Services", "Svc"), (" Solutions", "Sol"),
-        ("Applied Materials", "AMAT"), ("Mitsubishi UFJ", "MUFG"),
-        ("Sumitomo Mitsui", "SMFG"), ("Mizuho", "Mizuho"),
-        ("Morgan Stanley", "M.Stanley"), ("JPMorgan Chase", "JPMorgan"),
-        ("PayPal", "PayPal"), ("Orix", "ORIX"), ("Rakuten", "Rakuten"),
-    ]
-    result = name
-    for old, new in replacements:
-        result = result.replace(old, new)
-    result = result.strip().strip(",").strip()
-    return result[:12] if len(result) > 12 else result
-
-
-# ==========================================
-# Gemini API（429自動リトライ）
-# ==========================================
-
-def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5):
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    for attempt in range(max_retries):
-        try:
-            res  = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt)
-            text = res.text
-            if parse_json:
-                m = re.search(r'\{.*\}', text, re.DOTALL)
-                return json.loads(m.group(0)) if m else json.loads(text)
-            return text
-        except Exception as e:
-            err = str(e)
-            if '429' in err or 'RESOURCE_EXHAUSTED' in err:
-                m = re.search(r'retry in (\d+\.?\d*)s', err)
-                wait = float(m.group(1)) + 2 if m else 60
-                if attempt < max_retries - 1:
-                    print(f"⏳ レート制限 {wait:.0f}秒待機... ({attempt+1}/{max_retries})")
-                    time.sleep(wait)
-                    continue
-                return None
-            elif '503' in err and attempt < max_retries - 1:
-                time.sleep((attempt + 1) * 15)
-                continue
-            print(f"❌ Gemini エラー: {e}")
-            return None
-    return None
-
-
-# ==========================================
-# yfinance データ取得
-# ==========================================
-
-def fetch_stock_data(ticker: str) -> dict:
-    print(f"  📊 {ticker} データ取得中...")
-    try:
-        stock = yf.Ticker(ticker)
-        info  = stock.info
-        hist  = stock.history(period="1y")
-        fin   = stock.financials
-        cf    = stock.cashflow
-        bs    = stock.balance_sheet
-    except Exception as e:
-        print(f"  ⚠️ {ticker} 取得失敗: {e}")
-        return {"ticker": ticker, "name": ticker, "currency": "USD",
-                "metrics": {}, "technical": {}, "news": [], "description": ""}
-
-    def sg(df, row):
-        try:
-            v = df.loc[row].iloc[0]
-            return None if (v is None or (isinstance(v, float) and math.isnan(v))) else v
-        except:
-            return None
-
-    metrics = {}
-    op, rev, ni = sg(fin,'Operating Income'), sg(fin,'Total Revenue'), sg(fin,'Net Income')
-    ocf, eq, ta = sg(cf,'Operating Cash Flow'), sg(bs,'Stockholders Equity'), sg(bs,'Total Assets')
-    rd = sg(fin, 'Research And Development')
-
-    if op  and rev and rev != 0: metrics['op_margin']    = round(op  / rev * 100, 1)
-    if ni  and rev and rev != 0: metrics['net_margin']   = round(ni  / rev * 100, 1)
-    if rd  and rev and rev != 0: metrics['rd_ratio']     = round(abs(rd) / rev * 100, 1)
-    if ocf and ni  and ni  != 0: metrics['cf_quality']   = round(ocf / ni, 2)
-    if eq  and ta  and ta  != 0: metrics['equity_ratio'] = round(eq  / ta * 100, 1)
-
-    def safe_pct(key, mult=100):
-        v = info.get(key)
-        if v is None or (isinstance(v, float) and math.isnan(v)):
-            return None
-        return round(v * mult, 1)
-
-    metrics['roe']             = safe_pct('returnOnEquity')
-    metrics['revenue_growth']  = safe_pct('revenueGrowth')
-    metrics['earnings_growth'] = safe_pct('earningsGrowth')
-
-    def safe_info(key):
-        v = info.get(key)
-        if v is None or (isinstance(v, float) and math.isnan(v)):
-            return None
-        return v
-
-    metrics['per']            = safe_info('forwardPE')
-    metrics['pbr']            = safe_info('priceToBook')
-    metrics['dividend_yield'] = safe_pct('dividendYield')
-
-    technical = {}
-    if not hist.empty:
-        cur  = hist['Close'].iloc[-1]
-        ma25 = hist['Close'].rolling(25).mean().iloc[-1]
-        ma75 = hist['Close'].rolling(75).mean().iloc[-1]
-        delta = hist['Close'].diff()
-        gain  = delta.where(delta > 0, 0).rolling(14).mean()
-        loss  = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rsi   = round(100 - 100 / (1 + gain.iloc[-1] / loss.iloc[-1]), 1) if loss.iloc[-1] != 0 else 50.0
-        std   = hist['Close'].rolling(25).std().iloc[-1]
-        bb_u, bb_l = ma25 + 2*std, ma25 - 2*std
-        technical = {
-            'current_price': round(cur, 2),
-            'ma25_deviation': round((cur-ma25)/ma25*100, 1) if ma25 else 0,
-            'ma75_deviation': round((cur-ma75)/ma75*100, 1) if ma75 else 0,
-            'rsi':            rsi,
-            'bb_position':    round((cur-bb_l)/(bb_u-bb_l)*100, 1) if (bb_u-bb_l) != 0 else 50,
-            'volatility':     round(hist['Close'].pct_change().std() * (252**0.5) * 100, 1),
-            'volume_ratio':   round(safe_info('volume') / max(safe_info('averageVolume') or 1, 1), 2),
-            'analyst_target': safe_info('targetMeanPrice'),
-        }
-
-    cutoff = datetime.now() - timedelta(days=7)
-    news = [
-        f"[{datetime.fromtimestamp(n.get('providerPublishTime',0)).strftime('%m/%d')}] {n.get('title','')} ({n.get('publisher','')})"
-        for n in (stock.news or [])[:8]
-        if datetime.fromtimestamp(n.get('providerPublishTime', 0)) >= cutoff
-    ]
-
-    return {
-        'ticker':      ticker,
-        'name':        info.get('longName', ticker),
-        'sector':      info.get('sector', '不明'),
-        'country':     info.get('country', '不明'),
-        'currency':    info.get('currency', 'USD'),
-        'description': (info.get('longBusinessSummary') or '')[:200],
-        'metrics':     metrics,
-        'technical':   technical,
-        'news':        news,
-    }
-
-
-# ==========================================
-# API呼び出し 1/2: 比較対象の自動選定
-# ==========================================
-
-def select_competitors(target: dict) -> dict:
-    cfg = CONFIG['competitor_selection']
-    prompt = f"""
-投資委員会CIOとして、以下の銘柄の「真の競争力」を評価するための比較対象をJSONで選定せよ。
-
-銘柄: {target['ticker']} / {target['name']} / {target.get('sector','不明')} / {target.get('country','不明')}
-概要: {target.get('description','')[:150]}
-
-カテゴリ:
-- direct（直接競合）: {cfg['direct_count']}社
-- substitute（機能代替）: {cfg['substitute_count']}社
-- benchmark（資本効率比較）: {cfg['benchmark_count']}社
-
-制約: yfinanceで取得可能なティッカーのみ。日本株は「7203.T」形式。JSONのみ返答。
-
-{{"direct":["T1","T2","T3"],"substitute":["T4","T5"],"benchmark":["T6","T7"],"reasoning":"理由1行"}}
-"""
-    print("🧠 [API 1/2] 比較対象を選定中...")
-    result = call_gemini(prompt, parse_json=True)
-    if not result:
-        return {"direct": [], "substitute": [], "benchmark": [], "reasoning": "選定失敗"}
-    all_c = result.get('direct',[]) + result.get('substitute',[]) + result.get('benchmark',[])
-    print(f"✅ 比較対象: {all_c}")
-    return result
-
-
-# ==========================================
-# API呼び出し 2/2: 全分析を一括生成
-# ==========================================
-
-def analyze_all(target_ticker: str, all_data: dict, competitors: dict) -> tuple[str, str]:
+def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
+                yuho_data: dict = None, scorecard: dict = None) -> tuple[str, str]:
     labels = {
         'op_margin':     '営業利益率(%)',
         'net_margin':    '純利益率(%)',
@@ -274,16 +94,12 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict) -> tuple[
 
     tickers = list(all_data.keys())
     name_map = {t: short_name(all_data[t].get('name', t)) for t in tickers}
-    
-    # 幅の設定
-    label_w = 22  # 指標ラベル（全角対応）
-    col_w   = 13  # 各銘柄列
 
-    # ヘッダー作成
+    label_w = 22
+    col_w   = 13
+
     header_row = pad_east_asian('指標', label_w) + " | " + " | ".join(f"{name_map[t]:<{col_w}}" for t in tickers)
     ticker_row = pad_east_asian('(ティッカー)', label_w) + " | " + " | ".join(f"{t:<{col_w}}" for t in tickers)
-    
-    # セパレーターの長さをヘッダーに合わせる
     line_len = get_east_asian_width_count(header_row)
     sep_line = "=" * line_len
     sub_line = "-" * line_len
@@ -291,16 +107,11 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict) -> tuple[
     table_lines = [
         sep_line,
         f"📊 対戦表: {all_data[target_ticker].get('name', target_ticker)}",
-        sep_line,
-        header_row,
-        ticker_row,
-        sub_line,
+        sep_line, header_row, ticker_row, sub_line,
     ]
-
     for key, label in labels.items():
         vals = [f"{clean_val(all_data[t].get('metrics', {}).get(key)):<{col_w}}" for t in tickers]
         table_lines.append(pad_east_asian(label, label_w) + " | " + " | ".join(vals))
-
     table_lines.append(sep_line)
     table_str = "\n".join(table_lines)
 
@@ -310,7 +121,24 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict) -> tuple[
     cur       = tech.get('current_price', 'N/A')
     currency  = target.get('currency', 'USD')
 
-    print("🚀 [API 2/2] 全分析を一括生成中...")
+    yuho_text = format_yuho_for_prompt(yuho_data) if yuho_data else ""
+    yuho_section = f"\n{yuho_text}\n" if yuho_text else "\n【有価証券報告書/10-K】対象外または未取得\n"
+
+    scorecard_text = scorecard.get('summary_text', '') if scorecard else ''
+    scorecard_section = f"\n{scorecard_text}\n" if scorecard_text else ''
+
+    layer3_format = ""
+    if yuho_data and yuho_data.get('available'):
+        layer3_format = """
+━━━ 📋 Layer3: 定性分析（有報/10-K） ━━━
+🏰 競争優位性（堀）: [有報/10-Kデータに基づき、堀の種類・耐久性・具体例]
+⚠️ 経営リスクTOP3: [「事業等のリスク」/Risk Factorsから、現在の株価に織り込まれているか判断]
+🔬 R&D戦略: [R&D比率の数字が具体的にどの技術に投資されているか]
+📋 定性スコア: X/10 [根拠2行]
+"""
+
+    api_label = "[API 3/3]" if yuho_text else "[API 2/2]"
+    print(f"🚀 {api_label} 全分析を一括生成中...")
     prompt = f"""
 あなたは外資系ヘッジファンドのCIOです。
 以下のデータをすべて使い、投資レポートを1つのレスポンスで完成させてください。
@@ -323,11 +151,14 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict) -> tuple[
 現在価格:{cur} {currency} / MA25乖離:{tech.get('ma25_deviation')}% / MA75乖離:{tech.get('ma75_deviation')}%
 RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('volatility')}% / 出来高比:{tech.get('volume_ratio')}x
 アナリスト目標:{tech.get('analyst_target')}
-
+{yuho_section}
+{scorecard_section}
 【ニュース（7日）】
 {news_text}
 
 【注意】"-"はデータ未取得を意味する。銀行・金融業はcf_qualityが異常値になりやすいため、ROE・PBR・純利益率を重視して判断せよ。
+有報/10-Kデータがある場合は、数値指標とテキストを照合し、数字の「裏側」にある経営意図を読み解くこと。
+4軸スコアカードは参考値として活用し、最終判断は総合的に行うこと。
 
 【出力形式（厳守）】
 
@@ -343,11 +174,12 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 ⚠️ 指標の矛盾: [あれば記載、なければ「矛盾なし」]
 📅 カタリスト: [具体的イベント・日付]
 ⏱️ タイミングスコア: X/10
-
+{layer3_format}
 ━━━ ✅ 最終投資判断 ━━━
 🎯 シグナル: BUY / WATCH / SELL
 📊 地力スコア: X/10
 ⏱️ タイミングスコア: X/10
+📋 定性スコア: X/10（有報/10-Kデータがある場合）
 🔢 総合スコア: X/10
 【根拠】[3行]
 【アクション】
@@ -365,70 +197,188 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 
 
 # ==========================================
-# Google Sheets 出力
-# ==========================================
-
-def write_to_sheets(gc, target_ticker: str, target_data: dict,
-                    competitors: dict, report: str, table_str: str):
-    try:
-        sp = gc.open_by_key(SPREADSHEET_ID)
-        sname = CONFIG['sheets']['output']
-        try:
-            sheet = sp.worksheet(sname)
-        except:
-            sheet = sp.add_worksheet(sname, rows=1000, cols=8)
-            sheet.append_row(["日付","銘柄","価格","シグナル","総合スコア","比較対象","レポート","対戦表"])
-
-        sig_m   = re.search(r'シグナル.*?(BUY|WATCH|SELL)', report) or re.search(r'\b(BUY|WATCH|SELL)\b', report)
-        score_m = re.search(r'総合スコア.*?(\d+)/10', report)
-        tech    = target_data.get('technical', {})
-
-        row = [
-            datetime.now().strftime('%Y/%m/%d %H:%M'),
-            target_ticker,
-            f"{tech.get('current_price','N/A')} {target_data.get('currency','')}",
-            sig_m.group(1)   if sig_m   else "N/A",
-            score_m.group(1) if score_m else "N/A",
-            str(competitors.get('direct',[]) + competitors.get('substitute',[])),
-            report,
-            table_str,
-        ]
-        sheet.append_row(row)
-        last = len(sheet.get_all_values())
-        sheet.format(f"G{last}:H{last}", {"wrapStrategy": "WRAP"})
-        print(f"✅ スプレッドシート書き込み完了（行 {last}）")
-    except Exception as e:
-        print(f"❌ Sheetsエラー: {e}")
-
-
-# ==========================================
 # メインフロー
 # ==========================================
 
 def run(ticker: str, gc=None):
-    print(f"\n{'='*60}\n🚀 {ticker} の司令塔分析を開始\n{'='*60}")
+    print(f"\n{'='*60}\n🚀 {ticker} の司令塔分析を開始 (Professional CIO Edition)\n{'='*60}")
 
     target_data = fetch_stock_data(ticker)
     competitors = select_competitors(target_data)
 
-    comp_tickers = list(set(
-        competitors.get('direct',    []) +
-        competitors.get('substitute', []) +
-        competitors.get('benchmark',  [])
-    ))
-    print(f"📈 比較対象 {len(comp_tickers)} 銘柄のデータ取得中...")
+    all_tickers = [ticker] + competitors.get('direct',[]) + competitors.get('substitute',[]) + competitors.get('benchmark',[])
     all_data = {ticker: target_data}
-    for t in comp_tickers:
-        all_data[t] = fetch_stock_data(t)
-        time.sleep(0.3)
 
-    report, table_str = analyze_all(ticker, all_data, competitors)
+    for ct in all_tickers[1:]:
+        if ct not in all_data:
+            try:
+                all_data[ct] = fetch_stock_data(ct)
+            except Exception as e:
+                print(f"  ⚠️ {ct} 取得失敗: {e}")
+                all_data[ct] = {"ticker": ct, "name": ct, "metrics": {}, "technical": {}}
+
+    # ── 有報/10-K 取得 ──
+    yuho_data = {}
+    if is_japanese_stock(ticker):
+        print(f"\n🇯🇵 日本株: EDINET有報を検索中...")
+        yuho_data = extract_yuho_data(ticker)
+        if yuho_data and yuho_data.get('available'):
+            print(f"  ✅ 有報データ取得成功")
+        else:
+            print(f"  ⚠️ 有報データなし")
+    elif HAS_SEC and is_us_stock(ticker):
+        print(f"\n🇺🇸 米国株: SEC 10-K/10-Q を検索中...")
+        yuho_data = extract_sec_data(ticker)
+        if yuho_data and yuho_data.get('available'):
+            print(f"  ✅ 10-K/10-Q データ取得成功")
+        else:
+            print(f"  ⚠️ SEC データなし")
+    else:
+        print(f"ℹ️ 有価証券報告書の取得をスキップ")
+
+    # ── DCF理論株価算出 ──
+    dcf_data = {}
+    if HAS_DCF:
+        dcf_data = estimate_fair_value(ticker)
+
+    # ── マクロ環境判定 ──
+    macro_data = {}
+    if HAS_MACRO:
+        macro_data = detect_regime()
+
+    # ── 4軸スコアカード算出（セクター別閾値 + DCF + マクロ補正） ──
+    sector = target_data.get('sector', '')
+    if sector and sector != '不明':
+        print(f"🏭 セクター: {sector}")
+    scorecard = generate_scorecard(
+        target_data.get('metrics', {}),
+        target_data.get('technical', {}),
+        yuho_data,
+        sector=sector,
+        dcf_data=dcf_data,
+        macro_data=macro_data,
+    )
+    summary_text = scorecard.get('summary_text', '')
+    if summary_text:
+        print(f"\n{summary_text}")
+
+    report, table_str = analyze_all(
+        ticker, all_data, competitors,
+        yuho_data=yuho_data, scorecard=scorecard,
+    )
 
     if gc:
-        write_to_sheets(gc, ticker, target_data, competitors, report, table_str)
+        write_to_sheets(
+            gc, ticker, target_data, competitors,
+            report, table_str,
+            yuho_data=yuho_data, scorecard=scorecard,
+        )
+
+    # ── ダッシュボード用JSON出力（履歴蓄積型） ──
+    save_to_dashboard_json(ticker, target_data, scorecard, report,
+                           dcf_data=dcf_data, macro_data=macro_data)
 
     print("\n" + "="*60 + "\n" + report + "\n" + "="*60)
     return report
+
+
+def save_to_dashboard_json(ticker, target_data, scorecard, report,
+                           dcf_data=None, macro_data=None):
+    """分析結果をWebダッシュボード用のJSON（履歴蓄積型）に保存する"""
+    data_dir = "data"
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
+    file_path = os.path.join(data_dir, "results.json")
+    
+    # 既存データの読み込み
+    all_results = {}
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                all_results = json.load(f)
+        except Exception:
+            all_results = {}
+
+    # 新規エントリの作成
+    new_entry = {
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "scores": {
+            "fundamental": scorecard.get("fundamental", {}).get("score", 0),
+            "valuation": scorecard.get("valuation", {}).get("score", 0),
+            "technical": scorecard.get("technical", {}).get("score", 0),
+            "qualitative": scorecard.get("qualitative", {}).get("score", 0),
+        },
+        "weights": scorecard.get("weights", {}),
+        "signal": scorecard.get("signal", "WATCH"),
+        "total_score": scorecard.get("total_score", 0),
+        "metrics": target_data.get("metrics", {}),
+        "technical_data": target_data.get("technical", {}),
+        "report": report,
+    }
+
+    # DCFデータがあれば追加
+    if dcf_data and dcf_data.get("available"):
+        new_entry["dcf"] = {
+            "fair_value": dcf_data.get("fair_value", 0),
+            "current_price": dcf_data.get("current_price", 0),
+            "upside": dcf_data.get("upside", 0),
+            "margin_of_safety": dcf_data.get("margin_of_safety", 0),
+            "scenarios": dcf_data.get("scenarios", {}),
+            "wacc": dcf_data.get("wacc", 0),
+        }
+
+    # マクロ環境データがあれば追加
+    if macro_data and macro_data.get("regime"):
+        new_entry["macro"] = {
+            "regime": macro_data.get("regime", ""),
+            "description": macro_data.get("description", ""),
+            "indicators": macro_data.get("indicators", {}),
+        }
+
+    # 既存のエントリを取得 or 新規作成
+    if ticker in all_results:
+        existing = all_results[ticker]
+        # 旧フォーマット（historyキーなし）→ マイグレーション
+        if "history" not in existing:
+            old_entry = {
+                "date": existing.get("date", ""),
+                "scores": existing.get("scores", {}),
+                "weights": existing.get("weights", {}),
+                "signal": existing.get("signal", "WATCH"),
+                "total_score": existing.get("total_score", 0),
+                "metrics": existing.get("metrics", {}),
+                "technical_data": existing.get("technical_data", {}),
+                "report": existing.get("report", ""),
+            }
+            existing = {
+                "name": existing.get("name", ticker),
+                "sector": existing.get("sector", "不明"),
+                "currency": existing.get("currency", "USD"),
+                "history": [old_entry],
+            }
+        existing["history"].append(new_entry)
+        # 最大20件保持
+        existing["history"] = existing["history"][-20:]
+        # メタデータの更新
+        existing["name"] = target_data.get("name", ticker)
+        existing["sector"] = target_data.get("sector", "不明")
+        existing["currency"] = target_data.get("currency", "USD")
+        all_results[ticker] = existing
+    else:
+        all_results[ticker] = {
+            "name": target_data.get("name", ticker),
+            "sector": target_data.get("sector", "不明"),
+            "currency": target_data.get("currency", "USD"),
+            "history": [new_entry],
+        }
+    
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(all_results, f, indent=2, ensure_ascii=False)
+        history_count = len(all_results[ticker]["history"])
+        print(f"📁 ダッシュボード用データ保存完了: {file_path} (履歴: {history_count}件)")
+    except Exception as e:
+        print(f"⚠️ JSON保存失敗: {e}")
 
 
 def main():
@@ -436,17 +386,7 @@ def main():
         print("❌ GEMINI_API_KEY が未設定")
         sys.exit(1)
 
-    gc = None
-    if GOOGLE_SERVICE_ACCOUNT_JSON and SPREADSHEET_ID:
-        try:
-            creds = Credentials.from_service_account_info(
-                json.loads(GOOGLE_SERVICE_ACCOUNT_JSON),
-                scopes=['https://www.googleapis.com/auth/spreadsheets',
-                        'https://www.googleapis.com/auth/drive'])
-            gc = gspread.authorize(creds)
-            print("✅ Google Sheets 認証成功")
-        except Exception as e:
-            print(f"⚠️ Sheets認証失敗（出力なしで続行）: {e}")
+    gc = get_sheets_client()
 
     args = sys.argv[1:]
     tickers, skip = [], False
@@ -477,7 +417,8 @@ def main():
             time.sleep(5)
 
     if gc:
-        print(f"\n📊 結果: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}")
+        sid = os.environ.get('SPREADSHEET_ID', '')
+        print(f"\n📊 結果: https://docs.google.com/spreadsheets/d/{sid}")
 
 
 if __name__ == "__main__":
