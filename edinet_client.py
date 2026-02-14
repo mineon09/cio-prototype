@@ -18,6 +18,12 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
+from pdfminer.high_level import extract_text
+from io import BytesIO
+
+# 循環インポート回避のため関数内でインポートするか、data_fetcher側でedinet_clientを使わない構成にする
+# 今回は edinet_client -> data_fetcher (call_gemini) の依存のみとする
+import data_fetcher
 
 load_dotenv()
 
@@ -359,8 +365,72 @@ def download_yuho_pdf(doc_id: str) -> bytes | None:
 
 
 # ==========================================
-# 有報データ（AI解析は最終レポートで一括）
+# 有報データ（AI解析）
 # ==========================================
+
+def _extract_text_from_pdf_bytes(pdf_bytes: bytes, max_pages: int = 50) -> str:
+    """
+    pdfminer.six を使用してPDFバイナリからテキストを抽出する。
+    処理時間短縮のため、max_pages でページ数を制限可能（デフォルト50ページ）。
+    """
+    try:
+        # PDF全体のテキスト抽出（maxpages=0 は全ページ）
+        # 有報は数百ページになることがあるため、冒頭〜重要部分が含まれる範囲に限定してもよいが、
+        # "事業等のリスク"などは後半にあることもあるため、一旦全ページ取得を試みる。
+        # ただしタイムアウト回避のため max_pages を設ける検討も必要。
+        # ここでは重要なセクションが散らばっているため、全ページ取得を試みるが、
+        # パフォーマンスを考慮し、一旦 max_pages=0 (全ページ) とする。
+        text = extract_text(BytesIO(pdf_bytes), maxpages=0)
+        return text
+    except Exception as e:
+        print(f"  ⚠️ PDFテキスト抽出エラー: {e}")
+        return ""
+
+def _analyze_yuho_with_gemini(text: str, filer_name: str) -> dict:
+    """
+    抽出した有報テキストをGeminiに投げ、リスク・堀・経営課題などを抽出する。
+    """
+    if not text:
+        return {}
+
+    # トークン数削減のため、不要な空白や改行を圧縮
+    clean_text = re.sub(r'\s+', ' ', text)[:80000] # Gemini 1.5/Proなら長文OKだが、念のため安全圏に
+
+    prompt = f"""
+あなたは証券アナリストです。
+以下の有価証券報告書（{filer_name}）のテキストから、投資判断に必要な定性情報を抽出してください。
+出力は必ず JSON 形式にしてください。
+
+【抽出項目】
+1. risk_top3 (list): 「事業等のリスク」などから、特に影響度が大きく、解決困難なリスクを3つ。
+   - risk: リスク名
+   - severity: "高" or "中" or "低"
+   - detail: 詳細（株価への影響含む）
+2. moat (dict): 企業の競争優位性（Economic Moat）。
+   - type: "ブランド", "スイッチングコスト", "ネットワーク効果", "コスト優位性", "規模の経済", "なし" のいずれか
+   - source: 優位性の源泉（具体的な技術や資産）
+   - durability: "高" (10年以上), "中" (数年), "低" (すぐ崩れる)
+   - description: 詳細説明
+3. management_tone (dict): 経営陣のトーン分析（「経営方針」「対処すべき課題」などの記述から）。
+   - overall: "強気", "中立", "慎重", "弱気"
+   - key_phrases: 印象的なキーワード（リスト, 最大3つ）
+   - detail: 経営陣の自信や懸念点の要約
+4. rd_focus (list): 研究開発活動の注力分野（最大3つ）。
+   - area: 分野名
+   - detail: 詳細
+5. management_challenges (str): 経営者が認識している課題（「対処すべき課題」から要約）。
+6. summary (str): この有報から読み取れる企業の現状と将来性の要約（200文字以内）。
+
+【テキスト】
+{clean_text}
+    """
+    
+    print(f"  🧠 Gemini で有報を解析中（テキストサイズ: {len(clean_text)//1000}k文字）...")
+    result = data_fetcher.call_gemini(prompt, parse_json=True, model="flash") # 高速化のためFlash推奨
+
+    if isinstance(result, dict):
+        return result
+    return {}
 
 
 # ==========================================
@@ -391,17 +461,45 @@ def extract_yuho_data(ticker: str) -> dict:
         return {"available": False, "reason": "有報が見つからない"}
 
     # PDF の有無だけ確認（AI解析は最終レポートで一括）
+    # PDF の有無を確認し、ダウンロード＆解析
     print(f"  ✅ 有報メタデータ取得成功: {doc_info.get('filer_name', '不明')}")
+    
+    # 実際の内容を取得・解析
+    doc_id = doc_info.get("doc_id")
+    pdf_bytes = download_yuho_pdf(doc_id)
+    
+    analysis_result = {}
+    raw_text_extract = ""
+    
+    if pdf_bytes:
+        print("  📄 PDFテキスト抽出中...")
+        raw_text_extract = _extract_text_from_pdf_bytes(pdf_bytes)
+        if raw_text_extract:
+            print(f"  ✅ テキスト抽出完了 ({len(raw_text_extract)}文字)")
+            analysis_result = _analyze_yuho_with_gemini(raw_text_extract, doc_info.get('filer_name', ''))
+            # 続きの分析（Layer3）のために生テキストの一部（最大2万文字程度）を保持する手もあるが、
+            # ここで構造化データにしてしまった方が扱いやすい。
+            # 今回はフォーマット済みの analysis_result を優先使用する。
+        else:
+            print("  ⚠️ テキスト抽出失敗または空")
+    else:
+        print("  ⚠️ PDFダウンロード失敗")
 
     return {
         "available": True,
         "doc_info": doc_info,
-        "risk_top3": [],
-        "moat": {},
-        "management_tone": "不明",
-        "rd_focus": [],
-        "management_challenges": "",
-        "summary": "",
+        "risk_top3": analysis_result.get("risk_top3", []),
+        "moat": analysis_result.get("moat", {
+            "type": "データなし", "source": "", "durability": "", "description": ""
+        }),
+        "management_tone": analysis_result.get("management_tone", {
+            "overall": "データなし", "key_phrases": [], "detail": ""
+        }),
+        "rd_focus": analysis_result.get("rd_focus", []),
+        "management_challenges": analysis_result.get("management_challenges", ""),
+        "summary": analysis_result.get("summary", ""),
+        # 必要に応じて生テキストの冒頭/重要部分を渡すことも可能だが、サイズに注意
+        "raw_text": raw_text_extract[:10000] if raw_text_extract else ""
     }
 
 
