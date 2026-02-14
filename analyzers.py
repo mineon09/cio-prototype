@@ -26,43 +26,63 @@ SCORING_CFG = _CFG.get("scoring", {
 })
 
 # セクター別スコアリングプロファイル
+_DEFAULT_WEIGHTS = {"fundamental": 0.30, "valuation": 0.25, "technical": 0.20, "qualitative": 0.25}
 SECTOR_PROFILES = _CFG.get("sector_profiles", {
     "high_growth": {
-        "sectors": ["Technology", "Communication Services", "Healthcare"],
-        "fundamental": {"roe_good": 15, "op_margin_good": 20, "equity_ratio_good": 30},
-        "valuation":   {"per_cheap": 25, "pbr_cheap": 3.0},
+        "sectors": ["Technology", "Communication Services"],
+        "weights":      {"fundamental": 0.20, "valuation": 0.25, "technical": 0.25, "qualitative": 0.30},
+        "fundamental":  {"roe_good": 15, "op_margin_good": 20, "equity_ratio_good": 30, "rd_weight": 1.5},
+        "valuation":    {"per_cheap": 30, "pbr_cheap": 4.0},
+        "technical":    {"rsi_oversold": 25, "rsi_overbought": 75},
+    },
+    "healthcare": {
+        "sectors": ["Healthcare"],
+        "weights":      {"fundamental": 0.25, "valuation": 0.20, "technical": 0.20, "qualitative": 0.35},
+        "fundamental":  {"roe_good": 12, "op_margin_good": 18, "equity_ratio_good": 35, "rd_weight": 2.0},
+        "valuation":    {"per_cheap": 25, "pbr_cheap": 3.0},
+        "technical":    {"rsi_oversold": 28, "rsi_overbought": 72},
     },
     "value": {
         "sectors": ["Industrials", "Consumer Defensive", "Utilities", "Basic Materials",
                     "Energy", "Consumer Cyclical", "Real Estate"],
-        "fundamental": {"roe_good": 8, "op_margin_good": 10, "equity_ratio_good": 40},
-        "valuation":   {"per_cheap": 12, "pbr_cheap": 1.0},
+        "weights":      {"fundamental": 0.35, "valuation": 0.30, "technical": 0.20, "qualitative": 0.15},
+        "fundamental":  {"roe_good": 8, "op_margin_good": 10, "equity_ratio_good": 40, "rd_weight": 0.5},
+        "valuation":    {"per_cheap": 12, "pbr_cheap": 1.0},
+        "technical":    {"rsi_oversold": 30, "rsi_overbought": 70},
     },
     "financial": {
         "sectors": ["Financial Services", "Financial"],
-        "fundamental": {"roe_good": 8, "op_margin_good": 25, "equity_ratio_good": 8},
-        "valuation":   {"per_cheap": 10, "pbr_cheap": 0.8},
+        "weights":      {"fundamental": 0.35, "valuation": 0.30, "technical": 0.20, "qualitative": 0.15},
+        "fundamental":  {"roe_good": 8, "op_margin_good": 25, "equity_ratio_good": 8, "rd_weight": 0.0},
+        "valuation":    {"per_cheap": 10, "pbr_cheap": 0.8},
+        "technical":    {"rsi_oversold": 30, "rsi_overbought": 70},
     },
 })
 
 
-def resolve_sector_profile(sector: str) -> tuple[str, dict, dict]:
+def resolve_sector_profile(sector: str) -> tuple:
     """
     yfinanceの sector 文字列から適切なスコアリングプロファイルを選択。
-    Returns: (profile_name, fundamental_cfg, valuation_cfg)
+    Returns: (profile_name, fundamental_cfg, valuation_cfg, technical_cfg, weights)
     """
+    default_fund = SCORING_CFG.get("fundamental", {})
+    default_valu = SCORING_CFG.get("valuation", {})
+    default_tech = SCORING_CFG.get("technical", {})
+
     if not sector:
-        return "default", SCORING_CFG.get("fundamental", {}), SCORING_CFG.get("valuation", {})
+        return "default", default_fund, default_valu, default_tech, dict(_DEFAULT_WEIGHTS)
 
     for profile_name, profile in SECTOR_PROFILES.items():
         if sector in profile.get("sectors", []):
             return (
                 profile_name,
-                profile.get("fundamental", SCORING_CFG.get("fundamental", {})),
-                profile.get("valuation", SCORING_CFG.get("valuation", {})),
+                profile.get("fundamental", default_fund),
+                profile.get("valuation", default_valu),
+                profile.get("technical", default_tech),
+                profile.get("weights", dict(_DEFAULT_WEIGHTS)),
             )
 
-    return "default", SCORING_CFG.get("fundamental", {}), SCORING_CFG.get("valuation", {})
+    return "default", default_fund, default_valu, default_tech, dict(_DEFAULT_WEIGHTS)
 
 
 def _safe(v, default=None):
@@ -89,11 +109,12 @@ def _clamp(score: float) -> float:
 def score_fundamental(metrics: dict, sector: str = "") -> dict:
     """
     ROE, 営業利益率, 自己資本比率, CF品質, R&D比率 から地力スコアを算出。
-    sectorに応じた閾値を自動選択。
+    sectorに応じた閾値・R&D重みを自動選択。
     """
-    profile_name, cfg, _ = resolve_sector_profile(sector)
+    profile_name, cfg, _, _, _ = resolve_sector_profile(sector)
     if not cfg:
         cfg = SCORING_CFG.get("fundamental", {})
+    rd_weight = cfg.get("rd_weight", 1.0)  # セクター別 R&D 重み
     parts = []
     total = 0.0
     count = 0
@@ -179,9 +200,9 @@ def score_fundamental(metrics: dict, sector: str = "") -> dict:
         total += _clamp(s)
         count += 1
 
-    # R&D 比率（高いほど将来投資）
+    # R&D 比率（高いほど将来投資、セクター別重み付き）
     rd = _safe(metrics.get('rd_ratio'))
-    if rd is not None and rd > 0:
+    if rd is not None and rd > 0 and rd_weight > 0:
         if rd >= 15:
             s = 9
             parts.append(f"R&D比率 {rd}% — 積極的な将来投資")
@@ -194,8 +215,11 @@ def score_fundamental(metrics: dict, sector: str = "") -> dict:
         else:
             s = 3
             parts.append(f"R&D比率 {rd}% — 低い研究投資")
-        total += _clamp(s)
-        count += 1
+        # rd_weight でスコアへの寄与度を調整
+        total += _clamp(s) * rd_weight
+        count += rd_weight  # 重み付きカウント
+        if rd_weight != 1.0:
+            parts[-1] += f" (重み×{rd_weight})"
 
     score = _clamp(total / max(count, 1))
     if sector:
@@ -213,12 +237,12 @@ def score_fundamental(metrics: dict, sector: str = "") -> dict:
 # ==========================================
 
 def score_valuation(metrics: dict, technical: dict = None, sector: str = "",
-                    dcf_data: dict = None) -> dict:
+                    dcf_data: dict = None):
     """
     PER, PBR, 配当利回り, アナリスト目標価格との乖離, DCF理論株価から割安度を算出。
     sectorに応じた閾値を自動選択。
     """
-    profile_name, _, cfg = resolve_sector_profile(sector)
+    profile_name, _, cfg, _, _ = resolve_sector_profile(sector)
     if not cfg:
         cfg = SCORING_CFG.get("valuation", {})
     parts = []
@@ -341,12 +365,14 @@ def score_valuation(metrics: dict, technical: dict = None, sector: str = "",
 # Layer 3: Technical（タイミング）
 # ==========================================
 
-def score_technical(technical: dict) -> dict:
+def score_technical(technical: dict, sector: str = "") -> dict:
     """
     RSI, MA乖離率, ボリンジャーバンド位置, ボラティリティ, 出来高比率から
     エントリータイミングスコアを算出。
+    sectorに応じたRSI閾値を自動選択。
     """
-    cfg   = SCORING_CFG.get("technical", {})
+    _, _, _, tech_cfg, _ = resolve_sector_profile(sector)
+    cfg = tech_cfg if tech_cfg else SCORING_CFG.get("technical", {})
     parts = []
     total = 0.0
     count = 0
@@ -594,22 +620,19 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
     """
     fund = score_fundamental(metrics, sector=sector)
     valu = score_valuation(metrics, technical, sector=sector, dcf_data=dcf_data)
-    tech = score_technical(technical)
+    tech = score_technical(technical, sector=sector)
     qual = score_qualitative(yuho_data)
 
-    # 重み付き平均（地力30%, 割安度25%, テクニカル20%, 定性25%）
-    weights = {
-        "fundamental": 0.30,
-        "valuation":   0.25,
-        "technical":   0.20,
-        "qualitative": 0.25,
-    }
+    # セクター別ベースウェイトを取得
+    _, _, _, _, sector_weights = resolve_sector_profile(sector)
+    weights = dict(sector_weights)
 
-    # 有報データがない場合は定性分析の重みを地力に移す
+    # 有報データがない場合は定性分析の重みを他に再配分
     if not yuho_data or not yuho_data.get("available"):
-        weights["fundamental"] = 0.40
-        weights["valuation"]   = 0.30
-        weights["technical"]   = 0.30
+        q_share = weights.get("qualitative", 0.25)
+        weights["fundamental"] += q_share * 0.4
+        weights["valuation"]   += q_share * 0.3
+        weights["technical"]   += q_share * 0.3
         weights["qualitative"] = 0.00
 
     # マクロ環境による重み補正

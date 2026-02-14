@@ -53,17 +53,52 @@
     "high_growth": {
       "sectors": [
         "Technology",
-        "Communication Services",
-        "Healthcare"
+        "Communication Services"
       ],
+      "weights": {
+        "fundamental": 0.20,
+        "valuation": 0.25,
+        "technical": 0.25,
+        "qualitative": 0.30
+      },
       "fundamental": {
         "roe_good": 15,
         "op_margin_good": 20,
-        "equity_ratio_good": 30
+        "equity_ratio_good": 30,
+        "rd_weight": 1.5
+      },
+      "valuation": {
+        "per_cheap": 30,
+        "pbr_cheap": 4.0
+      },
+      "technical": {
+        "rsi_oversold": 25,
+        "rsi_overbought": 75
+      }
+    },
+    "healthcare": {
+      "sectors": [
+        "Healthcare"
+      ],
+      "weights": {
+        "fundamental": 0.25,
+        "valuation": 0.20,
+        "technical": 0.20,
+        "qualitative": 0.35
+      },
+      "fundamental": {
+        "roe_good": 12,
+        "op_margin_good": 18,
+        "equity_ratio_good": 35,
+        "rd_weight": 2.0
       },
       "valuation": {
         "per_cheap": 25,
         "pbr_cheap": 3.0
+      },
+      "technical": {
+        "rsi_oversold": 28,
+        "rsi_overbought": 72
       }
     },
     "value": {
@@ -76,14 +111,25 @@
         "Consumer Cyclical",
         "Real Estate"
       ],
+      "weights": {
+        "fundamental": 0.35,
+        "valuation": 0.30,
+        "technical": 0.20,
+        "qualitative": 0.15
+      },
       "fundamental": {
         "roe_good": 8,
         "op_margin_good": 10,
-        "equity_ratio_good": 40
+        "equity_ratio_good": 40,
+        "rd_weight": 0.5
       },
       "valuation": {
         "per_cheap": 12,
         "pbr_cheap": 1.0
+      },
+      "technical": {
+        "rsi_oversold": 30,
+        "rsi_overbought": 70
       }
     },
     "financial": {
@@ -91,14 +137,25 @@
         "Financial Services",
         "Financial"
       ],
+      "weights": {
+        "fundamental": 0.35,
+        "valuation": 0.30,
+        "technical": 0.20,
+        "qualitative": 0.15
+      },
       "fundamental": {
         "roe_good": 8,
         "op_margin_good": 25,
-        "equity_ratio_good": 8
+        "equity_ratio_good": 8,
+        "rd_weight": 0.0
       },
       "valuation": {
         "per_cheap": 10,
         "pbr_cheap": 0.8
+      },
+      "technical": {
+        "rsi_oversold": 30,
+        "rsi_overbought": 70
       }
     }
   }
