@@ -264,6 +264,11 @@ if run_analysis and ticker_input:
 view_ticker = st.session_state.get("view_ticker")
 
 if view_ticker and view_ticker in results:
+    # 戻るボタン (サイドバー)
+    if st.sidebar.button("🔙 一覧に戻る", key="back_to_list_side", type="secondary"):
+        del st.session_state["view_ticker"]
+        st.rerun()
+
     raw = results[view_ticker]
     data = get_latest(raw)
     scores = data.get("scores", {})

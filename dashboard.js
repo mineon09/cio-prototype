@@ -319,6 +319,14 @@ function toggleCompare() {
     if (compareMode) renderCompareTable();
 }
 
+function showListView() {
+    compareMode = true;
+    document.getElementById('btn-compare').classList.add('active');
+    document.getElementById('single-view').style.display = 'none';
+    document.getElementById('compare-view').style.display = 'block';
+    renderCompareTable();
+}
+
 function renderCompareTable() {
     const table = document.getElementById('compare-table');
     const thead = table.querySelector('thead');
