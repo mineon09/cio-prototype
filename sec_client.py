@@ -133,12 +133,38 @@ def _download_filing_text(filing: dict, max_chars: int = 80000) -> str | None:
 
 
 def _analyze_with_gemini(filing_text: str, ticker: str, form_type: str) -> dict:
-    """Gemini で 10-K/10-Q テキストを解析し、構造化データを生成する"""
-    prompt = f"""
-あなたは米国株の証券アナリストです。以下は {ticker} の {form_type} レポートからの抜粋です。
-このテキストを分析して、以下のJSON形式で情報を構造化してください。
+    """
+    2段階パイプラインで 10-K/10-Q を解析する。
+    Stage 1 (Flash): 生テキスト → 要約（トークン圧縮）
+    Stage 2 (Pro):   要約 → 構造化JSON
+    """
+    # ── Stage 1: Flash で要約（40K → ~3K chars） ──
+    summarize_prompt = f"""
+以下は {ticker} の {form_type} レポートからの抜粋です。
+証券アナリストの視点で、投資判断に重要な情報を日本語で簡潔に要約してください。
+
+【要約対象】
+- 主要リスク（上位3つ）
+- 競争優位性（堀：ブランド/特許/ネットワーク効果等）
+- R&D注力分野
+- 経営陣のトーン（強気/慎重など）
 
 {filing_text[:40000]}
+
+3000文字以内で要約してください。
+"""
+    print(f"  ⚡ [SEC] Flash で {form_type} を要約中...")
+    summary = call_gemini(summarize_prompt, model="flash")
+    if not summary:
+        print(f"  ⚠️ Flash 要約失敗、直接 Pro で解析します")
+        summary = filing_text[:15000]
+
+    # ── Stage 2: Pro で構造化分析 ──
+    analysis_prompt = f"""
+あなたは米国株の証券アナリストです。以下は {ticker} の {form_type} レポートの要約です。
+この要約を分析して、以下のJSON形式で情報を構造化してください。
+
+{summary}
 
 【出力JSON形式（厳守）】
 {{
@@ -166,23 +192,20 @@ def _analyze_with_gemini(filing_text: str, ticker: str, form_type: str) -> dict:
 
 JSONのみ返答してください。
 """
-    print(f"  🤖 [SEC] Gemini で {form_type} を解析中...")
-    result = call_gemini(prompt, parse_json=True)
+    print(f"  🧠 [SEC] Pro で構造化分析中...")
+    result = call_gemini(analysis_prompt, parse_json=True, model="pro")
     if not result:
         return {}
     
     # データ形式の正規化（analyzers.py が期待する形式に合わせる）
-    # management_tone が文字列の場合は dict に変換
     mt = result.get("management_tone", {})
     if isinstance(mt, str):
         result["management_tone"] = {"overall": mt, "detail": "", "key_phrases": []}
     
-    # rd_focus が文字列の場合は list に変換
     rd = result.get("rd_focus", [])
     if isinstance(rd, str):
         result["rd_focus"] = [{"area": rd, "detail": ""}]
     
-    # moat が文字列の場合は dict に変換
     moat = result.get("moat", {})
     if isinstance(moat, str):
         result["moat"] = {"type": moat, "durability": "中", "source": "", "description": ""}

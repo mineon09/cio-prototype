@@ -76,14 +76,28 @@ def short_name(name: str) -> str:
 # Gemini API（429自動リトライ）
 # ==========================================
 
-def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5):
+def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
+                model: str = "flash"):
+    """
+    Gemini API を呼び出す。
+
+    Args:
+        model: "flash" (高速・低コスト), "pro" (高精度・高コスト),
+               または直接モデル名を指定
+    """
     if not GEMINI_API_KEY or "your_gemini" in GEMINI_API_KEY:
         print("❌ Gemini エラー: API キーが設定されていないか、プレースホルダーのままです。")
         print("   .env ファイルの GEMINI_API_KEY を設定してください。")
         return None
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-    model_name = 'gemini-3-flash-preview'
+
+    # モデル名の解決
+    MODEL_MAP = {
+        "flash": "gemini-3-flash-preview",
+        "pro":   "gemini-2.5-pro-preview-06-05",
+    }
+    model_name = MODEL_MAP.get(model, model)
     
     for attempt in range(max_retries):
         try:
