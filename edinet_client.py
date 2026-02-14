@@ -21,8 +21,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-EDINET_API_KEY = os.environ.get('EDINET_API_KEY')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+def _get_edinet_key():
+    return os.environ.get('EDINET_API_KEY', '')
 
 EDINET_BASE_URL = "https://api.edinet-fsa.go.jp/api/v2"
 
@@ -60,11 +60,11 @@ def _download_edinet_code_list() -> bool:
     EDINET API v2 からEDINETコードリスト（ZIP→CSV）をダウンロードしてキャッシュ。
     エンドポイント: GET /api/v2/EdinetcodeDlInfo.json?type=2
     """
-    if not EDINET_API_KEY:
+    if not _get_edinet_key():
         return False
 
     url = f"{EDINET_BASE_URL}/EdinetcodeDlInfo.json"
-    params = {"type": 2, "Subscription-Key": EDINET_API_KEY}
+    params = {"type": 2, "Subscription-Key": _get_edinet_key()}
 
     session = requests.Session()
     session.max_redirects = 5  # リダイレクトループ防止
@@ -133,7 +133,7 @@ def _get_edinet_metadata(target_date: str) -> list:
     params = {
         "date": target_date,
         "type": 2,  # メタデータ付き
-        "Subscription-Key": EDINET_API_KEY,
+        "Subscription-Key": _get_edinet_key(),
     }
 
     for attempt in range(2):
@@ -263,7 +263,7 @@ def find_latest_yuho(sec_code: str, search_days: int | None = None) -> dict | No
       3. 検索範囲はデフォルト400日（年次有報の年1回発行に対応）
       4. 土日はEDINETに提出がないためスキップ（API呼び出し約30%削減）
     """
-    if not EDINET_API_KEY:
+    if not _get_edinet_key():
         print("  ⚠️ EDINET_API_KEY 未設定 — 有報取得をスキップ")
         return None
 
@@ -334,13 +334,14 @@ def find_latest_yuho(sec_code: str, search_days: int | None = None) -> dict | No
 
 def download_yuho_pdf(doc_id: str) -> bytes | None:
     """指定 docID の有報を PDF 形式でダウンロードし、バイナリを返す。"""
-    if not EDINET_API_KEY or not doc_id:
+    if not _get_edinet_key() or not doc_id:
+        title = "doc_id不明"
         return None
 
     url = f"{EDINET_BASE_URL}/documents/{doc_id}"
     params = {
-        "type": 2,  # PDF
-        "Subscription-Key": EDINET_API_KEY,
+        "type": 2,  # 2=PDF
+        "Subscription-Key": _get_edinet_key(),
     }
 
     try:
@@ -375,7 +376,7 @@ def extract_yuho_data(ticker: str) -> dict:
     if not is_japanese_stock(ticker):
         return {"available": False, "reason": "非日本株のためEDINET対象外"}
 
-    if not EDINET_API_KEY:
+    if not _get_edinet_key():
         return {"available": False, "reason": "EDINET_API_KEY未設定"}
 
     sec_code = ticker_to_sec_code(ticker)
@@ -431,11 +432,10 @@ if __name__ == "__main__":
         print(f"  {status} is_japanese_stock('{ticker}') = {result}")
 
     # テスト 3: API キー確認
-    print(f"\n  EDINET_API_KEY: {'設定済み' if EDINET_API_KEY else '未設定'}")
-    print(f"  GEMINI_API_KEY: {'設定済み' if GEMINI_API_KEY else '未設定'}")
+    print(f"\n  EDINET_API_KEY: {'設定済み' if _get_edinet_key() else '未設定'}")
 
     # テスト 4: EDINETコードマッピング
-    if EDINET_API_KEY:
+    if _get_edinet_key():
         code_map = _load_edinet_code_map()
         toyota_code = get_edinet_code("72030")
         print(f"\n  EDINETコードマッピング: {len(code_map)}社読込")
@@ -447,7 +447,7 @@ if __name__ == "__main__":
     print(f"  extract_yuho_data('AAPL') => available={result.get('available')}, "
           f"reason={result.get('reason')}")
 
-    if not EDINET_API_KEY:
+    if not _get_edinet_key():
         result = extract_yuho_data("7203.T")
         print(f"  extract_yuho_data('7203.T') => available={result.get('available')}, "
               f"reason={result.get('reason')}")

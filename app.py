@@ -194,6 +194,11 @@ with st.sidebar:
 # Run Analysis
 # ============================================================
 if run_analysis and ticker_input:
+    # バリデーション: 英数字、ドット(.)、ハイフン(-)、スペースのみ許可
+    if not re.match(r'^[A-Za-z0-9\.\-\s]+$', ticker_input):
+        st.error("⚠️ 無効な文字が含まれています。英数字、ドット(.)、ハイフン(-) のみ使用可能です。")
+        st.stop()
+    
     ticker = ticker_input.strip().upper()
     st.session_state["view_ticker"] = ticker
 
