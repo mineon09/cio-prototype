@@ -19,8 +19,20 @@ API呼び出し: 最大3回
   python main.py --ticker AMAT
 """
 
-import os, sys, re, json, time
+import os, sys, re, json, time, io
 from datetime import datetime
+
+# Windows cp932 環境での絵文字出力エラーを防止（標準ストリームの場合のみ）
+if hasattr(sys.stdout, 'buffer') and sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'buffer') and sys.stderr.encoding != 'utf-8':
+    try:
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 from dotenv import load_dotenv
 
 # 環境変数を先にロード（モジュールが import 時に参照するため）
@@ -61,7 +73,6 @@ except ImportError:
     def detect_regime(): return {}
 
 
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 try:
     with open("config.json", encoding="utf-8") as f:
@@ -128,8 +139,12 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
     currency  = target.get('currency', 'USD')
 
     yuho_text = format_yuho_for_prompt(yuho_data) if yuho_data else ""
-    if len(yuho_text) > 4000:
-        yuho_text = yuho_text[:4000] + "\n...(有報/10-Kデータを一部省略)"
+    # SEC生テキストがある場合はプロンプトに含める
+    raw_text = yuho_data.get('raw_text', '') if yuho_data else ''
+    if raw_text:
+        yuho_text = (yuho_text + "\n\n【10-K/10-Q 原文抜粋】\n" + raw_text)[:6000]
+    if len(yuho_text) > 6000:
+        yuho_text = yuho_text[:6000] + "\n...(有報/10-Kデータを一部省略)"
     yuho_section = f"\n{yuho_text}\n" if yuho_text else "\n【有価証券報告書/10-K】対象外または未取得\n"
 
     scorecard_text = scorecard.get('summary_text', '') if scorecard else ''
@@ -145,8 +160,7 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
 📋 定性スコア: X/10 [根拠2行]
 """
 
-    api_label = "[API 3/3]" if yuho_text else "[API 2/2]"
-    print(f"🚀 {api_label} 全分析を一括生成中...")
+    print(f"🚀 [API 1/1] 全分析を一括生成中...")
     prompt = f"""
 あなたは外資系ヘッジファンドのCIOです。
 以下のデータをすべて使い、投資レポートを1つのレスポンスで完成させてください。
@@ -427,7 +441,7 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
 
 
 def main():
-    if not GEMINI_API_KEY:
+    if not os.environ.get('GEMINI_API_KEY'):
         print("❌ GEMINI_API_KEY が未設定")
         sys.exit(1)
 

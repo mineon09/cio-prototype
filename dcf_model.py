@@ -129,7 +129,7 @@ def _dcf_valuation(fcf_latest: float, growth_rate: float, wacc: float,
 
 
 def _get_growth_scenarios(ticker: str, fcf_history: list) -> dict:
-    """Geminiに成長率シナリオを予測させる"""
+    """過去FCF成長率から機械的に3シナリオを算出する（API不使用）"""
     if not fcf_history or len(fcf_history) < 2:
         return {"bull": 15, "base": 8, "bear": 2}
 
@@ -140,29 +140,6 @@ def _get_growth_scenarios(ticker: str, fcf_history: list) -> dict:
             g = (fcf_history[i] - fcf_history[i+1]) / abs(fcf_history[i+1]) * 100
             growths.append(round(g, 1))
 
-    prompt = f"""
-あなたは株式アナリストです。以下のフリーキャッシュフロー履歴から、今後5年間の年間FCF成長率を予測してください。
-
-銘柄: {ticker}
-FCF履歴（直近→過去）: {[f"${fcf/1e9:.1f}B" for fcf in fcf_history]}
-過去の成長率: {growths}
-
-JSON で3つのシナリオを返してください:
-{{"bull": 楽観成長率(%), "base": 基本成長率(%), "bear": 悲観成長率(%)}}
-
-JSONのみ返答。
-"""
-    result = call_gemini(prompt, parse_json=True)
-    if result and isinstance(result, dict):
-        try:
-            return {
-                "bull": min(float(result.get("bull", 15)), 30),
-                "base": min(float(result.get("base", 8)), 20),
-                "bear": max(float(result.get("bear", 2)), -5),
-            }
-        except (TypeError, ValueError):
-            pass
-    # フォールバック
     avg_growth = sum(growths) / len(growths) if growths else 8
     return {
         "bull": round(min(avg_growth * 1.5, 25), 1),

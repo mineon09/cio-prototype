@@ -358,120 +358,8 @@ def download_yuho_pdf(doc_id: str) -> bytes | None:
 
 
 # ==========================================
-# Gemini による有報テキスト解析
+# 有報データ（AI解析は最終レポートで一括）
 # ==========================================
-
-def analyze_yuho_with_gemini(pdf_bytes: bytes, company_name: str) -> dict:
-    """
-    2段階パイプラインで有報を解析する。
-    Stage 1 (Flash): PDF → 要約テキスト（トークン圧縮）
-    Stage 2 (Pro):   要約テキスト → 構造化JSON
-    """
-    if not GEMINI_API_KEY or not pdf_bytes:
-        return {}
-
-    try:
-        from google import genai
-
-        client = genai.Client(api_key=GEMINI_API_KEY)
-
-        # PDF を Gemini にアップロード
-        uploaded_file = client.files.upload(
-            file=pdf_bytes,
-            config={
-                "display_name": f"{company_name}_yuho.pdf",
-                "mime_type": "application/pdf",
-            }
-        )
-
-        target_sections = EDINET_CFG.get("target_sections", [
-            "事業等のリスク",
-            "経営方針、経営環境及び対処すべき課題等",
-            "研究開発活動",
-        ])
-        sections_str = "」「".join(target_sections)
-
-        # ── Stage 1: Flash で PDF を要約 ──
-        summarize_prompt = f"""
-添付された有価証券報告書（{company_name}）を読み、投資判断に重要な情報を要約してください。
-
-【重点セクション】「{sections_str}」
-
-【要約項目】
-1. 主要リスク上位3つ（リスク名、深刻度、具体的内容を含めて）
-2. 競争優位性（堀）の種類と源泉（特許件数、顧客数など数値を含めて）
-3. 経営陣のトーン（リスク説明が防御的か攻めかを分析）
-4. R&D注力分野
-5. 経営陣が認識する最重要課題
-
-3000文字以内の日本語で要約してください。数値や固有名詞は省略せず含めてください。
-"""
-        print(f"  ⚡ Flash で有報要約中...")
-        res = client.models.generate_content(
-            model='gemini-2.5-flash-preview-05-20',
-            contents=[uploaded_file, summarize_prompt],
-        )
-        summary = res.text
-
-        if not summary or len(summary) < 100:
-            print(f"  ⚠️ Flash 要約失敗")
-            return {}
-
-        print(f"  ✅ Flash 要約完了 ({len(summary):,}文字)")
-
-        # ── Stage 2: Pro で構造化分析 ──
-        analysis_prompt = f"""
-あなたはモルガン・スタンレーのシニア証券アナリストです。
-以下は {company_name} の有価証券報告書の要約です。
-この要約から以下のJSON形式で情報を構造化してください。
-
-{summary}
-
-【出力形式（JSON厳守）】
-{{
-  "risk_top3": [
-    {{"risk": "リスク名", "detail": "具体的内容（1-2文）", "severity": "高/中/低"}},
-    {{"risk": "リスク名", "detail": "具体的内容（1-2文）", "severity": "高/中/低"}},
-    {{"risk": "リスク名", "detail": "具体的内容（1-2文）", "severity": "高/中/低"}}
-  ],
-  "moat": {{
-    "type": "ブランド/特許/技術/ネットワーク効果/コスト優位/スイッチングコスト/規制障壁",
-    "source": "堀の源泉となる具体的な資産・能力（数値を含めて）",
-    "description": "競争優位性の具体的説明（2-3文）",
-    "durability": "高/中/低"
-  }},
-  "management_tone": {{
-    "overall": "強気/中立/慎重/弱気",
-    "detail": "経営陣の姿勢の根拠（2-3文）",
-    "key_phrases": ["注目すべきキーフレーズ（最大3つ）"]
-  }},
-  "rd_focus": [
-    {{"area": "研究分野", "detail": "具体的内容（1文）"}}
-  ],
-  "management_challenges": "経営陣が認識する最重要課題（2-3文）",
-  "summary": "投資判断上の重要ポイント（3-4文）"
-}}
-
-【注意】
-- 要約に記載がない項目は推測せず "データなし" と記載すること
-- JSONのみを返答すること
-"""
-
-        from data_fetcher import call_gemini
-        print(f"  🧠 Pro で構造化分析中...")
-        result = call_gemini(analysis_prompt, parse_json=True, model="pro")
-
-        if result:
-            print(f"  ✅ 有報解析完了 — リスク{len(result.get('risk_top3', []))}件抽出"
-                  f", トーン: {result.get('management_tone', {}).get('overall', '?')}")
-            return result
-        else:
-            print(f"  ⚠️ Pro 解析失敗")
-            return {"summary": summary[:500]}
-
-    except Exception as e:
-        print(f"  ⚠️ 有報 Gemini 解析エラー: {e}")
-        return {}
 
 
 # ==========================================
@@ -481,20 +369,8 @@ def analyze_yuho_with_gemini(pdf_bytes: bytes, company_name: str) -> dict:
 def extract_yuho_data(ticker: str) -> dict:
     """
     メインフローから呼ばれるエントリーポイント。
-    日本株ティッカーから有報を取得・解析し、構造化データを返す。
+    日本株ティッカーから有報メタデータを取得する（AI解析は最終レポートで一括）。
     非日本株やエラー時は空辞書を返す。
-
-    Returns:
-        dict: {
-            "available": bool,
-            "doc_info": {...},          # EDINET メタデータ
-            "risk_top3": [...],          # 経営リスクTOP3
-            "moat": {...},               # 競争優位性（堀）
-            "management_tone": {...},    # 経営陣のトーン分析
-            "rd_focus": [...],           # R&D 注力分野
-            "management_challenges": str,
-            "summary": str,
-        }
     """
     if not is_japanese_stock(ticker):
         return {"available": False, "reason": "非日本株のためEDINET対象外"}
@@ -513,30 +389,18 @@ def extract_yuho_data(ticker: str) -> dict:
     if not doc_info:
         return {"available": False, "reason": "有報が見つからない"}
 
-    # Step 2: PDF をダウンロード
-    pdf_bytes = download_yuho_pdf(doc_info["doc_id"])
-    if not pdf_bytes:
-        return {
-            "available": False,
-            "reason": "PDFダウンロード失敗",
-            "doc_info": doc_info,
-        }
-
-    # Step 3: Gemini で解析
-    company_name = doc_info.get("filer_name", ticker)
-    analysis = analyze_yuho_with_gemini(pdf_bytes, company_name)
-
-    if not analysis:
-        return {
-            "available": False,
-            "reason": "Gemini解析失敗",
-            "doc_info": doc_info,
-        }
+    # PDF の有無だけ確認（AI解析は最終レポートで一括）
+    print(f"  ✅ 有報メタデータ取得成功: {doc_info.get('filer_name', '不明')}")
 
     return {
         "available": True,
         "doc_info": doc_info,
-        **analysis,
+        "risk_top3": [],
+        "moat": {},
+        "management_tone": "不明",
+        "rd_focus": [],
+        "management_challenges": "",
+        "summary": "",
     }
 
 

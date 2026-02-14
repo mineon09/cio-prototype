@@ -132,91 +132,10 @@ def _download_filing_text(filing: dict, max_chars: int = 80000) -> str | None:
         return None
 
 
-def _analyze_with_gemini(filing_text: str, ticker: str, form_type: str) -> dict:
-    """
-    2段階パイプラインで 10-K/10-Q を解析する。
-    Stage 1 (Flash): 生テキスト → 要約（トークン圧縮）
-    Stage 2 (Pro):   要約 → 構造化JSON
-    """
-    # ── Stage 1: Flash で要約（40K → ~3K chars） ──
-    summarize_prompt = f"""
-以下は {ticker} の {form_type} レポートからの抜粋です。
-証券アナリストの視点で、投資判断に重要な情報を日本語で簡潔に要約してください。
-
-【要約対象】
-- 主要リスク（上位3つ）
-- 競争優位性（堀：ブランド/特許/ネットワーク効果等）
-- R&D注力分野
-- 経営陣のトーン（強気/慎重など）
-
-{filing_text[:40000]}
-
-3000文字以内で要約してください。
-"""
-    print(f"  ⚡ [SEC] Flash で {form_type} を要約中...")
-    summary = call_gemini(summarize_prompt, model="flash")
-    if not summary:
-        print(f"  ⚠️ Flash 要約失敗、直接 Pro で解析します")
-        summary = filing_text[:15000]
-
-    # ── Stage 2: Pro で構造化分析 ──
-    analysis_prompt = f"""
-あなたは米国株の証券アナリストです。以下は {ticker} の {form_type} レポートの要約です。
-この要約を分析して、以下のJSON形式で情報を構造化してください。
-
-{summary}
-
-【出力JSON形式（厳守）】
-{{
-  "risk_top3": [
-    {{"risk": "リスク名（日本語）", "detail": "影響と具体的な根拠（日本語）", "severity": "高/中/低"}},
-    {{"risk": "リスク名", "detail": "影響", "severity": "高/中/低"}},
-    {{"risk": "リスク名", "detail": "影響", "severity": "高/中/低"}}
-  ],
-  "moat": {{
-    "type": "堀の種類（日本語: ブランド力 / ネットワーク効果 / コスト優位性 / スイッチングコスト / 特許・知的財産 / 規模の経済性）",
-    "durability": "高/中/低",
-    "source": "堀の源泉（日本語）",
-    "description": "堀の根拠（日本語、具体的に）"
-  }},
-  "rd_focus": [
-    {{"area": "R&D注力分野1（日本語）", "detail": "詳細"}},
-    {{"area": "R&D注力分野2（日本語）", "detail": "詳細"}}
-  ],
-  "management_tone": {{
-    "overall": "強気/中立/慎重/弱気",
-    "detail": "経営陣のトーンの根拠（日本語）",
-    "key_phrases": ["キーフレーズ1", "キーフレーズ2"]
-  }}
-}}
-
-JSONのみ返答してください。
-"""
-    print(f"  🧠 [SEC] Pro で構造化分析中...")
-    result = call_gemini(analysis_prompt, parse_json=True, model="pro")
-    if not result:
-        return {}
-    
-    # データ形式の正規化（analyzers.py が期待する形式に合わせる）
-    mt = result.get("management_tone", {})
-    if isinstance(mt, str):
-        result["management_tone"] = {"overall": mt, "detail": "", "key_phrases": []}
-    
-    rd = result.get("rd_focus", [])
-    if isinstance(rd, str):
-        result["rd_focus"] = [{"area": rd, "detail": ""}]
-    
-    moat = result.get("moat", {})
-    if isinstance(moat, str):
-        result["moat"] = {"type": moat, "durability": "中", "source": "", "description": ""}
-    
-    return result
-
-
 def extract_sec_data(ticker: str) -> dict:
     """
-    米国株の SEC 10-K / 10-Q を取得・解析し、
-    EDINET の yuho_data と同じ形式で返す。
+    米国株の SEC 10-K / 10-Q を取得し、
+    生テキストを返す（AI解析は最終レポート生成時に一括で行う）。
     """
     print(f"  🔍 SEC EDGAR で {ticker} を検索中...")
 
@@ -252,17 +171,16 @@ def extract_sec_data(ticker: str) -> dict:
 
     print(f"  📝 テキスト取得: {len(text):,} 文字")
 
-    # Gemini で解析
-    analysis = _analyze_with_gemini(text, ticker, form_type)
-
+    # 生テキストをそのまま返す（AI解析は最終レポートで一括）
     return {
         "available": True,
         "source": f"SEC EDGAR {form_type}",
         "filing_date": filing['date'],
-        "risk_top3": analysis.get("risk_top3", []),
-        "moat": analysis.get("moat", {}),
-        "rd_focus": analysis.get("rd_focus", ""),
-        "management_tone": analysis.get("management_tone", "不明"),
+        "raw_text": text[:8000],  # 最終プロンプトに詰める分量に制限
+        "risk_top3": [],
+        "moat": {},
+        "rd_focus": "",
+        "management_tone": "不明",
     }
 
 

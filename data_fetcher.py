@@ -9,8 +9,12 @@ import yfinance as yf
 from datetime import datetime, timedelta
 from google import genai
 
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+# APIキーは関数呼び出し時に毎回取得（Streamlit等での遅延ロードに対応）
+def _get_gemini_key():
+    return os.environ.get('GEMINI_API_KEY', '')
+
+def _get_groq_key():
+    return os.environ.get('GROQ_API_KEY', '')
 
 from groq import Groq
 
@@ -22,11 +26,11 @@ def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b
     Groq API (Llama 3) を呼び出す。
     Gemini の代替として使用。
     """
-    if not GROQ_API_KEY:
+    if not _get_groq_key():
         print("❌ Groq エラー: API キーが設定されていません。")
         return None
 
-    client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(api_key=_get_groq_key())
     
     try:
         print(f"  🚀 Groq ({model}) に切り替えて実行中...")
@@ -37,7 +41,7 @@ def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=4096,
+            max_tokens=8192,
             top_p=1,
             stream=False,
             response_format={"type": "json_object"} if parse_json else None
@@ -134,22 +138,22 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
         model: "flash" (高速・低コスト), "pro" (高精度・高コスト),
                または直接モデル名を指定
     """
-    if not GEMINI_API_KEY or "your_gemini" in GEMINI_API_KEY:
+    if not _get_gemini_key() or "your_gemini" in _get_gemini_key():
         print("⚠️ Gemini APIキー未設定 -> Groq (Llama 3) で試行します...")
         return call_groq(prompt, parse_json)
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=_get_gemini_key())
 
     # モデル名の解決
     # APIで確認された正規のモデルIDを使用
     MODEL_MAP = {
         "flash": "gemini-2.0-flash",
-        "pro":   "gemini-1.5-pro",
+        "pro":   "gemini-2.5-pro",
     }
     target_model = MODEL_MAP.get(model, model)
     
     # フォールバック用
-    stable_model = "gemini-1.5-flash"
+    stable_model = "gemini-2.0-flash-lite"
 
     current_model = target_model
     
@@ -325,64 +329,117 @@ def fetch_stock_data(ticker: str) -> dict:
 
 
 # ==========================================
-# 比較対象の自動選定
+# 比較対象の自動選定（ローカルロジック、API不使用）
 # ==========================================
 
+# セクター別の定型競合マッピング
+SECTOR_COMPETITORS = {
+    # Technology
+    "Technology": {
+        "us": {"direct": ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMZN", "CRM", "ORCL", "ADBE", "INTC", "AMD", "AVGO", "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "MU", "IBM"],
+               "benchmark": ["MSFT", "AAPL", "GOOGL"]},
+        "jp": {"direct": ["6758.T", "6902.T", "6861.T", "6501.T", "6503.T", "4063.T", "6367.T", "7741.T", "6857.T", "6723.T"],
+               "benchmark": ["AAPL", "MSFT"]},
+    },
+    "Communication Services": {
+        "us": {"direct": ["GOOGL", "META", "NFLX", "DIS", "CMCSA", "T", "VZ", "TMUS", "SPOT"],
+               "benchmark": ["GOOGL", "META"]},
+        "jp": {"direct": ["9432.T", "9433.T", "9434.T", "4689.T", "3659.T"],
+               "benchmark": ["GOOGL", "META"]},
+    },
+    # Financial Services
+    "Financial Services": {
+        "us": {"direct": ["JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SCHW", "AXP", "V", "MA", "PYPL"],
+               "benchmark": ["JPM", "BLK"]},
+        "jp": {"direct": ["8306.T", "8316.T", "8411.T", "8604.T", "8766.T", "8697.T", "8591.T"],
+               "benchmark": ["JPM", "GS"]},
+    },
+    # Healthcare
+    "Healthcare": {
+        "us": {"direct": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY", "TMO", "ABT", "BMY", "AMGN", "GILD"],
+               "benchmark": ["JNJ", "UNH"]},
+        "jp": {"direct": ["4502.T", "4503.T", "4568.T", "4519.T", "4523.T", "4151.T"],
+               "benchmark": ["JNJ", "PFE"]},
+    },
+    # Consumer Cyclical
+    "Consumer Cyclical": {
+        "us": {"direct": ["AMZN", "TSLA", "HD", "NKE", "MCD", "SBUX", "TGT", "LOW", "F", "GM"],
+               "benchmark": ["AMZN", "TSLA"]},
+        "jp": {"direct": ["7203.T", "7267.T", "7269.T", "9983.T", "3382.T", "7974.T", "9984.T"],
+               "benchmark": ["AMZN", "TSLA"]},
+    },
+    # Industrials
+    "Industrials": {
+        "us": {"direct": ["CAT", "DE", "BA", "HON", "UPS", "RTX", "LMT", "GE", "MMM"],
+               "benchmark": ["CAT", "HON"]},
+        "jp": {"direct": ["6301.T", "7011.T", "6273.T", "6103.T", "7013.T", "6302.T"],
+               "benchmark": ["CAT", "HON"]},
+    },
+    # Energy
+    "Energy": {
+        "us": {"direct": ["XOM", "CVX", "COP", "SLB", "EOG", "OXY", "MPC", "PSX", "VLO"],
+               "benchmark": ["XOM", "CVX"]},
+        "jp": {"direct": ["5020.T", "5019.T", "1605.T", "5021.T"],
+               "benchmark": ["XOM", "CVX"]},
+    },
+    # Consumer Defensive
+    "Consumer Defensive": {
+        "us": {"direct": ["PG", "KO", "PEP", "COST", "WMT", "CL", "MDLZ", "PM"],
+               "benchmark": ["PG", "KO"]},
+        "jp": {"direct": ["2914.T", "2502.T", "2503.T", "4452.T", "2802.T"],
+               "benchmark": ["PG", "KO"]},
+    },
+    # Real Estate
+    "Real Estate": {
+        "us": {"direct": ["AMT", "PLD", "CCI", "EQIX", "SPG", "O", "WELL"],
+               "benchmark": ["AMT", "PLD"]},
+        "jp": {"direct": ["8801.T", "8802.T", "3289.T", "8830.T", "3231.T"],
+               "benchmark": ["AMT", "PLD"]},
+    },
+}
+
+
 def select_competitors(target: dict, macro_data: dict = None) -> dict:
+    """セクター情報を元にローカルで競合を選定する（API不使用）"""
     cfg = CONFIG['competitor_selection']
-    
-    # マクロ環境情報の組み立て
-    macro_context = ""
-    if macro_data and macro_data.get("regime"):
-        regime = macro_data.get("regime", "NEUTRAL")
-        desc = macro_data.get("description", "")
-        indicators = macro_data.get("indicators", {})
-        macro_context = f"""
-【現在のマクロ環境】
-Regime: {regime} — {desc}
-米10年債: {indicators.get('us10y', 'N/A')}% | VIX: {indicators.get('vix', 'N/A')} | USD/JPY: {indicators.get('usdjpy', 'N/A')} | WTI: {indicators.get('oil', 'N/A')}
-"""
-
-    # 地域判定
     ticker = target['ticker']
-    country = target.get('country', '不明')
+    sector = target.get('sector', '不明')
     is_jp = ticker.endswith('.T')
-    region_rule = ""
-    if is_jp:
-        region_rule = """
-【地域ルール（日本株）】
-- direct（直接競合）は **必ず日本市場の同業（.T サフィックス）を2社以上** 含めること。
-- 海外企業（米国銀行等）は、金利局面やマクロ環境が異なるため direct ではなく benchmark に配置すること。
-- substitute（機能代替）は国内外問わず可。
-"""
-    else:
-        region_rule = """
-【地域ルール（米国株等）】
-- direct（直接競合）は **同一市場・同一ビジネスモデルの企業を優先** すること。
-- 異なる規制環境・金利局面にある海外企業は benchmark に配置し、直接比較は避けること。
-"""
+    region = "jp" if is_jp else "us"
 
-    prompt = f"""
-投資委員会CIOとして、以下の銘柄の「真の競争力」を評価するための比較対象をJSONで選定せよ。
+    print(f"📋 比較対象をローカル選定中 (セクター: {sector})...")
 
-銘柄: {ticker} / {target['name']} / {target.get('sector','不明')} / {country}
-概要: {target.get('description','')[:150]}
-{macro_context}
-{region_rule}
-【カテゴリと役割】
-- direct（直接競合）: {cfg['direct_count']}社 — 同一市場・同一ビジネスモデルで直接シェアを競う相手。マクロ環境が同等であること。
-- substitute（機能代替）: {cfg['substitute_count']}社 — 異なるアプローチで同じ顧客ニーズを満たすプレイヤー。
-- benchmark（資本効率比較）: {cfg['benchmark_count']}社 — グローバルベストプラクティスとの比較。異なる地域・金利環境の同業大手を含めてよい。
+    # セクターマッピングから取得
+    sector_data = SECTOR_COMPETITORS.get(sector, {})
+    region_data = sector_data.get(region, {})
 
-制約: yfinanceで取得可能なティッカーのみ。日本株は「7203.T」形式。JSONのみ返答。
+    if not region_data:
+        # セクターが見つからない場合、全セクターからフォールバック
+        # 近いセクターを探す
+        for s_name, s_data in SECTOR_COMPETITORS.items():
+            if s_data.get(region):
+                region_data = s_data[region]
+                print(f"  ℹ️ セクター '{sector}' のマッピングなし → '{s_name}' で代替")
+                break
 
-{{"direct":["T1","T2","T3"],"substitute":["T4","T5"],"benchmark":["T6","T7"],"reasoning":"理由（マクロ環境の違いを踏まえた選定理由を1-2行）"}}
-"""
-    print("🧠 [API 1/2] 比較対象を選定中...")
-    result = call_gemini(prompt, parse_json=True)
-    if not result:
-        return {"direct": [], "substitute": [], "benchmark": [], "reasoning": "選定失敗"}
-    all_c = result.get('direct',[]) + result.get('substitute',[]) + result.get('benchmark',[])
+    # 自分自身を除外
+    candidates = [t for t in region_data.get("direct", []) if t != ticker]
+    benchmarks = [t for t in region_data.get("benchmark", []) if t != ticker]
+
+    direct = candidates[:cfg['direct_count']]
+    substitute = candidates[cfg['direct_count']:cfg['direct_count'] + cfg['substitute_count']]
+    benchmark = benchmarks[:cfg['benchmark_count']]
+
+    # ベンチマークが空なら候補から補充
+    if not benchmark and len(candidates) > cfg['direct_count'] + cfg['substitute_count']:
+        benchmark = candidates[cfg['direct_count'] + cfg['substitute_count']:][:cfg['benchmark_count']]
+
+    all_c = direct + substitute + benchmark
     print(f"✅ 比較対象: {all_c}")
-    return result
+    return {
+        "direct": direct,
+        "substitute": substitute,
+        "benchmark": benchmark,
+        "reasoning": f"セクター({sector})に基づくローカル選定",
+    }
 

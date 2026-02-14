@@ -18,21 +18,22 @@ from datetime import datetime
 # プロジェクトルートをパスに追加
 sys.path.insert(0, os.path.dirname(__file__))
 
+# 環境変数を先にロード（モジュールが import 時に参照するため最優先）
+from dotenv import load_dotenv
+load_dotenv()
+
 # ============================================================
 # Secrets Bridge: Streamlit Cloud ↔ ローカル .env
 # ============================================================
 # Streamlit Cloud では st.secrets から、ローカルでは .env から読み込む
 try:
-    for key in ["GEMINI_API_KEY", "EDINET_API_KEY", "SPREADSHEET_ID",
+    for key in ["GEMINI_API_KEY", "GROQ_API_KEY", "EDINET_API_KEY", "SPREADSHEET_ID",
                  "GOOGLE_SERVICE_ACCOUNT_JSON",
                  "LINE_CHANNEL_ACCESS_TOKEN", "LINE_USER_ID"]:
         if key in st.secrets:
             os.environ[key] = st.secrets[key]
 except Exception:
     pass  # st.secrets が使えない場合（ローカル）はスキップ
-
-from dotenv import load_dotenv
-load_dotenv()
 
 from data_fetcher import fetch_stock_data, select_competitors, call_gemini
 from analyzers import generate_scorecard, format_yuho_for_prompt
