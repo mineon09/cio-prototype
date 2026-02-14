@@ -125,7 +125,7 @@ with st.sidebar:
         help="米国株はそのまま、日本株は .T 付きで入力"
     )
 
-    run_analysis = st.button("🚀 分析実行", type="primary", use_container_width=True)
+    run_analysis = st.button("🚀 分析実行", type="primary", width="stretch")
 
     st.markdown("---")
 
@@ -142,7 +142,7 @@ with st.sidebar:
             if st.sidebar.button(
                 f"{emoji} {t} — {d.get('name', '')[:15]} ({score:.1f}) [{hist_count}件]",
                 key=f"hist_{t}",
-                use_container_width=True,
+                width="stretch",
             ):
                 st.session_state["view_ticker"] = t
     else:
@@ -151,7 +151,7 @@ with st.sidebar:
     st.markdown("---")
 
     # LINE Test
-    if st.button("🔔 LINE通知テスト（Messaging API）", use_container_width=True):
+    if st.button("🔔 LINE通知テスト（Messaging API）", width="stretch"):
         if send_line_push("\n🧪 CIO Intelligence — Messaging API テスト通知"):
             st.success("送信成功! (LINEアプリを確認してください)")
         else:
@@ -365,4 +365,4 @@ else:
 
     import pandas as pd
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
