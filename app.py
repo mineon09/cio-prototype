@@ -141,20 +141,8 @@ with st.sidebar:
     st.write(f"Groq SDK: {'✅' if HAS_GROQ else '❌ (pip install groq)'}")
     st.write(f"Groq Key: {'✅' if groq_ok else '❌'}")
 
-    # デバッグ情報 (キーが検知されない場合)
-    if not groq_ok:
-        st.write(f"🔍 .env path: {_env_path}")
-        st.write(f"🔍 .env exists: {os.path.exists(_env_path)}")
-        if os.path.exists(_env_path):
-            with open(_env_path, 'r') as f:
-                content = f.read()
-            st.write(f"🔍 .env has GROQ: {'GROQ_API_KEY' in content}")
-            # 全環境変数のうちAPIキー関連だけ表示
-            api_envs = {k: v[:8]+'...' for k, v in os.environ.items() if 'API_KEY' in k}
-            st.write(f"🔍 API keys in env: {api_envs}")
-
     if not gemini_ok and not groq_ok:
-        st.error("APIキーが設定されていません。 .env ファイルを確認してください。")
+        st.error("APIキーが設定されていません。 .env またはクラウドの Secrets を確認してください。")
 
     # Groq接続テスト
     if HAS_GROQ and groq_ok:

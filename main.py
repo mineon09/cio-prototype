@@ -216,16 +216,6 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 """
     report = call_gemini(prompt)
 
-    # デバッグログ: API呼び出し結果を記録
-    debug_path = os.path.join(os.path.dirname(__file__), "data", "debug_api.log")
-    os.makedirs(os.path.dirname(debug_path), exist_ok=True)
-    with open(debug_path, "a", encoding="utf-8") as dbg:
-        dbg.write(f"\n--- {datetime.now().isoformat()} | {target_ticker} ---\n")
-        dbg.write(f"report type: {type(report).__name__}\n")
-        dbg.write(f"report truthy: {bool(report)}\n")
-        dbg.write(f"report len: {len(report) if report else 0}\n")
-        dbg.write(f"report preview: {repr(report[:200]) if report else 'None'}\n")
-
     if not report or report == "分析失敗":
         print(f"  ⚠️ Gemini/Groq ともに失敗。ローカルでの簡易要約に切り替えます...")
         print(f"  📝 デバッグ: report={repr(report)[:100]}")
