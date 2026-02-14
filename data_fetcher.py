@@ -153,15 +153,15 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
     client = genai.Client(api_key=_get_gemini_key())
 
     # モデル名の解決
-    # APIで確認された正規のモデルIDを使用
+    # Gemini 3.0 系を使用（2026-02-14 API確認済み）
     MODEL_MAP = {
-        "flash": "gemini-2.0-flash",
-        "pro":   "gemini-2.5-pro",
+        "flash": "gemini-3-flash-preview",
+        "pro":   "gemini-3-pro-preview",
     }
     target_model = MODEL_MAP.get(model, model)
     
-    # フォールバック用
-    stable_model = "gemini-2.0-flash-lite"
+    # フォールバック用（3.0が使えない場合）
+    stable_model = "gemini-2.5-flash"
 
     current_model = target_model
     
