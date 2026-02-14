@@ -247,6 +247,15 @@ if view_ticker and view_ticker in results:
     with col3:
         signal = data.get("signal", "WATCH")
         st.markdown(f'<div class="signal-{signal.lower()}">{signal}</div>', unsafe_allow_html=True)
+        
+        # 個別銘柄の通知ボタン
+        if st.button("📲 LINE送付", key=f"notify_{view_ticker}", width="stretch"):
+            msg = f"\n🤖 CIO Analysis: {view_ticker}\n判定: {signal}\nスコア: {total:.1f}/10\n\n{data.get('report', '')[:200]}..."
+            if send_line_push(msg):
+                st.success("LINEに送信しました")
+            else:
+                st.error("送信失敗。Secrets設定を確認してください")
+
     with col4:
         if macro:
             regime = macro.get("regime", "")
