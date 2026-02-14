@@ -337,7 +337,8 @@ function renderCompareTable() {
         const s = d.scores || {};
         const signalClass = `t-signal-${(d.signal || 'watch').toLowerCase()}`;
         const histCount = raw.history ? raw.history.length : 1;
-        return `<tr onclick="toggleCompare(); displayTicker('${ticker}');" style="cursor:pointer;">
+        // 行全体をクリック可能にし、ホバー時にカーソルを表示
+        return `<tr onclick="if(compareMode) toggleCompare(); displayTicker('${ticker}');" style="cursor:pointer; transition: background-color 0.2s;">
             <td><strong>${ticker}</strong><br><span style="font-size:0.7rem;color:var(--text-muted)">${d.name || ticker}</span></td>
             <td style="font-size:0.75rem">${d.sector || '-'}</td>
             <td class="score-cell" style="color:${scoreColor(s.fundamental || 0)}">${(s.fundamental || 0).toFixed(1)}</td>

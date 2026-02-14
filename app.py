@@ -418,4 +418,18 @@ else:
 
     import pandas as pd
     df = pd.DataFrame(rows)
-    st.dataframe(df, width="stretch", hide_index=True)
+
+    # st.dataframe の selection 機能を使用 (Streamlit 1.35+)
+    event = st.dataframe(
+        df,
+        width=1000,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+    )
+
+    if event and event.selection and event.selection.rows:
+        selected_index = event.selection.rows[0]
+        selected_ticker = df.iloc[selected_index]["銘柄"]
+        st.session_state["view_ticker"] = selected_ticker
+        st.rerun()
