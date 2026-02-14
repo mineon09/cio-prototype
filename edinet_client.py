@@ -33,6 +33,7 @@ DOC_TYPE_QUARTERLY     = "140"   # 四半期報告書
 # EDINETコードリストのキャッシュパス
 _CACHE_DIR = Path(__file__).parent / ".edinet_cache"
 _CODE_LIST_PATH = _CACHE_DIR / "edinet_code_list.csv"
+_LIST_CACHE_DIR = _CACHE_DIR / "lists"
 
 try:
     with open("config.json", encoding="utf-8") as f:
@@ -65,36 +66,103 @@ def _download_edinet_code_list() -> bool:
     url = f"{EDINET_BASE_URL}/EdinetcodeDlInfo.json"
     params = {"type": 2, "Subscription-Key": EDINET_API_KEY}
 
-    try:
-        print("  📋 EDINETコードリストをダウンロード中...")
-        # リダイレクトループを避けるため allow_redirects=True (デフォルト) を明示しつつ、
-        # エラー発生時は即座にスキップするようにする
-        resp = requests.get(url, params=params, timeout=30, allow_redirects=True)
-        
-        if resp.status_code != 200:
-            print(f"  ⚠️ コードリスト取得スキップ (status={resp.status_code})")
-            return False
+    for attempt in range(2):
+        try:
+            print("  📋 EDINETコードリストをダウンロード中...")
+            resp = requests.get(url, params=params, timeout=30, allow_redirects=True)
+            
+            if resp.status_code == 429:
+                print(f"  ⏳ EDINET レート制限 (DL) — 65秒待機... ({attempt+1}/2)")
+                time.sleep(65)
+                continue
 
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-        # レスポンスはZIPファイル
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            # ZIP内のCSVファイルを探す
-            csv_names = [n for n in zf.namelist() if n.endswith('.csv')]
-            if not csv_names:
-                print("  ⚠️ ZIP内にCSVが見つかりません")
+            if resp.status_code != 200:
+                print(f"  ⚠️ コードリスト取得スキップ (status={resp.status_code})")
                 return False
 
-            with zf.open(csv_names[0]) as csv_file:
-                content = csv_file.read()
-                _CODE_LIST_PATH.write_bytes(content)
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-        print(f"  ✅ EDINETコードリスト保存完了 ({_CODE_LIST_PATH.name})")
-        return True
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                csv_names = [n for n in zf.namelist() if n.endswith('.csv')]
+                if not csv_names:
+                    print("  ⚠️ ZIP内にCSVが見つかりません")
+                    return False
 
-    except Exception as e:
-        print(f"  ⚠️ コードリストダウンロードエラー: {e}")
-        return False
+                with zf.open(csv_names[0]) as csv_file:
+                    content = csv_file.read()
+                    _CODE_LIST_PATH.write_bytes(content)
+
+            print(f"  ✅ EDINETコードリスト保存完了 ({_CODE_LIST_PATH.name})")
+            return True
+
+        except Exception as e:
+            print(f"  ⚠️ コードリストダウンロードエラー: {e}")
+            if attempt < 1:
+                time.sleep(5)
+                continue
+            return False
+    return False
+
+
+def _get_edinet_metadata(target_date: str) -> list:
+    """
+    書類一覧 API を叩く。キャッシュがあればそれを返し、なければ取得してキャッシュする。
+    """
+    _LIST_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_path = _LIST_CACHE_DIR / f"list_{target_date}.json"
+
+    # 1. キャッシュチェック
+    if cache_path.exists():
+        try:
+            # 24時間以内のキャッシュなら再利用
+            age = time.time() - cache_path.stat().st_mtime
+            if age < 24 * 3600:
+                print(f"    📦 キャッシュヒット: {target_date}")
+                return json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # 2. API 呼び出し
+    url = f"{EDINET_BASE_URL}/documents.json"
+    params = {
+        "date": target_date,
+        "type": 2,  # メタデータ付き
+        "Subscription-Key": EDINET_API_KEY,
+    }
+
+    for attempt in range(2):
+        try:
+            # EDINET API v2 は 30回/分（平均2秒に1回）の制限があるため、
+            # 安全のためリクエスト前に2秒待機
+            time.sleep(2.0)
+            
+            resp = requests.get(url, params=params, timeout=30)
+            
+            if resp.status_code == 429:
+                print(f"    ⏳ EDINET レート制限 (List) — 65秒待機... ({attempt+1}/2)")
+                time.sleep(65)
+                continue
+
+            if resp.status_code != 200:
+                return []
+
+            data = resp.json()
+            results = data.get("results", [])
+
+            # キャッシュ保存
+            if results:
+                cache_path.write_text(json.dumps(results, ensure_ascii=False), encoding="utf-8")
+                
+            return results
+
+        except Exception as e:
+            print(f"    ⚠️ API エラー ({target_date}): {e}")
+            if attempt < 1:
+                time.sleep(5)
+                continue
+            break
+            
+    return []
 
 
 def _load_edinet_code_map() -> dict:
@@ -205,7 +273,7 @@ def find_latest_yuho(sec_code: str, search_days: int | None = None) -> dict | No
         print(f"  🔍 {doc_label}(docTypeCode={doc_type})を検索中...")
 
         today = datetime.now()
-        api_calls = 0
+        api_count = 0
         for offset in range(days):
             target = today - timedelta(days=offset)
 
@@ -214,63 +282,37 @@ def find_latest_yuho(sec_code: str, search_days: int | None = None) -> dict | No
                 continue
 
             target_date = target.strftime("%Y-%m-%d")
-            url = f"{EDINET_BASE_URL}/documents.json"
-            params = {
-                "date": target_date,
-                "type": 2,  # メタデータ付き
-                "Subscription-Key": EDINET_API_KEY,
-            }
+            results = _get_edinet_metadata(target_date)
+            api_count += 1
 
-            try:
-                resp = requests.get(url, params=params, timeout=30)
-                api_calls += 1
-
-                if resp.status_code == 429:
-                    print(f"  ⏳ EDINET レート制限 — 30秒待機...")
-                    time.sleep(30)
-                    continue
-                if resp.status_code != 200:
+            for doc in results:
+                if doc.get("docTypeCode") != doc_type:
                     continue
 
-                data = resp.json()
-                results = data.get("results", [])
+                # secCode または edinetCode でマッチ
+                match = False
+                if doc.get("secCode") == sec_code:
+                    match = True
+                elif edinet_code and doc.get("edinetCode") == edinet_code:
+                    match = True
 
-                for doc in results:
-                    if doc.get("docTypeCode") != doc_type:
-                        continue
-
-                    # secCode または edinetCode でマッチ
-                    match = False
-                    if doc.get("secCode") == sec_code:
-                        match = True
-                    elif edinet_code and doc.get("edinetCode") == edinet_code:
-                        match = True
-
-                    if match:
-                        print(f"  📄 {doc_label}発見: {doc.get('filerName', '不明')} "
-                              f"({doc.get('docDescription', '')}) [{target_date}]")
-                        return {
-                            "doc_id":          doc.get("docID"),
-                            "edinet_code":     doc.get("edinetCode", ""),
-                            "filer_name":      doc.get("filerName", ""),
-                            "doc_description": doc.get("docDescription", ""),
-                            "doc_type_code":   doc_type,
-                            "submit_date":     doc.get("submitDateTime", target_date),
-                            "period_start":    doc.get("periodStart", ""),
-                            "period_end":      doc.get("periodEnd", ""),
-                        }
-
-            except requests.RequestException as e:
-                print(f"  ⚠️ EDINET API エラー ({target_date}): {e}")
-                continue
-
-            # レート制限対策: 5回ごとに1秒スリープ
-            if api_calls % 5 == 0:
-                time.sleep(1)
+                if match:
+                    print(f"  📄 {doc_label}発見: {doc.get('filerName', '不明')} "
+                            f"({doc.get('docDescription', '')}) [{target_date}]")
+                    return {
+                        "doc_id":          doc.get("docID"),
+                        "edinet_code":     doc.get("edinetCode", ""),
+                        "filer_name":      doc.get("filerName", ""),
+                        "doc_description": doc.get("docDescription", ""),
+                        "doc_type_code":   doc_type,
+                        "submit_date":     doc.get("submitDateTime", target_date),
+                        "period_start":    doc.get("periodStart", ""),
+                        "period_end":      doc.get("periodEnd", ""),
+                    }
 
             # 進捗表示: 50回ごと
-            if api_calls % 50 == 0:
-                print(f"    ... {api_calls} 日分検索済み")
+            if api_count % 50 == 0:
+                print(f"    ... {api_count} 日分検索済み")
 
         # 有報が見つからなかった場合のみ四半期報告書にフォールバック
         if doc_type == DOC_TYPE_YUHO:
