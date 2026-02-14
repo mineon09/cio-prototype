@@ -93,35 +93,70 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     # モデル名の解決
+    # モデル名の解決
     MODEL_MAP = {
-        "flash": "gemini-3-flash-preview",
-        "pro":   "gemini-2.5-pro-preview-06-05",
+        "flash": "gemini-2.0-flash",    # 最新のFlashモデル
+        "pro":   "gemini-2.0-pro-exp-02-05",  # 最新のProモデル（または1.5-pro）
     }
+    # ユーザー指定がなければマップから、あればそのまま使う
     model_name = MODEL_MAP.get(model, model)
     
     for attempt in range(max_retries):
         try:
-            res  = client.models.generate_content(model=model_name, contents=prompt)
-            text = res.text
+            # generate_content の呼び出し
+            # google-genai SDK の場合: client.models.generate_content
+            # google-generativeai SDK の場合: model.generate_content (構成が違う)
+            # ここでは既存コードに合わせて client.models.generate_content を使用
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            
+            # テキスト抽出
+            text = response.text
+            if not text:
+                raise ValueError("Empty response from Gemini")
+
+            # JSONパースモード
             if parse_json:
-                m = re.search(r'\{.*\}', text, re.DOTALL)
-                return json.loads(m.group(0)) if m else json.loads(text)
+                # マークダウンのコードブロック ```json ... ``` を除去
+                cleaned_text = re.sub(r'```json\s*', '', text)
+                cleaned_text = re.sub(r'```\s*$', '', cleaned_text)
+                # 波括弧の範囲を抽出
+                m = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
+                if m:
+                    return json.loads(m.group(0))
+                return json.loads(cleaned_text)
+                
             return text
+
         except Exception as e:
-            err = str(e)
-            if '429' in err or 'RESOURCE_EXHAUSTED' in err:
-                m = re.search(r'retry in (\d+\.?\d*)s', err)
-                wait = float(m.group(1)) + 2 if m else 60
-                if attempt < max_retries - 1:
-                    print(f"⏳ レート制限 {wait:.0f}秒待機... ({attempt+1}/{max_retries})")
-                    time.sleep(wait)
-                    continue
-                return None
-            elif '503' in err and attempt < max_retries - 1:
-                time.sleep((attempt + 1) * 15)
+            err_msg = str(e)
+            print(f"  ⚠️ Gemini リカバリ ({attempt+1}/{max_retries}): {err_msg[:100]}...")
+            
+            # レート制限 (429) または 容量超過 (RESOURCE_EXHAUSTED)
+            if '429' in err_msg or 'RESOURCE_EXHAUSTED' in err_msg:
+                # 指数バックオフ: 10s -> 20s -> 40s -> 80s...
+                wait_time = 10 * (2 ** attempt)
+                # エラーメッセージに "retry in Xs" があればそれを優先
+                m = re.search(r'retry.*?in.*?(\d+)', err_msg)
+                if m:
+                    wait_time = max(wait_time, int(m.group(1)) + 2)
+                
+                print(f"    ⏳ レート制限待機: {wait_time}秒...")
+                time.sleep(wait_time)
                 continue
-            print(f"❌ Gemini エラー ({model_name}): {e}")
+            
+            # サーバーエラー (5xx)
+            if '500' in err_msg or '503' in err_msg:
+                time.sleep(5)
+                continue
+                
+            # その他のエラーはリトライせず終了（認証エラーなど）
+            print(f"❌ Gemini 致命的エラー: {e}")
             return None
+            
+    print(f"❌ Gemini リトライ回数超過 ({max_retries}回)")
     return None
 
 
