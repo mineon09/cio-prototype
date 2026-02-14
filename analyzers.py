@@ -718,15 +718,16 @@ def format_yuho_for_prompt(yuho_data: dict) -> str:
 
     # リスクTOP3
     risks = yuho_data.get("risk_top3", [])
-    if risks:
+    if isinstance(risks, list) and risks:
         lines.append("〈経営リスクTOP3〉")
         for i, r in enumerate(risks, 1):
-            lines.append(f"  {i}. [{r.get('severity', '?')}] {r.get('risk', '不明')}: {r.get('detail', '')}")
+            if isinstance(r, dict):
+                lines.append(f"  {i}. [{r.get('severity', '?')}] {r.get('risk', '不明')}: {r.get('detail', '')}")
         lines.append("")
 
     # 堀
     moat = yuho_data.get("moat", {})
-    if moat and moat.get("type"):
+    if isinstance(moat, dict) and moat.get("type"):
         source_text = f" (源泉: {moat.get('source', '?')})" if moat.get("source") else ""
         lines.append(f"〈競争優位性（堂）〉 {moat.get('type', '不明')}{source_text} (耐久性: {moat.get('durability', '?')})")
         lines.append(f"  {moat.get('description', '')}")
@@ -734,20 +735,21 @@ def format_yuho_for_prompt(yuho_data: dict) -> str:
 
     # 経営陣トーン
     tone = yuho_data.get("management_tone", {})
-    if tone and tone.get("overall"):
+    if isinstance(tone, dict) and tone.get("overall"):
         lines.append(f"〈経営陣トーン〉 {tone.get('overall', '?')}")
         lines.append(f"  {tone.get('detail', '')}")
         key_phrases = tone.get("key_phrases", [])
-        if key_phrases:
+        if isinstance(key_phrases, list) and key_phrases:
             lines.append(f"  キーフレーズ: {', '.join(key_phrases[:3])}")
         lines.append("")
 
     # R&D
     rd = yuho_data.get("rd_focus", [])
-    if rd:
+    if isinstance(rd, list) and rd:
         lines.append("〈R&D注力分野〉")
         for item in rd[:5]:
-            lines.append(f"  ・{item.get('area', '?')}: {item.get('detail', '')}")
+            if isinstance(item, dict):
+                lines.append(f"  ・{item.get('area', '?')}: {item.get('detail', '')}")
         lines.append("")
 
     # 経営課題
