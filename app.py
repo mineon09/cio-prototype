@@ -61,7 +61,7 @@ from notifier import send_line_push
 # Page Config
 # ============================================================
 st.set_page_config(
-    page_title="CIO Intelligence Dashboard",
+    page_title="CIO インテリジェンス分析",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -114,7 +114,7 @@ def score_color(score):
 # Sidebar
 # ============================================================
 with st.sidebar:
-    st.title("🤖 CIO Intelligence")
+    st.title("🤖 CIO インテリジェンス")
     st.markdown("---")
 
     # Ticker Input
@@ -285,9 +285,9 @@ if view_ticker and view_ticker in results:
             ("ROE", f"{metrics.get('roe', '-')}%"),
             ("PER", f"{float(metrics.get('per', 0)):.1f}x" if metrics.get('per') else "-"),
             ("PBR", f"{float(metrics.get('pbr', 0)):.2f}x" if metrics.get('pbr') else "-"),
-            ("OP Margin", f"{metrics.get('op_margin', '-')}%"),
+            ("営業利益率", f"{metrics.get('op_margin', '-')}%"),
             ("RSI", f"{float(tech.get('rsi', 0)):.1f}" if tech.get('rsi') else "-"),
-            ("Price", f"${float(tech.get('current_price', 0)):,.0f}" if tech.get('current_price') else "-"),
+            ("株価", f"${float(tech.get('current_price', 0)):,.0f}" if tech.get('current_price') else "-"),
         ]
         for j, (label, val) in enumerate(items):
             with m_cols[j % 3]:
@@ -352,7 +352,7 @@ elif not results:
     st.title("🤖 CIO Intelligence Dashboard")
     st.info("👈 サイドバーからティッカーを入力して分析を実行してください")
 else:
-    st.title("🤖 CIO Intelligence Dashboard")
+    st.title("🤖 CIO インテリジェンス・ダッシュボード")
 
     # Overview table
     st.subheader("📊 全銘柄サマリー")

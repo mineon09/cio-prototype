@@ -138,9 +138,9 @@ function renderMetrics(data) {
         { label: 'ROE', value: m.roe != null ? m.roe + '%' : '-' },
         { label: 'PER', value: m.per != null ? parseFloat(m.per).toFixed(1) + 'x' : '-' },
         { label: 'PBR', value: m.pbr != null ? parseFloat(m.pbr).toFixed(2) + 'x' : '-' },
-        { label: 'OP Margin', value: m.op_margin != null ? m.op_margin + '%' : '-' },
+        { label: '営業利益率', value: m.op_margin != null ? m.op_margin + '%' : '-' },
         { label: 'RSI', value: t.rsi != null ? parseFloat(t.rsi).toFixed(1) : '-' },
-        { label: 'Price', value: t.current_price != null ? (data.currency === 'JPY' ? '¥' : '$') + parseFloat(t.current_price).toLocaleString() : '-' },
+        { label: '株価', value: t.current_price != null ? (data.currency === 'JPY' ? '¥' : '$') + parseFloat(t.current_price).toLocaleString() : '-' },
     ];
 
     grid.innerHTML = items.map(i => `

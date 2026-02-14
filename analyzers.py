@@ -517,7 +517,7 @@ def score_qualitative(yuho_data: dict) -> dict:
 
     # 堀（Moat）評価
     moat = yuho_data.get("moat", {})
-    if moat and moat.get("type") and moat.get("type") != "データなし":
+    if isinstance(moat, dict) and moat.get("type") and moat.get("type") != "データなし":
         durability = moat.get("durability", "中")
         if durability == "高":
             s = 9
@@ -533,9 +533,9 @@ def score_qualitative(yuho_data: dict) -> dict:
 
     # リスク評価（リスクが高いほど低スコア）
     risks = yuho_data.get("risk_top3", [])
-    if risks:
-        high_count = sum(1 for r in risks if r.get("severity") == "高")
-        mid_count  = sum(1 for r in risks if r.get("severity") == "中")
+    if isinstance(risks, list) and risks:
+        high_count = sum(1 for r in risks if isinstance(r, dict) and r.get("severity") == "高")
+        mid_count  = sum(1 for r in risks if isinstance(r, dict) and r.get("severity") == "中")
 
         if high_count >= 2:
             s = 2
@@ -557,7 +557,7 @@ def score_qualitative(yuho_data: dict) -> dict:
 
     # R&D 注力分野（あれば加点）
     rd_focus = yuho_data.get("rd_focus", [])
-    if rd_focus and rd_focus[0].get("area", "") != "データなし":
+    if isinstance(rd_focus, list) and rd_focus and isinstance(rd_focus[0], dict) and rd_focus[0].get("area", "") != "データなし":
         s = 7
         areas = [r.get("area", "") for r in rd_focus[:3]]
         parts.append(f"R&D注力: {', '.join(areas)} — 将来成長への投資あり")
@@ -566,7 +566,7 @@ def score_qualitative(yuho_data: dict) -> dict:
 
     # 経営陣トーン分析（management_tone）
     tone = yuho_data.get("management_tone", {})
-    if tone and tone.get("overall") and tone.get("overall") != "データなし":
+    if isinstance(tone, dict) and tone.get("overall") and tone.get("overall") != "データなし":
         overall = tone.get("overall", "中立")
         if overall == "強気":
             s = 8

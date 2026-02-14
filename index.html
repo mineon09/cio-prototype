@@ -20,8 +20,8 @@
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-header">
-                <h1>CIO Dash</h1>
-                <p>Intelligence Platform</p>
+                <h1>CIO分析</h1>
+                <p>AI投資分析プラットフォーム</p>
             </div>
             <div class="ticker-list-container">
                 <h3>分析履歴</h3>
@@ -51,13 +51,13 @@
                     <!-- Radar Chart -->
                     <section class="visual-section card">
                         <div class="card-header">
-                            <h3>4-Axis Scorecard</h3>
+                            <h3>4次元スコアカード</h3>
                         </div>
                         <div class="chart-container">
                             <canvas id="scoreChart"></canvas>
                         </div>
                         <div class="total-score-container">
-                            <span class="total-score-label">TOTAL SCORE</span>
+                            <span class="total-score-label">総合スコア</span>
                             <span id="display-total-score" class="total-score-value">0.0</span>
                         </div>
                     </section>
@@ -67,7 +67,7 @@
                         <section class="scores-section">
                             <div class="score-card" id="card-fundamental">
                                 <span class="score-icon">📊</span>
-                                <span class="score-label">Fundamental</span>
+                                <span class="score-label">地力 (Fund)</span>
                                 <span id="score-fundamental" class="score-value">-</span>
                                 <div class="score-bar">
                                     <div class="score-bar-fill" id="bar-fundamental"></div>
@@ -75,7 +75,7 @@
                             </div>
                             <div class="score-card" id="card-valuation">
                                 <span class="score-icon">💰</span>
-                                <span class="score-label">Valuation</span>
+                                <span class="score-label">割安 (ValU)</span>
                                 <span id="score-valuation" class="score-value">-</span>
                                 <div class="score-bar">
                                     <div class="score-bar-fill" id="bar-valuation"></div>
@@ -83,7 +83,7 @@
                             </div>
                             <div class="score-card" id="card-technical">
                                 <span class="score-icon">⏱️</span>
-                                <span class="score-label">Technical</span>
+                                <span class="score-label">技術 (Tech)</span>
                                 <span id="score-technical" class="score-value">-</span>
                                 <div class="score-bar">
                                     <div class="score-bar-fill" id="bar-technical"></div>
@@ -91,7 +91,7 @@
                             </div>
                             <div class="score-card" id="card-qualitative">
                                 <span class="score-icon">📋</span>
-                                <span class="score-label">Qualitative</span>
+                                <span class="score-label">定性 (Qual)</span>
                                 <span id="score-qualitative" class="score-value">-</span>
                                 <div class="score-bar">
                                     <div class="score-bar-fill" id="bar-qualitative"></div>
@@ -102,7 +102,7 @@
                         <!-- Key Metrics -->
                         <section class="metrics-section card">
                             <div class="card-header">
-                                <h3>Key Metrics</h3>
+                                <h3>主要指標 (Key Metrics)</h3>
                             </div>
                             <div class="metrics-grid" id="metrics-grid"></div>
                         </section>
@@ -111,7 +111,7 @@
                     <!-- Trend Chart (Time-Series) -->
                     <section id="trend-section" class="card full-width" style="display:none;">
                         <div class="card-header">
-                            <h3>Score Trend</h3>
+                            <h3>スコア推移</h3>
                         </div>
                         <div class="trend-chart-container">
                             <canvas id="trendChart"></canvas>
@@ -121,7 +121,7 @@
                     <!-- Report -->
                     <section class="report-section card full-width">
                         <div class="card-header">
-                            <h3>Analysis Report</h3>
+                            <h3>分析レポート</h3>
                         </div>
                         <div id="display-report" class="report-content"></div>
                     </section>
