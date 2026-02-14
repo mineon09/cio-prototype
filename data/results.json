@@ -240,5 +240,306 @@
         }
       }
     ]
+  },
+  "8306.T": {
+    "name": "Mitsubishi UFJ Financial Group, Inc.",
+    "sector": "Financial Services",
+    "currency": "JPY",
+    "history": [
+      {
+        "date": "2026-02-14 18:46",
+        "scores": {
+          "fundamental": 2.8,
+          "valuation": 5.2,
+          "technical": 3.0,
+          "qualitative": 5.0
+        },
+        "weights": {
+          "fundamental": 0.41,
+          "valuation": 0.345,
+          "technical": 0.245,
+          "qualitative": 0.0
+        },
+        "signal": "WATCH",
+        "total_score": 3.7,
+        "metrics": {
+          "net_margin": 27.2,
+          "cf_quality": 0.0,
+          "equity_ratio": 5.0,
+          "roe": 6.1,
+          "revenue_growth": 11.7,
+          "earnings_growth": 8.7,
+          "per": 19.79826,
+          "pbr": 1.593341,
+          "dividend_yield": 260.0
+        },
+        "technical_data": {
+          "current_price": 3003.0,
+          "ma25_deviation": 4.9,
+          "ma75_deviation": 16.8,
+          "rsi": 59.9,
+          "bb_position": 79.1,
+          "volatility": 36.0,
+          "volume_ratio": 1.11,
+          "analyst_target": 2865.8333
+        },
+        "report": "外資系ヘッジファンドCIOの視点から、提供されたデータに基づき三菱UFJフィナンシャル・グループ（8306.T）の投資判断レポートを以下の通り策定した。\n\n━━━ ⚔️ Layer1: 地力分析 ━━━\n💪 **競争優位性:**\n1.  **国内圧倒的な利益率と規模:** 純利益率27.2%はSMFG(23.3%)、みずほ(24.3%)を凌駕し、国内メガバンク随一の収益構造を保持。\n2.  **グローバル・アライアンスの果実:** 売上成長率11.7%を確保しつつ、出資先Morgan Stanley(MS)との連携による非金利収益の拡大が、国内勢との差別化要因。\n3.  **相対的な資本の厚み:** 自己資本比率5.0%は国内競合（SMFG 4.8%, みずほ 3.7%）を上回り、リスクアセット積み増しや株主還元の余力が相対的に高い。\n\n⚠️ **競争劣位性:**\n1.  **世界水準との資本効率乖離:** ROE 6.1%は、JPM(16.1%)やMS(15.7%)の半分以下。グローバル基準では資本の有効活用が極めて不十分。\n2.  **デジタル勢による侵食:** 楽天(ROE -10.9%だが売上成長10.9%)やオリックス(ROE 10.7%)に対し、リテール分野での機能代替リスクと高ROEビジネスモデルへの転換遅れが顕著。\n\n🐛 **市場のバグ:**\nPER 19.8倍はJPM(13.1倍)やMS(13.9倍)に対し約1.4倍のプレミアムで取引されており、現在の低い資本効率(ROE 6.1%)を考慮すると、将来の利上げ期待を過剰に織り込んだ「割高な期待値」が形成されている。\n\n📊 **本質的価値スコア: 4/10**\n[根拠] 国内トップの純利益率を誇るが、グローバル基準のROE目標（10%超）には程遠い。\n非金利収益へのシフトは途上であり、現在は「金利のある世界」への期待先行で地力以上の評価を受けている。\n\n━━━ ⏱️ Layer2: タイミング分析 ━━━\n📰 **センチメント:** 中立 強度[中]\n[根拠] 世界的な利下げサイクル（RATE_CUT）への転換期にあり、外銀（HSBC等）には逆風。\n一方、国内の政策金利引き上げ期待が下支えするが、新規のポジティブ材料は出尽くし感がある。\n\n📈 **テクニカル:** 過熱 [根拠]\n現在価格3003.0円はMA75から16.8%乖離、BB位置79.1%と統計的に買われすぎ水準。\nアナリスト平均目標（2865.8円）を既に5%近く上回っており、短期的調整のリスクが極めて高い。\n\n⚠️ **指標の矛盾:**\nアナリスト目標価格を上回りながらも、市場価格は上昇を続けており、ファンダメンタルズと需給の解離が発生している。\n\n📅 **カタリスト:** 日銀金融政策決定会合での追加利上げ示唆、またはMSからの配当・持ち分法投資利益のサプライズ。\n\n⏱️ **タイミングスコア: 3/10**\nテクニカル指標の多くが過熱感を示しており、今この価格でエントリーする合理的理由は乏しい。\n\n━━━ ✅ 最終投資判断 ━━━\n🎯 **シグナル: WATCH**\n📊 地力スコア: 4/10\n⏱️ タイミングスコア: 3/10\n📋 定性スコア: 5/10\n🔢 総合スコア: 3.7/10\n\n【根拠】\n国内メガバンク内では最強の収益性を誇るが、JPMやMSと比較した資本効率（ROE）の低さは依然として構造的課題。\nテクニカル面でMA75乖離率が16%を超えており、アナリストコンセンサスを上抜いている現状は、押し目待ちが賢明。\nデジタル勢（楽天・オリックス）とのROE格差を埋める「非金利収益の劇的な進展」が確認されるまで、現在のPER水準での新規買いは推奨できない。\n\n【アクション】\n- エントリー価格: JPY 2750 (MA75近辺までの調整を待機)\n- 損切りライン:   JPY 2580 (直近サポートライン及びMA75下抜け)\n- 利確ライン:     JPY 3300 (PBR 1.7倍水準への再評価)\n- ポジションサイズ: ポートフォリオの 2%\n\n【出口戦略】\n- 利確条件: PBRが2.0倍に接近、またはRSIが80を超えた場合。\n- 損切り条件: 日銀の利上げスタンス後退、あるいはROE改善に向けた構造改革の停滞。\n\n【監視ポイント】\n1. ROE 8%超に向けた具体的な非金利収益（手数料・運用）の拡大ペース。\n2. デジタルバンク勢のシェア拡大がリテール部門の預貸金利ざやに与える影響。",
+        "macro": {
+          "regime": "RATE_CUT",
+          "description": "米10年債 4.06% (1M: -4.1%) — 金利低下局面",
+          "indicators": {
+            "us10y": 4.06,
+            "vix": 20.6,
+            "usdjpy": 152.82,
+            "oil": 62.89
+          }
+        }
+      },
+      {
+        "date": "2026-02-14 19:05",
+        "scores": {
+          "fundamental": 2.8,
+          "valuation": 5.2,
+          "technical": 3.0,
+          "qualitative": 5.0
+        },
+        "weights": {
+          "fundamental": 0.41,
+          "valuation": 0.345,
+          "technical": 0.245,
+          "qualitative": 0.0
+        },
+        "signal": "WATCH",
+        "total_score": 3.7,
+        "metrics": {
+          "net_margin": 27.2,
+          "cf_quality": 0.0,
+          "equity_ratio": 5.0,
+          "roe": 6.1,
+          "revenue_growth": 11.7,
+          "earnings_growth": 8.7,
+          "per": 19.79826,
+          "pbr": 1.593341,
+          "dividend_yield": 260.0
+        },
+        "technical_data": {
+          "current_price": 3003.0,
+          "ma25_deviation": 4.9,
+          "ma75_deviation": 16.8,
+          "rsi": 59.9,
+          "bb_position": 79.1,
+          "volatility": 36.0,
+          "volume_ratio": 1.11,
+          "analyst_target": 2865.8333
+        },
+        "report": "分析失敗",
+        "macro": {
+          "regime": "RATE_CUT",
+          "description": "米10年債 4.06% (1M: -4.1%) — 金利低下局面",
+          "indicators": {
+            "us10y": 4.06,
+            "vix": 20.6,
+            "usdjpy": 152.82,
+            "oil": 62.89
+          }
+        }
+      },
+      {
+        "date": "2026-02-14 19:21",
+        "scores": {
+          "fundamental": 2.8,
+          "valuation": 5.2,
+          "technical": 3.0,
+          "qualitative": 5.0
+        },
+        "weights": {
+          "fundamental": 0.41,
+          "valuation": 0.345,
+          "technical": 0.245,
+          "qualitative": 0.0
+        },
+        "signal": "WATCH",
+        "total_score": 3.7,
+        "metrics": {
+          "net_margin": 27.2,
+          "cf_quality": 0.0,
+          "equity_ratio": 5.0,
+          "roe": 6.1,
+          "revenue_growth": 11.7,
+          "earnings_growth": 8.7,
+          "per": 19.79826,
+          "pbr": 1.593341,
+          "dividend_yield": 260.0
+        },
+        "technical_data": {
+          "current_price": 3003.0,
+          "ma25_deviation": 4.9,
+          "ma75_deviation": 16.8,
+          "rsi": 59.9,
+          "bb_position": 79.1,
+          "volatility": 36.0,
+          "volume_ratio": 1.11,
+          "analyst_target": 2865.8333
+        },
+        "report": "分析失敗",
+        "macro": {
+          "regime": "RATE_CUT",
+          "description": "米10年債 4.06% (1M: -4.1%) — 金利低下局面",
+          "indicators": {
+            "us10y": 4.06,
+            "vix": 20.6,
+            "usdjpy": 152.82,
+            "oil": 62.89
+          }
+        }
+      },
+      {
+        "date": "2026-02-14 19:33",
+        "scores": {
+          "fundamental": 2.8,
+          "valuation": 5.2,
+          "technical": 3.0,
+          "qualitative": 5.0
+        },
+        "weights": {
+          "fundamental": 0.41,
+          "valuation": 0.345,
+          "technical": 0.245,
+          "qualitative": 0.0
+        },
+        "signal": "WATCH",
+        "total_score": 3.7,
+        "metrics": {
+          "net_margin": 27.2,
+          "cf_quality": 0.0,
+          "equity_ratio": 5.0,
+          "roe": 6.1,
+          "revenue_growth": 11.7,
+          "earnings_growth": 8.7,
+          "per": 19.79826,
+          "pbr": 1.593341,
+          "dividend_yield": 260.0
+        },
+        "technical_data": {
+          "current_price": 3003.0,
+          "ma25_deviation": 4.9,
+          "ma75_deviation": 16.8,
+          "rsi": 59.9,
+          "bb_position": 79.1,
+          "volatility": 36.0,
+          "volume_ratio": 1.11,
+          "analyst_target": 2865.8333
+        },
+        "report": "分析失敗",
+        "macro": {
+          "regime": "RATE_CUT",
+          "description": "米10年債 4.06% (1M: -4.1%) — 金利低下局面",
+          "indicators": {
+            "us10y": 4.06,
+            "vix": 20.6,
+            "usdjpy": 152.82,
+            "oil": 62.89
+          }
+        }
+      },
+      {
+        "date": "2026-02-14 19:49",
+        "scores": {
+          "fundamental": 2.8,
+          "valuation": 5.2,
+          "technical": 3.0,
+          "qualitative": 5.0
+        },
+        "weights": {
+          "fundamental": 0.41,
+          "valuation": 0.345,
+          "technical": 0.245,
+          "qualitative": 0.0
+        },
+        "signal": "WATCH",
+        "total_score": 3.7,
+        "metrics": {
+          "net_margin": 27.2,
+          "cf_quality": 0.0,
+          "equity_ratio": 5.0,
+          "roe": 6.1,
+          "revenue_growth": 11.7,
+          "earnings_growth": 8.7,
+          "per": 19.79826,
+          "pbr": 1.593341,
+          "dividend_yield": 260.0
+        },
+        "technical_data": {
+          "current_price": 3003.0,
+          "ma25_deviation": 4.9,
+          "ma75_deviation": 16.8,
+          "rsi": 59.9,
+          "bb_position": 79.1,
+          "volatility": 36.0,
+          "volume_ratio": 1.11,
+          "analyst_target": 2865.8333
+        },
+        "report": "分析失敗",
+        "macro": {
+          "regime": "RATE_CUT",
+          "description": "米10年債 4.06% (1M: -4.1%) — 金利低下局面",
+          "indicators": {
+            "us10y": 4.06,
+            "vix": 20.6,
+            "usdjpy": 152.82,
+            "oil": 62.89
+          }
+        }
+      },
+      {
+        "date": "2026-02-14 19:52",
+        "scores": {
+          "fundamental": 2.8,
+          "valuation": 5.2,
+          "technical": 3.0,
+          "qualitative": 5.0
+        },
+        "weights": {
+          "fundamental": 0.41,
+          "valuation": 0.345,
+          "technical": 0.245,
+          "qualitative": 0.0
+        },
+        "signal": "WATCH",
+        "total_score": 3.7,
+        "metrics": {
+          "net_margin": 27.2,
+          "cf_quality": 0.0,
+          "equity_ratio": 5.0,
+          "roe": 6.1,
+          "revenue_growth": 11.7,
+          "earnings_growth": 8.7,
+          "per": 19.79826,
+          "pbr": 1.593341,
+          "dividend_yield": 260.0
+        },
+        "technical_data": {
+          "current_price": 3003.0,
+          "ma25_deviation": 4.9,
+          "ma75_deviation": 16.8,
+          "rsi": 59.9,
+          "bb_position": 79.1,
+          "volatility": 36.0,
+          "volume_ratio": 1.11,
+          "analyst_target": 2865.8333
+        },
+        "report": "━━━ ⚔️ Layer1: 地力分析 ━━━\n💪 競争優位性: \n1. 自己資本比率が5.0%と、比較対象の中では高い水準を維持している。\n2. 配当利回りが260.0%と、比較対象の中では高い水準を維持している。\n3. 純利益率が27.2%と、比較対象の中では高い水準を維持している。\n⚠️ 競争劣位性: \n1. ROEが6.1%と、比較対象の中では低い水準である。\n2. PERが19.79826倍と、比較対象の中では高い水準である。\n🐛 市場のバグ: PERが19.79826倍は、JPMorgan & Co.の13.085705倍と比べると約6倍過小評価ではないが、Bank of Americaの10.599715倍と比べると約2倍過小評価である。\n📊 本質的価値スコア: 4/10 \n本質的価値スコアは、自己資本比率、配当利回り、純利益率の高い水準を考慮して4/10と評価される。ただし、ROEとPERの低い水準を考慮して、スコアは低い。\n\n━━━ ⏱️ Layer2: タイミング分析 ━━━\n📰 センチメント: 中立 強度低 \nニュースがなく、センチメントは中立である。\n📈 テクニカル: 割安 \n現在価格が3003.0 JPYで、MA25乖離が4.9%、MA75乖離が16.8%であることから、テクニカルは割安と評価される。\n⚠️ 指標の矛盾: 矛盾なし \n指標の矛盾は見られない。\n📅 カタリスト: RATE_CUT \nRATE_CUTがカタリストとなる。\n⏱️ タイミングスコア: 3/10 \nタイミングスコアは、テクニカルが割安であることと、カタリストが存在することを考慮して3/10と評価される。\n\n━━━ ✅ 最終投資判断 ━━━\n🎯 シグナル: WATCH \n📊 地力スコア: 4/10 \n⏱️ タイミングスコア: 3/10 \n📋 定性スコア: 5/10 \n🔢 総合スコア: 3.7/10 \n【根拠】 \n1. 自己資本比率が高い。\n2. 配当利回りが高い。\n3. 純利益率が高い。\n【アクション】 \n- エントリー価格: JPY 2800\n- 損切りライン: JPY 2500（理由: MA75乖離が16.8%であることから、下方リスクを考慮する）\n- 利確ライン: JPY 3200（理由: アナリスト目標が2865.8333であることから、上方ポテンシャルを考慮する）\n- ポジションサイズ: ポートフォリオの 5% \n【出口戦略】 \n- 利確条件: 価格が3200を突破した場合\n- 損切り条件: 価格が2500を突破した場合 AND ファンダメンタルが悪化した場合\n【監視ポイント】 \n1. RATE_CUTの進行状況\n2. 株価の動向",
+        "macro": {
+          "regime": "RATE_CUT",
+          "description": "米10年債 4.06% (1M: -4.1%) — 金利低下局面",
+          "indicators": {
+            "us10y": 4.06,
+            "vix": 20.6,
+            "usdjpy": 152.82,
+            "oil": 62.89
+          }
+        }
+      }
+    ]
   }
 }

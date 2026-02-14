@@ -10,6 +10,55 @@ from datetime import datetime, timedelta
 from google import genai
 
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+
+from groq import Groq
+
+# ==========================================
+# Groq API クライアント (Llama 3)
+# ==========================================
+def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b-versatile") -> any:
+    """
+    Groq API (Llama 3) を呼び出す。
+    Gemini の代替として使用。
+    """
+    if not GROQ_API_KEY:
+        print("❌ Groq エラー: API キーが設定されていません。")
+        return None
+
+    client = Groq(api_key=GROQ_API_KEY)
+    
+    try:
+        print(f"  🚀 Groq ({model}) に切り替えて実行中...")
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a helpful financial analyst. Output valid JSON when requested."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=4096,
+            top_p=1,
+            stream=False,
+            response_format={"type": "json_object"} if parse_json else None
+        )
+        
+        text = completion.choices[0].message.content
+        
+        if parse_json:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                # JSONモードでもマークダウンが含まれる場合のクリーニング
+                cleaned = re.sub(r'```json\s*', '', text)
+                cleaned = re.sub(r'```\s*$', '', cleaned)
+                return json.loads(cleaned)
+        return text
+
+    except Exception as e:
+        print(f"❌ Groq エラー: {e}")
+        return None
+
 
 try:
     with open("config.json", encoding="utf-8") as f:
@@ -86,9 +135,8 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                または直接モデル名を指定
     """
     if not GEMINI_API_KEY or "your_gemini" in GEMINI_API_KEY:
-        print("❌ Gemini エラー: API キーが設定されていないか、プレースホルダーのままです。")
-        print("   .env ファイルの GEMINI_API_KEY を設定してください。")
-        return None
+        print("⚠️ Gemini APIキー未設定 -> Groq (Llama 3) で試行します...")
+        return call_groq(prompt, parse_json)
 
     client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -142,10 +190,15 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 is_quota_error = "quota" in err_msg.lower()
                 
                 # Quotaエラーなら待っても無駄なので、即座に安定版へ切り替え
-                if is_quota_error and current_model != stable_model:
-                    print(f"    🚫 1日上限(Quota)に到達しました。待機時間をスキップして安定版 ({stable_model}) に切り替えます...")
-                    current_model = stable_model
-                    continue  # sleepせずに即リトライ
+                if is_quota_error:
+                    if current_model != stable_model:
+                        print(f"    🚫 1日上限(Quota)に到達しました。待機時間をスキップして安定版 ({stable_model}) に切り替えます...")
+                        current_model = stable_model
+                        continue  # sleepせずに即リトライ
+                    
+                    # 安定版も上限なら、Groq (Llama 3) に逃げる
+                    print(f"    🚫 Gemini 全モデル上限到達。Groq (Llama 3) にフォールバックします...")
+                    return call_groq(prompt, parse_json)
 
                 # それ以外のレート制限(RPM)なら待機する
                 wait_time = 5 * (2 ** attempt)
@@ -169,10 +222,11 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 continue
                 
             print(f"❌ Gemini 致命的エラー: {e}")
-            return None
+            print(f"    🔄 Groq (Llama 3) でリトライします...")
+            return call_groq(prompt, parse_json)
             
-    print(f"❌ Gemini リトライ回数超過 ({max_retries}回)")
-    return None
+    print(f"❌ Gemini リトライ回数超過 ({max_retries}回) -> Groq (Llama 3) へフォールバック")
+    return call_groq(prompt, parse_json)
 
 
 # ==========================================
