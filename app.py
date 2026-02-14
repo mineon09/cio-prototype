@@ -294,12 +294,14 @@ if view_ticker and view_ticker in results:
                 st.metric(label, val)
 
     with col_right:
-        if dcf and dcf.get("fair_value"):
+        _fv_raw = dcf.get("fair_value", 0) if dcf else 0
+        _fv_valid = isinstance(_fv_raw, (int, float)) and _fv_raw > 0 and not (isinstance(_fv_raw, float) and (_fv_raw != _fv_raw))  # NaN check
+        if dcf and _fv_valid:
             st.subheader("💰 DCF理論株価")
-            fv = dcf.get("fair_value", 0)
-            cp = dcf.get("current_price", 0)
-            upside = dcf.get("upside", 0)
-            mos = dcf.get("margin_of_safety", 0)
+            fv = _fv_raw
+            cp = dcf.get("current_price", 0) or 0
+            upside = dcf.get("upside", 0) or 0
+            mos = dcf.get("margin_of_safety", 0) or 0
 
             dcf_cols = st.columns(3)
             with dcf_cols[0]:
@@ -316,7 +318,11 @@ if view_ticker and view_ticker in results:
                 for name, sc in scenarios.items():
                     emoji = {"bull": "🐂", "base": "📊", "bear": "🐻"}.get(name, "")
                     label = {"bull": "楽観", "base": "基本", "bear": "悲観"}.get(name, name)
-                    st.caption(f"{emoji} {label}: 成長率 {sc.get('growth_rate', 0)}% → ${sc.get('fair_value', 0):,.0f}")
+                    sc_gr = sc.get('growth_rate', 0) or 0
+                    sc_fv = sc.get('fair_value', 0) or 0
+                    if isinstance(sc_fv, float) and sc_fv != sc_fv:  # NaN check
+                        sc_fv = 0
+                    st.caption(f"{emoji} {label}: 成長率 {sc_gr}% → ${sc_fv:,.0f}")
         else:
             st.subheader("📈 テクニカル")
             st.metric("RSI", f"{float(tech.get('rsi', 0)):.1f}" if tech.get('rsi') else "-")

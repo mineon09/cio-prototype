@@ -123,6 +123,8 @@ def _dcf_valuation(fcf_latest: float, growth_rate: float, wacc: float,
 
     # 1株あたり理論株価
     fair_value = enterprise_value / shares_outstanding
+    if math.isnan(fair_value) or math.isinf(fair_value):
+        return 0.0
     return round(fair_value, 2)
 
 
@@ -152,11 +154,14 @@ JSONのみ返答。
 """
     result = call_gemini(prompt, parse_json=True)
     if result and isinstance(result, dict):
-        return {
-            "bull": min(result.get("bull", 15), 30),
-            "base": min(result.get("base", 8), 20),
-            "bear": max(result.get("bear", 2), -5),
-        }
+        try:
+            return {
+                "bull": min(float(result.get("bull", 15)), 30),
+                "base": min(float(result.get("base", 8)), 20),
+                "bear": max(float(result.get("bear", 2)), -5),
+            }
+        except (TypeError, ValueError):
+            pass
     # フォールバック
     avg_growth = sum(growths) / len(growths) if growths else 8
     return {
@@ -210,11 +215,16 @@ def estimate_fair_value(ticker: str) -> dict:
             "fair_value": fv,
         }
 
-    base_fv = results.get("base", {}).get("fair_value", 0)
-    upside = round((base_fv - current_price) / current_price * 100, 1) if current_price > 0 else 0
+    base_fv = results.get("base", {}).get("fair_value", 0) or 0
+    if math.isnan(base_fv) or math.isinf(base_fv):
+        base_fv = 0
+    upside = round((base_fv - current_price) / current_price * 100, 1) if current_price > 0 and base_fv > 0 else 0
     mos = round(max(0, (base_fv - current_price) / base_fv * 100), 1) if base_fv > 0 else 0
 
-    print(f"  📊 理論株価: ${base_fv:,.0f} (現在: ${current_price:,.0f}, 上昇余地: {upside:+.1f}%)")
+    if base_fv > 0:
+        print(f"  📊 理論株価: ${base_fv:,.0f} (現在: ${current_price:,.0f}, 上昇余地: {upside:+.1f}%)")
+    else:
+        print(f"  ⚠️ DCF算出失敗 — デフォルト値を使用")
 
     return {
         "available": True,

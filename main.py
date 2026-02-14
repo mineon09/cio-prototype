@@ -318,15 +318,34 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
         "report": report,
     }
 
-    # DCFデータがあれば追加
+    # DCFデータがあれば追加（NaN/Infを除去）
     if dcf_data and dcf_data.get("available"):
+        def _safe_num(v, default=0):
+            """NaN/Infを0に置換"""
+            if v is None:
+                return default
+            try:
+                f = float(v)
+                if f != f or f == float('inf') or f == float('-inf'):
+                    return default
+                return f
+            except (TypeError, ValueError):
+                return default
+        
+        safe_scenarios = {}
+        for k, sc in dcf_data.get("scenarios", {}).items():
+            safe_scenarios[k] = {
+                "growth_rate": _safe_num(sc.get("growth_rate", 0)),
+                "fair_value": _safe_num(sc.get("fair_value", 0)),
+            }
+
         new_entry["dcf"] = {
-            "fair_value": dcf_data.get("fair_value", 0),
-            "current_price": dcf_data.get("current_price", 0),
-            "upside": dcf_data.get("upside", 0),
-            "margin_of_safety": dcf_data.get("margin_of_safety", 0),
-            "scenarios": dcf_data.get("scenarios", {}),
-            "wacc": dcf_data.get("wacc", 0),
+            "fair_value": _safe_num(dcf_data.get("fair_value", 0)),
+            "current_price": _safe_num(dcf_data.get("current_price", 0)),
+            "upside": _safe_num(dcf_data.get("upside", 0)),
+            "margin_of_safety": _safe_num(dcf_data.get("margin_of_safety", 0)),
+            "scenarios": safe_scenarios,
+            "wacc": _safe_num(dcf_data.get("wacc", 0)),
         }
 
     # マクロ環境データがあれば追加
