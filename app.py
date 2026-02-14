@@ -16,11 +16,14 @@ import streamlit as st
 from datetime import datetime
 
 # プロジェクトルートをパスに追加
-sys.path.insert(0, os.path.dirname(__file__))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, BASE_DIR)
+os.chdir(BASE_DIR)
 
-# 環境変数を先にロード（モジュールが import 時に参照するため最優先）
+# 環境変数を先にロード（明示的パス指定でStreamlit起動時のCWDずれに対応）
 from dotenv import load_dotenv
-load_dotenv()
+_env_path = os.path.join(BASE_DIR, ".env")
+load_dotenv(_env_path, override=True)
 
 # ============================================================
 # Secrets Bridge: Streamlit Cloud ↔ ローカル .env
@@ -130,15 +133,43 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🔑 APIステータス")
-    from data_fetcher import _get_gemini_key, _get_groq_key
+    from data_fetcher import _get_gemini_key, _get_groq_key, HAS_GROQ
     gemini_ok = bool(_get_gemini_key())
     groq_ok = bool(_get_groq_key())
     
     st.write(f"Gemini: {'✅' if gemini_ok else '❌'}")
-    st.write(f"Groq (Fallback): {'✅' if groq_ok else '❌'}")
+    st.write(f"Groq SDK: {'✅' if HAS_GROQ else '❌ (pip install groq)'}")
+    st.write(f"Groq Key: {'✅' if groq_ok else '❌'}")
+
+    # デバッグ情報 (キーが検知されない場合)
+    if not groq_ok:
+        st.write(f"🔍 .env path: {_env_path}")
+        st.write(f"🔍 .env exists: {os.path.exists(_env_path)}")
+        if os.path.exists(_env_path):
+            with open(_env_path, 'r') as f:
+                content = f.read()
+            st.write(f"🔍 .env has GROQ: {'GROQ_API_KEY' in content}")
+            # 全環境変数のうちAPIキー関連だけ表示
+            api_envs = {k: v[:8]+'...' for k, v in os.environ.items() if 'API_KEY' in k}
+            st.write(f"🔍 API keys in env: {api_envs}")
 
     if not gemini_ok and not groq_ok:
         st.error("APIキーが設定されていません。 .env ファイルを確認してください。")
+
+    # Groq接続テスト
+    if HAS_GROQ and groq_ok:
+        if st.button("🧪 Groq接続テスト"):
+            try:
+                from groq import Groq as GroqTest
+                c = GroqTest(api_key=_get_groq_key())
+                r = c.chat.completions.create(
+                    model='llama-3.3-70b-versatile',
+                    messages=[{'role':'user','content':'Say hello in Japanese'}],
+                    max_tokens=20
+                )
+                st.success(f"✅ Groq接続OK: {r.choices[0].message.content}")
+            except Exception as e:
+                st.error(f"❌ Groq接続テスト失敗: {e}")
 
     st.markdown("---")
 

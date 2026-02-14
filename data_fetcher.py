@@ -16,7 +16,12 @@ def _get_gemini_key():
 def _get_groq_key():
     return os.environ.get('GROQ_API_KEY', '')
 
-from groq import Groq
+try:
+    from groq import Groq
+    HAS_GROQ = True
+except ImportError:
+    HAS_GROQ = False
+    Groq = None
 
 # ==========================================
 # Groq API クライアント (Llama 3)
@@ -26,6 +31,9 @@ def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b
     Groq API (Llama 3) を呼び出す。
     Gemini の代替として使用。
     """
+    if not HAS_GROQ:
+        print("❌ Groq エラー: groq パッケージがインストールされていません。 pip install groq を実行してください。")
+        return None
     if not _get_groq_key():
         print("❌ Groq エラー: API キーが設定されていません。")
         return None
