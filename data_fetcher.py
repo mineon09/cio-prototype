@@ -227,22 +227,55 @@ def fetch_stock_data(ticker: str) -> dict:
 # 比較対象の自動選定
 # ==========================================
 
-def select_competitors(target: dict) -> dict:
+def select_competitors(target: dict, macro_data: dict = None) -> dict:
     cfg = CONFIG['competitor_selection']
+    
+    # マクロ環境情報の組み立て
+    macro_context = ""
+    if macro_data and macro_data.get("regime"):
+        regime = macro_data.get("regime", "NEUTRAL")
+        desc = macro_data.get("description", "")
+        indicators = macro_data.get("indicators", {})
+        macro_context = f"""
+【現在のマクロ環境】
+Regime: {regime} — {desc}
+米10年債: {indicators.get('us10y', 'N/A')}% | VIX: {indicators.get('vix', 'N/A')} | USD/JPY: {indicators.get('usdjpy', 'N/A')} | WTI: {indicators.get('oil', 'N/A')}
+"""
+
+    # 地域判定
+    ticker = target['ticker']
+    country = target.get('country', '不明')
+    is_jp = ticker.endswith('.T')
+    region_rule = ""
+    if is_jp:
+        region_rule = """
+【地域ルール（日本株）】
+- direct（直接競合）は **必ず日本市場の同業（.T サフィックス）を2社以上** 含めること。
+- 海外企業（米国銀行等）は、金利局面やマクロ環境が異なるため direct ではなく benchmark に配置すること。
+- substitute（機能代替）は国内外問わず可。
+"""
+    else:
+        region_rule = """
+【地域ルール（米国株等）】
+- direct（直接競合）は **同一市場・同一ビジネスモデルの企業を優先** すること。
+- 異なる規制環境・金利局面にある海外企業は benchmark に配置し、直接比較は避けること。
+"""
+
     prompt = f"""
 投資委員会CIOとして、以下の銘柄の「真の競争力」を評価するための比較対象をJSONで選定せよ。
 
-銘柄: {target['ticker']} / {target['name']} / {target.get('sector','不明')} / {target.get('country','不明')}
+銘柄: {ticker} / {target['name']} / {target.get('sector','不明')} / {country}
 概要: {target.get('description','')[:150]}
-
-カテゴリ:
-- direct（直接競合）: {cfg['direct_count']}社
-- substitute（機能代替）: {cfg['substitute_count']}社
-- benchmark（資本効率比較）: {cfg['benchmark_count']}社
+{macro_context}
+{region_rule}
+【カテゴリと役割】
+- direct（直接競合）: {cfg['direct_count']}社 — 同一市場・同一ビジネスモデルで直接シェアを競う相手。マクロ環境が同等であること。
+- substitute（機能代替）: {cfg['substitute_count']}社 — 異なるアプローチで同じ顧客ニーズを満たすプレイヤー。
+- benchmark（資本効率比較）: {cfg['benchmark_count']}社 — グローバルベストプラクティスとの比較。異なる地域・金利環境の同業大手を含めてよい。
 
 制約: yfinanceで取得可能なティッカーのみ。日本株は「7203.T」形式。JSONのみ返答。
 
-{{"direct":["T1","T2","T3"],"substitute":["T4","T5"],"benchmark":["T6","T7"],"reasoning":"理由1行"}}
+{{"direct":["T1","T2","T3"],"substitute":["T4","T5"],"benchmark":["T6","T7"],"reasoning":"理由（マクロ環境の違いを踏まえた選定理由を1-2行）"}}
 """
     print("🧠 [API 1/2] 比較対象を選定中...")
     result = call_gemini(prompt, parse_json=True)
@@ -251,3 +284,4 @@ def select_competitors(target: dict) -> dict:
     all_c = result.get('direct',[]) + result.get('substitute',[]) + result.get('benchmark',[])
     print(f"✅ 比較対象: {all_c}")
     return result
+

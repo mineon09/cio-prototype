@@ -204,7 +204,14 @@ def run(ticker: str, gc=None):
     print(f"\n{'='*60}\n🚀 {ticker} の司令塔分析を開始 (Professional CIO Edition)\n{'='*60}")
 
     target_data = fetch_stock_data(ticker)
-    competitors = select_competitors(target_data)
+
+    # ── マクロ環境判定（競合選定の前に実行） ──
+    macro_data = {}
+    if HAS_MACRO:
+        macro_data = detect_regime()
+
+    # ── 競合選定（マクロ環境を考慮） ──
+    competitors = select_competitors(target_data, macro_data=macro_data)
 
     all_tickers = [ticker] + competitors.get('direct',[]) + competitors.get('substitute',[]) + competitors.get('benchmark',[])
     all_data = {ticker: target_data}
@@ -240,11 +247,6 @@ def run(ticker: str, gc=None):
     dcf_data = {}
     if HAS_DCF:
         dcf_data = estimate_fair_value(ticker)
-
-    # ── マクロ環境判定 ──
-    macro_data = {}
-    if HAS_MACRO:
-        macro_data = detect_regime()
 
     # ── 4軸スコアカード算出（セクター別閾値 + DCF + マクロ補正） ──
     sector = target_data.get('sector', '')
