@@ -1,37 +1,26 @@
-# API Keys and Environment Variables
+# Credentials and Secrets
+keys.txt
+*.json
+!config.json
 .env
-.env.*
-
-# Data & Cache
-data/cache/
-data/results.json
-*.log
-results.txt
-results_v2.txt
-debug_out.txt
-debug_clean.txt
-debug_clean_v2.txt
-verification_result.txt
-debug_toyota_check.txt
-debug_sb_check.txt
-backtest_short_check.txt
-backtest_jp_test.txt
+extra/
+secret/
 
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 .venv/
 env/
 venv/
-.pytest_cache/
+ENV/
 
-# IDEs
-.vscode/
-.idea/
-*.swp
+# Debug and Logs
+debug_*
+*.log
+verification_output.txt
+short_verification.txt
 
-# OS
-.DS_Store
-Thumbs.db
+# Data and Cache
+data/cache/
+data/results.json

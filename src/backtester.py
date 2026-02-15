@@ -89,7 +89,8 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
                     scorecard = generate_scorecard(
                         data.get("metrics", {}),
                         data.get("technical", {}),
-                        sector=data.get("sector", "")
+                        sector=data.get("sector", ""),
+                        macro_data=data.get("macro")
                     )
                     current_month_score = scorecard
                     last_scored_month = current_date.month
@@ -149,7 +150,7 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
                 yuho_data=None, 
                 sector=data.get("sector", ""),
                 dcf_data=None, 
-                macro_data=None 
+                macro_data=data.get("macro") 
             )
             
             signal = scorecard.get("signal")
@@ -172,19 +173,61 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
             print(f"  📅 {current_date.strftime('%Y-%m-%d')} | 株価: {price:,.0f} | 総合スコア: {total_score} ({signal})")
             print(f"    [地力: {scorecard.get('fundamental', {}).get('score')}/10, 割安: {scorecard.get('valuation', {}).get('score')}/10, 技術: {scorecard.get('technical', {}).get('score')}/10]")
 
+            print(f"    [地力: {scorecard.get('fundamental', {}).get('score')}/10, 割安: {scorecard.get('valuation', {}).get('score')}/10, 技術: {scorecard.get('technical', {}).get('score')}/10]")
+
+    # --- Benchmark Data Fetching ---
+    try:
+        # Ticker suffix check for region
+        bm_ticker = "^GSPC" # Default: S&P 500
+        if ticker.endswith(".T"):
+            bm_ticker = "^TOPIX" # Japan
+
+        # Config override
+        try:
+            import json
+            with open("config.json", encoding="utf-8") as f:
+                cfg = json.load(f)
+                if ticker.endswith(".T"):
+                    bm_ticker = cfg.get("benchmark_ticker", bm_ticker)
+                else:
+                    bm_ticker = cfg.get("benchmark_ticker_us", bm_ticker)
+        except:
+            pass
+
+        print(f"  📊 ベンチマーク取得中: {bm_ticker} ...")
+        bm_data = yf.Ticker(bm_ticker).history(start=start_date, end=end_date)
+    except Exception as e:
+        print(f"  ⚠️ ベンチマーク取得失敗: {e}")
+        bm_data = pd.DataFrame()
+
     # パフォーマンス計算
-    perf = calculate_performance(results, strategy=strategy)
+    perf = calculate_performance(results, strategy=strategy, benchmark_data=bm_data)
     perf['strategy'] = strategy
     perf['ticker'] = ticker
+    perf['benchmark_ticker'] = bm_ticker
     return perf
 
 
-def calculate_performance(results: list, strategy: str = "long") -> dict:
+
+def calculate_performance(results: list, strategy: str = "long", benchmark_data: pd.DataFrame = None) -> dict:
     """
     バックテスト結果からパフォーマンス指標を計算する。
     戦略: BUYシグナルが出たら購入し、SELLシグナルまたは期間終了で売却。
     単純化のため、全資産を投入・売却するモデルとする。
     """
+    if not results:
+        return {"error": "No results"}
+
+    df = pd.DataFrame(results)
+    
+    initial_capital = 1000000 # 100万円スタート
+    
+    # ... (Assets calculation logic remains the same until return calc) ... 
+    
+    # NOTE: I need to be careful not to delete the internal logic.
+    # Limitation of replace_file_content: checking the target content.
+    # The function signature needs to change.
+    
     if not results:
         return {"error": "No results"}
 
@@ -199,6 +242,9 @@ def calculate_performance(results: list, strategy: str = "long") -> dict:
     portfolio_values = []
     
     buy_price = 0
+    trailing_high_price = 0
+    last_sell_date = None
+    last_sell_reason = None
     
     # コスト設定・エグジット設定の読み込み
     try:
@@ -222,18 +268,44 @@ def calculate_performance(results: list, strategy: str = "long") -> dict:
         if holdings == 0:
             # 買い条件: BUYシグナル
             if signal == "BUY":
-                holdings = cash / (price * (1 + cost_rate))
-                cash = 0
-                buy_price = price
-                # エントリー時のATRを保持（損切り/利確ライン固定用）
-                entry_atr = atr
-                trades.append({"date": date, "type": "BUY", "price": price, "score": row['score'], "atr": atr})
+                # --- Cooldown Check ---
+                is_cooldown = False
+                if last_sell_date and last_sell_reason:
+                    delta_days = (date - last_sell_date).days
+                    
+                    # 損切り後のクールダウン
+                    if "損切り" in last_sell_reason:
+                        cd_days = exit_cfg.get(strategy, {}).get("cooldown_days_after_loss", 5)
+                        if delta_days < cd_days:
+                            is_cooldown = True
+                    
+                    # 利確後のクールダウン
+                    elif "利確" in last_sell_reason:
+                        cd_days = exit_cfg.get(strategy, {}).get("cooldown_days_after_profit", 3)
+                        if delta_days < cd_days:
+                            is_cooldown = True
+                
+                if not is_cooldown:
+                    holdings = cash / (price * (1 + cost_rate))
+                    cash = 0
+                    buy_price = price
+                    trailing_high_price = price
+                    # エントリー時のATRを保持（損切り/利確ライン固定用）
+                    entry_atr = atr
+                    trades.append({"date": date, "type": "BUY", "price": price, "score": row['score'], "atr": atr})
             
         elif holdings > 0:
             # 戦略分岐
             sell_signal = False
             reason = ""
             current_return = (price - buy_price) / buy_price * 100
+            
+            # 日中の高値・安値があればそれを使用、なければ終値で判定
+            current_low = row.get('low', price)
+            current_high = row.get('high', price)
+            
+            if current_high > trailing_high_price:
+                trailing_high_price = current_high
             
             # 戦略別のエグジット判定
             s_cfg = exit_cfg.get(strategy, {})
@@ -243,22 +315,24 @@ def calculate_performance(results: list, strategy: str = "long") -> dict:
                 # ATRベースの動的判定
                 sl_multi = s_cfg.get("stop_loss_atr_multiplier", 1.5)
                 tp_multi = s_cfg.get("take_profit_atr_multiplier", 2.5)
+                ts_multi = s_cfg.get("trailing_stop_atr_multiplier", 0.0)
                 
                 stop_loss_price = buy_price - (entry_atr * sl_multi)
                 take_profit_price = buy_price + (entry_atr * tp_multi)
-                
-                # 日中の高値・安値があればそれを使用、なければ終値で判定
-                current_low = row.get('low', price)
-                current_high = row.get('high', price)
+                trailing_stop_price = trailing_high_price - (entry_atr * ts_multi) if ts_multi > 0 else 0
                 
                 if current_low <= stop_loss_price:
                     sell_signal = True
                     reason = "ATR 損切り"
                     price = stop_loss_price # 損切り価格で約定とみなす
-                elif current_high >= take_profit_price:
+                elif take_profit_price > 0 and current_high >= take_profit_price:
                     sell_signal = True
                     reason = "ATR 利確"
                     price = take_profit_price # 利確価格で約定とみなす
+                elif ts_multi > 0 and current_low <= trailing_stop_price:
+                    sell_signal = True
+                    reason = f"Trailing Stop ({ts_multi}ATR)"
+                    price = trailing_stop_price
                 elif signal == "SELL":
                     sell_signal = True
                     reason = "シグナル"
@@ -279,14 +353,27 @@ def calculate_performance(results: list, strategy: str = "long") -> dict:
                         sell_signal = True
                         reason = "シグナル"
                 else:
-                    # 長期戦略: SELLシグナルのみ
-                    if signal == "SELL":
+                    # 長期戦略: ATRトレーリングストップ or SELLシグナル
+                    ts_multi = s_cfg.get("trailing_stop_atr_multiplier", 0.0)
+                    
+                    if current_high > trailing_high_price:
+                        trailing_high_price = current_high
+                        
+                    trailing_stop_price = trailing_high_price - (entry_atr * ts_multi) if ts_multi > 0 and (entry_atr is not None and entry_atr > 0) else 0
+
+                    if ts_multi > 0 and trailing_stop_price > 0 and current_low <= trailing_stop_price:
+                         sell_signal = True
+                         reason = f"Trailing Stop ({ts_multi}ATR)"
+                         price = trailing_stop_price
+                    elif signal == "SELL":
                         sell_signal = True
                         reason = "シグナル"
 
             if sell_signal:
                 cash = holdings * price * (1 - cost_rate)
                 holdings = 0
+                last_sell_date = date
+                last_sell_reason = reason
                 trades.append({
                     "date": date, 
                     "type": f"SELL ({reason})", 
@@ -312,25 +399,162 @@ def calculate_performance(results: list, strategy: str = "long") -> dict:
 
     total_return = (final_value - initial_capital) / initial_capital * 100
     
-    # BHベンチマーク
+    # 1. Market Benchmark (市場指数)
+    market_return = 0.0
+    if benchmark_data is not None and not benchmark_data.empty:
+        try:
+            # 期間の調整 (データが存在する範囲で)
+            start_val = benchmark_data.iloc[0]['Close']
+            end_val = benchmark_data.iloc[-1]['Close']
+            if start_val > 0:
+                market_return = (end_val - start_val) / start_val * 100
+        except Exception as e:
+            print(f"⚠️ ベンチマーク計算エラー: {e}")
+            market_return = 0.0
+
+    # 2. Stock Benchmark (個別株Buy&Hold)
+    stock_return = 0.0
     if not df.empty:
         start_price = df.iloc[0]['price']
         end_price = df.iloc[-1]['price']
-        bh_return = (end_price - start_price) / start_price * 100
-    else:
-        bh_return = 0
+        stock_return = (end_price - start_price) / start_price * 100
 
+    # ... (End of calculate_performance)
     return {
         "ticker": "", 
         "period": f"{df.iloc[0]['date'].strftime('%Y-%m')} ~ {df.iloc[-1]['date'].strftime('%Y-%m')}",
         "initial_capital": initial_capital,
         "final_value": final_value,
         "total_return_pct": round(total_return, 2),
-        "benchmark_return_pct": round(bh_return, 2),
-        "alpha": round(total_return - bh_return, 2),
+        "benchmark_return_pct": round(market_return, 2), # 互換性のため市場リターンを入れる
+        "market_return_pct": round(market_return, 2),    # 新設: 市場ベンチマーク
+        "stock_return_pct": round(stock_return, 2),      # 新設: 個別株Buy&Hold
+        "alpha": round(total_return - market_return, 2),
         "trades": trades,
         "history": portfolio_values
     }
+
+def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float = 1000000) -> dict:
+    """
+    モンテカルロ・シミュレーションを実行し、トレード順序のランダム性がパフォーマンスに与える影響を検証する。
+    
+    Args:
+        trades: バックテストのトレード履歴リスト
+        iterations: 試行回数
+        initial_capital: 初期資産
+        
+    Returns:
+        dict: シミュレーション結果の統計情報 (中央値、95%信頼区間など)
+    """
+    import random
+    import numpy as np
+    
+    if not trades:
+        return {"error": "No trades to simulate"}
+        
+    # リターン率の抽出 (％)
+    returns = [t['return'] for t in trades if 'return' in t]
+    
+    if not returns:
+        return {"error": "No returns found in trades"}
+        
+    final_values = []
+    max_drawdowns = []
+    
+    for _ in range(iterations):
+        # リターンのシャッフル (復元抽出)
+        # sampled_returns = random.choices(returns, k=len(returns)) # 復元抽出の場合
+        sampled_returns = random.sample(returns, k=len(returns)) # 非復元抽出 (順序のみシャッフル)
+        
+        capital = initial_capital
+        peak = capital
+        max_dd = 0.0
+        
+        for r in sampled_returns:
+            capital *= (1 + r / 100.0)
+            if capital > peak:
+                peak = capital
+            dd = (peak - capital) / peak * 100.0
+            if dd > max_dd:
+                max_dd = dd
+                
+        final_values.append(capital)
+        max_drawdowns.append(max_dd)
+        
+    # 統計量の計算
+    result = {
+        "iterations": iterations,
+        "final_value": {
+            "median": np.median(final_values),
+            "mean": np.mean(final_values),
+            "min": np.min(final_values),
+            "max": np.max(final_values),
+            "percentile_5": np.percentile(final_values, 5), # ワースト5%
+            "percentile_95": np.percentile(final_values, 95) # ベスト5%
+        },
+        "max_drawdown": {
+            "median": np.median(max_drawdowns),
+            "mean": np.mean(max_drawdowns),
+            "worst": np.max(max_drawdowns), # 最大ドローダウンの最大値 (最悪ケース)
+            "percentile_95": np.percentile(max_drawdowns, 95) # 95%信頼区間での最大DD
+        }
+    }
+    return result
+
+def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 24, window_months: int = 12, step_months: int = 1) -> pd.DataFrame:
+    """
+    ローリングバックテスト（スライディングウィンドウ検証）を実行する。
+    指定した期間をウィンドウサイズで区切り、少しずつずらしながらバックテストを行うことで、
+    特定の期間への過学習を防ぎ、戦略の安定性を検証する。
+    
+    Args:
+        ticker: 銘柄コード
+        start_date_str: 全体の開始日
+        total_months: 全体の期間
+        window_months: 1回のテスト期間（ウィンドウサイズ）
+        step_months: ずらす期間（ステップサイズ）
+        
+    Returns:
+        DataFrame: 各ウィンドウのテスト結果
+    """
+    start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+    results = []
+    
+    current_start = start_dt
+    
+    # ウィンドウが全期間に収まる間繰り返す
+    # 終了判定: current_start + window_months <= start_dt + total_months
+    end_limit = start_dt + relativedelta(months=total_months)
+    
+    while current_start + relativedelta(months=window_months) <= end_limit:
+        try:
+            # バックテスト実行
+            w_start_str = current_start.strftime("%Y-%m-%d")
+            
+            # ログを抑制しつつ実行したいが、run_backtestはprintしてしまう。
+            # ここではそのまま表示させるか、run_backtestを改修してquietモードをつけるのが良い。
+            # 簡易的に、標準出力を一時的にミュートする手もあるが、進行状況が見えないのも困る。
+            # そのまま実行し、結果を集約する。
+            print(f"\n🌊 Rolling Window: {w_start_str} (Duration: {window_months}m)")
+            
+            bt_result = run_backtest(ticker, w_start_str, duration_months=window_months, strategy="short") # verifyは通常short戦略で行う
+            
+            if "error" not in bt_result:
+                results.append({
+                    "start_date": w_start_str,
+                    "end_date": (current_start + relativedelta(months=window_months)).strftime("%Y-%m-%d"),
+                    "total_return": bt_result["total_return_pct"],
+                    "market_return": bt_result["market_return_pct"],
+                    "alpha": bt_result["alpha"],
+                    "trades_count": len(bt_result["trades"]),
+                    "final_value": bt_result["final_value"]
+                })
+        except Exception as e:
+            print(f"  ❌ Window Error ({current_start}): {e}")
+            
+        current_start += relativedelta(months=step_months)
+        
+    return pd.DataFrame(results)
 
 if __name__ == "__main__":
     pass

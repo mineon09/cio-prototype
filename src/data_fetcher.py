@@ -9,6 +9,10 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 from google import genai
+from dotenv import load_dotenv
+
+# .env ファイルから環境変数を読み込む
+load_dotenv()
 
 # APIキーは関数呼び出し時に毎回取得（Streamlit等での遅延ロードに対応）
 def _get_gemini_key():
@@ -27,17 +31,21 @@ except ImportError:
 # ==========================================
 # Groq API クライアント (Llama 3)
 # ==========================================
-def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b-versatile") -> any:
+# ==========================================
+# Groq API クライアント (Llama 3)
+# ==========================================
+def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b-versatile") -> tuple:
     """
     Groq API (Llama 3) を呼び出す。
     Gemini の代替として使用。
+    Returns: (result, model_name)
     """
     if not HAS_GROQ:
         print("❌ Groq エラー: groq パッケージがインストールされていません。 pip install groq を実行してください。")
-        return None
+        return None, None
     if not _get_groq_key():
         print("❌ Groq エラー: API キーが設定されていません。")
-        return None
+        return None, None
 
     client = Groq(api_key=_get_groq_key())
     
@@ -57,20 +65,21 @@ def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b
         )
         
         text = completion.choices[0].message.content
+        used_model = completion.model # 実際に使われたモデル名
         
         if parse_json:
             try:
-                return json.loads(text)
+                return json.loads(text), used_model
             except json.JSONDecodeError:
                 # JSONモードでもマークダウンが含まれる場合のクリーニング
                 cleaned = re.sub(r'```json\s*', '', text)
                 cleaned = re.sub(r'```\s*$', '', cleaned)
-                return json.loads(cleaned)
-        return text
+                return json.loads(cleaned), used_model
+        return text, used_model
 
     except Exception as e:
         print(f"❌ Groq エラー: {e}")
-        return None
+        return None, None
 
 
 try:
@@ -139,9 +148,10 @@ def short_name(name: str) -> str:
 # ==========================================
 
 def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
-                model: str = "flash"):
+                model: str = "flash") -> tuple:
     """
     Gemini API を呼び出す。
+    Returns: (result, model_name)
     """
     if not _get_gemini_key() or "your_gemini" in _get_gemini_key():
         print("⚠️ Gemini APIキー未設定 -> Groq (Llama 3) で試行します...")
@@ -178,10 +188,10 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 cleaned_text = re.sub(r'```\s*$', '', cleaned_text)
                 m = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
                 if m:
-                    return json.loads(m.group(0))
-                return json.loads(cleaned_text)
+                    return json.loads(m.group(0)), current_model
+                return json.loads(cleaned_text), current_model
                 
-            return text
+            return text, current_model
 
         except Exception as e:
             err_msg = str(e)
@@ -267,16 +277,17 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
 ※出力は有効なJSONのみ、余計な解説文は不要。米国株はティッカーのみ、日本株は.Tを付けること。
 """
     print(f"🚀 [API] 比較対象を選定中...")
-    result = call_gemini(prompt, parse_json=True)
+    result, model_name = call_gemini(prompt, parse_json=True)
     
     # デフォルト値
-    default = {"direct": [], "substitute": [], "benchmark": [], "reasoning": "AI選定失敗。"}
+    default = {"direct": [], "substitute": [], "benchmark": [], "reasoning": "AI選定失敗。", "ai_model": model_name or "Unknown"}
     if not result: return default
     return {
         "direct": result.get("direct", []),
         "substitute": result.get("substitute", []),
         "benchmark": result.get("benchmark", []),
-        "reasoning": result.get("reasoning", "選定完了。")
+        "reasoning": result.get("reasoning", "選定完了。"),
+        "ai_model": model_name
     }
 
 
@@ -286,12 +297,27 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
 
 def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
     """
-    yfinance から株価・財務データを取得する。
-    Args:
-        ticker (str): 銘柄コード
-        as_of_date (datetime, optional): 指定日時点のデータを取得（バックテスト用）。Noneの場合は最新。
+    指定した銘柄のデータを取得・計算して返す。
+    as_of_date が指定された場合、その時点での過去データを返す（バックテスト用）。
     """
-    # --- Cache Check ---
+    print(f"🔍 {ticker} データ取得開始... (基準日: {as_of_date.strftime('%Y-%m-%d') if as_of_date else '最新'})")
+    
+    # --- Macro Data Injection (v1.2) ---
+    macro_info = None
+    if not as_of_date: # バックテスト中は毎回取得すると遅いので、最新分析時のみ取得（または別途キャッシュ管理）
+        try:
+            # 相対インポートと絶対インポートの両方を試行（実行環境依存の回避）
+            try:
+                from .macro_regime import detect_regime
+            except ImportError:
+                from src.macro_regime import detect_regime
+            
+            macro_info = detect_regime()
+        except Exception as e:
+            print(f"  ⚠️ マクロデータ取得失敗: {e}")
+            macro_info = None
+    
+    # キャッシュ確認 (バックテスト時は日付込みで管理推奨だが、簡易実装としてticker単位)
     CACHE_DIR = "data/cache"
     os.makedirs(CACHE_DIR, exist_ok=True)
     
@@ -532,6 +558,8 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
             "currency": currency,
             "metrics": metrics,
             "technical": technical,
+            "technical": technical,
+            "macro": macro_info,
             "news": [],
             "description": ""
         }

@@ -20,6 +20,10 @@ import os
 import sys
 import json
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# .env ファイルから環境変数を読み込む
+load_dotenv()
 
 try:
     from linebot.v3 import WebhookHandler
@@ -37,21 +41,7 @@ except ImportError:
 
 
 def _load_credentials() -> tuple[str | None, str | None]:
-    """
-    line_secret.txt からアクセストークンとユーザーIDを読み込む
-    1行目: Channel Access Token
-    2行目: User ID
-    """
-    token_file = os.path.join(os.path.dirname(__file__), "..", "extra", "line_secret.txt")
-    if os.path.exists(token_file):
-        with open(token_file, "r") as f:
-            lines = [l.strip() for l in f.readlines() if l.strip()]
-            if len(lines) >= 2:
-                return lines[0], lines[1]
-            elif len(lines) == 1:
-                return lines[0], None
-    
-    # 環境変数フォールバック
+    """アクセストークンとユーザーIDを環境変数から読み込む"""
     return os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"), os.environ.get("LINE_USER_ID")
 
 

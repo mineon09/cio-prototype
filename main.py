@@ -46,6 +46,7 @@ from src.data_fetcher import (
 from src.sheets_writer import get_sheets_client, write_to_sheets
 from src.edinet_client import extract_yuho_data, is_japanese_stock
 from src.analyzers import generate_scorecard, format_yuho_for_prompt
+from src.portfolio import calculate_position_sizing
 
 # SEC EDGARï¼ˆ利用可能な場合のみ）
 try:
@@ -128,6 +129,17 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
 
     target    = all_data[target_ticker]
     tech      = target.get('technical', {})
+    sector    = target.get('sector', '不明')
+    
+    # ポジションサイズの計算
+    rec_pct, port_warning = calculate_position_sizing(target_ticker, sector, CONFIG)
+    rec_pct_str = f"{rec_pct*100:.1f}%"
+    
+    port_constraint_text = ""
+    if port_warning or rec_pct < CONFIG.get("position_sizing", {}).get("pct_per_trade", 0.10):
+        port_constraint_text = f"【ポートフォリオ制約 (セクター集中度)】\\n推奨ポジションサイズ: {rec_pct_str} (上限到達や分散ルールによる制限)\\n⚠️ 警告: {port_warning}\\n※アクションの「ポジションサイズ」は上記推奨値以下に設定すること。\\n"
+    else:
+        port_constraint_text = f"【ポートフォリオ制約】特になし (推奨最大: {rec_pct_str})\\n"
     
     # ニュースの切り詰め（最新10件程度または文字数制限）
     news_list = target.get('news', [])
@@ -167,7 +179,11 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
 
 【比較の文脈】{competitors.get('reasoning', '')}
 
+{port_constraint_text}
+
 {table_str}
+
+{port_constraint_text}
 
 【テクニカル（{target_ticker}）】
 現在価格:{cur} {currency} / MA25乖離:{tech.get('ma25_deviation')}% / MA75乖離:{tech.get('ma75_deviation')}%
@@ -208,13 +224,13 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 - エントリー価格: {currency} XXX
 - 損切りライン:   {currency} XXX（理由:）
 - 利確ライン:     {currency} XXX（理由:）
-- ポジションサイズ: ポートフォリオの X%
+- ポジションサイズ: ポートフォリオの X% (上限:{rec_pct_str})
 【出口戦略】
 - 利確条件: [価格 or イベント]
 - 損切り条件: [価格 AND ファンダメンタル変化]
 【監視ポイント】1. 2.
 """
-    report = call_gemini(prompt)
+    report, model_name = call_gemini(prompt)
 
     if not report or report == "分析失敗":
         print(f"  ⚠️ Gemini/Groq ともに失敗。ローカルでの簡易要約に切り替えます...")
@@ -233,7 +249,13 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 🔢 総合スコア: {scorecard.get('total_score', 0)}/10
 【注意】AIによる詳細レポート生成に失敗しました。スコアカードの数値を優先して確認してください。
 """
-    return report, table_str
+        model_name = "Local Fallback"
+
+    # レポート末尾にモデル名を追記
+    if model_name:
+        report += f"\n\n(分析エンジン: {model_name})"
+
+    return report, table_str, model_name
 
 
 # ==========================================
@@ -304,7 +326,7 @@ def run(ticker: str, gc=None):
     if summary_text:
         print(f"\n{summary_text}")
 
-    report, table_str = analyze_all(
+    report, table_str, model_name = analyze_all(
         ticker, all_data, competitors,
         yuho_data=yuho_data, scorecard=scorecard,
     )
@@ -318,14 +340,14 @@ def run(ticker: str, gc=None):
 
     # ── ダッシュボード用JSON出力（履歴蓄積型） ──
     save_to_dashboard_json(ticker, target_data, scorecard, report,
-                           dcf_data=dcf_data, macro_data=macro_data)
+                           dcf_data=dcf_data, macro_data=macro_data, model_name=model_name)
 
     print("\n" + "="*60 + "\n" + report + "\n" + "="*60)
     return report
 
 
 def save_to_dashboard_json(ticker, target_data, scorecard, report,
-                           dcf_data=None, macro_data=None):
+                           dcf_data=None, macro_data=None, model_name=None):
     """分析結果をWebダッシュボード用のJSON（履歴蓄積型）に保存する"""
     data_dir = "data"
     if not os.path.exists(data_dir):
@@ -356,6 +378,7 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
         "metrics": target_data.get("metrics", {}),
         "technical_data": target_data.get("technical", {}),
         "report": report,
+        "ai_model": model_name or "Unknown" # モデル名を記録
     }
 
     # DCFデータがあれば追加（NaN/Infを除去）

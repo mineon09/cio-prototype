@@ -14,9 +14,13 @@ import json
 import time
 import requests
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# .env ファイルから環境変数を読み込む
+load_dotenv()
 
 # SEC EDGAR API は User-Agent が必須
-SEC_USER_AGENT = "CIO-Prototype/1.0 (cio-analysis@example.com)"
+SEC_USER_AGENT = os.getenv("SEC_USER_AGENT", "CIO-Prototype/1.0 (cio-analysis-safety@example.com)")
 SEC_HEADERS = {
     "User-Agent": SEC_USER_AGENT,
     "Accept": "application/json",

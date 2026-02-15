@@ -11,6 +11,7 @@ from google.oauth2.service_account import Credentials
 
 SPREADSHEET_ID              = os.environ.get('SPREADSHEET_ID')
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')
+GOOGLE_SHEETS_KEY_PATH      = os.environ.get('GOOGLE_SHEETS_KEY_PATH')
 
 try:
     with open("config.json", encoding="utf-8") as f:
@@ -21,19 +22,32 @@ except Exception:
 
 def get_sheets_client():
     """Google Sheets クライアントを認証・取得する。失敗時は None。"""
-    if not GOOGLE_SERVICE_ACCOUNT_JSON or not SPREADSHEET_ID:
+    if not SPREADSHEET_ID:
         return None
+    
+    creds = None
     try:
-        creds = Credentials.from_service_account_info(
-            json.loads(GOOGLE_SERVICE_ACCOUNT_JSON),
-            scopes=['https://www.googleapis.com/auth/spreadsheets',
-                    'https://www.googleapis.com/auth/drive'])
+        # 1. raw JSON string からロード
+        if GOOGLE_SERVICE_ACCOUNT_JSON:
+            creds = Credentials.from_service_account_info(
+                json.loads(GOOGLE_SERVICE_ACCOUNT_JSON),
+                scopes=['https://www.googleapis.com/auth/spreadsheets',
+                        'https://www.googleapis.com/auth/drive'])
+        # 2. JSON ファイルパスからロード
+        elif GOOGLE_SHEETS_KEY_PATH and os.path.exists(GOOGLE_SHEETS_KEY_PATH):
+            creds = Credentials.from_service_account_file(
+                GOOGLE_SHEETS_KEY_PATH,
+                scopes=['https://www.googleapis.com/auth/spreadsheets',
+                        'https://www.googleapis.com/auth/drive'])
+        
+        if not creds:
+            return None
+
         gc = gspread.authorize(creds)
         print("✅ Google Sheets 認証成功")
         return gc
     except Exception as e:
         print(f"⚠️ Sheets認証失敗（出力なしで続行）: {e}")
-        return None
 
 
 def write_to_sheets(gc, target_ticker: str, target_data: dict,

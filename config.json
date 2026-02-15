@@ -48,10 +48,13 @@
   "_comment_exit": "=== NEW: エグジット戦略（A4）: ATRベース動的損切り ===",
   "exit_strategy": {
     "long": {
-      "mode": "signal",
-      "_mode_note": "SELLシグナル到達まで保有（デフォルト）",
+      "mode": "atr",
+      "_mode_note": "ATRベースのトレーリングストップで利益確保 (S4)",
+      "stop_loss_atr_multiplier": 2.0,
+      "take_profit_atr_multiplier": 0.0,
+      "_tp_note": "長期間保有のため利確ターゲットは設定せず、トレーリングストップのみ有効化",
       "trailing_stop_atr_multiplier": 3.0,
-      "_trailing_note": "任意: ATR×3.0のトレーリングストップ（0で無効）"
+      "_trailing_note": "高値から 3.0ATR 下落で利確/損切り"
     },
     "short": {
       "mode": "atr",
@@ -66,7 +69,10 @@
       "_tp_note": "利確 = エントリー価格 + ATR(14)×2.5。RR比≈1.67:1を維持",
       "_fallback_note": "ATRデータ取得失敗時は以下の固定%にフォールバック",
       "fixed_stop_loss_pct": -3.0,
-      "fixed_take_profit_pct": 5.0
+      "fixed_take_profit_pct": 5.0,
+      "_cooldown_note": "再エントリー禁止期間（日）",
+      "cooldown_days_after_loss": 5,
+      "cooldown_days_after_profit": 3
     }
   },
   "_comment_ai": "=== NEW: AIエンジン管理（A6）: モデル使用ログ・出力一貫性 ===",

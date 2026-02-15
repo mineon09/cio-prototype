@@ -644,29 +644,60 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
         weights["technical"]   += q_share * 0.3
         weights["qualitative"] = 0.00
 
-    # マクロ環境による重み補正
+    # マクロ環境による重み補正 (v1.2)
     regime_label = ""
     if macro_data and macro_data.get("regime"):
         try:
-            from .macro_regime import get_weight_adjustments
-            adj = get_weight_adjustments(macro_data["regime"], sector)
-            for axis in weights:
-                weights[axis] = max(0, weights[axis] + adj.get(axis, 0))
-            # 正規化（合計1.0）
-            w_sum = sum(weights.values())
-            if w_sum > 0:
-                for axis in weights:
-                    weights[axis] = round(weights[axis] / w_sum, 3)
-            regime_label = macro_data.get("regime", "")
-        except ImportError:
-            pass
+            # マクロモジュールから補正値を取得
+            try:
+                from .macro_regime import get_weight_adjustments
+            except ImportError:
+                from src.macro_regime import get_weight_adjustments
+            
+            regime_label = macro_data["regime"]
+            adj = get_weight_adjustments(regime_label, sector)
+            
+            # 補正を適用
+            new_weights = weights.copy()
+            for axis in new_weights:
+                new_weights[axis] = max(0, new_weights[axis] + adj.get(axis, 0.0))
+            
+            # 正規化 (合計が1.0になるように)
+            total_w = sum(new_weights.values())
+            if total_w > 0:
+                for axis in new_weights:
+                    weights[axis] = round(new_weights[axis] / total_w, 3)
+                
+        except Exception as e:
+            print(f"⚠️ マクロ重み適用エラー: {e}")
 
+    # --- Momentum Logic (v1.2.1) ---
+    # 上昇トレンドが強い場合、Valuation（割高感）による減点を緩和する
+    momentum_boost = 0.0
+    ma25_dev = technical.get("ma25_deviation", 0)
+    ma75_dev = technical.get("ma75_deviation", 0)
+    rsi = technical.get("rsi", 50)
+
+    momentum_bonus = 0.0
+    if ma25_dev > 0 and ma75_dev > 0:
+        # パーフェクトオーダー的な状態 (簡易)
+        if rsi > 50 and rsi < 75:
+             # 過熱しすぎず、上昇トレンド
+             momentum_bonus = 3.0
+             
     total = _clamp(
         fund["score"] * weights["fundamental"] +
         valu["score"] * weights["valuation"] +
         tech["score"] * weights["technical"] +
         qual["score"] * weights["qualitative"]
     )
+    
+    # Apply Momentum Bonus to Total
+    if momentum_bonus > 0:
+        total = min(10.0, total + momentum_bonus)
+        # 理由をどこかに追記したいが、totalはfloat。signal生成時に考慮される。
+        # tech["reason"] に追記しておく (ログ用)
+        tech["reason"] = tech.get("reason", "") + f" (Momentum Bonus +{momentum_bonus})"
 
     # シグナル判定
     sig_cfg = _CFG.get("signals", {"BUY": {"min_score": 6.5}, "WATCH": {"min_score": 4}, "SELL": {"max_score": 3.5}})
