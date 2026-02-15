@@ -1,13 +1,17 @@
-"""
-data_fetcher.py - データ取得モジュール
-======================================
-yfinance による株式データの取得と、Gemini API による比較対象の自動選定を担当。
-"""
-
-import os, re, json, time, math, unicodedata
+import os, re, json, time, math, unicodedata, sys, io
 import pandas as pd
+
+# 文字化け対策 (Windows環境用)
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, Exception):
+        pass
+
 import yfinance as yf
 from datetime import datetime, timedelta
+import numpy as np
 from google import genai
 from dotenv import load_dotenv
 
@@ -140,7 +144,19 @@ def short_name(name: str) -> str:
     for old, new in replacements:
         result = result.replace(old, new)
     result = result.strip().strip(",").strip()
+    result = result.strip().strip(",").strip()
     return result[:12] if len(result) > 12 else result
+
+
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
 
 
 # ==========================================
@@ -347,15 +363,51 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
         
         start_date = None
         end_date = None
+        # yf.Ticker.history fails with 404 in some envs, use yf.download
         if as_of_date:
-            # 過去1年分のデータ（テクニカル計算用）
-            start_date = (as_of_date - timedelta(days=400)).strftime('%Y-%m-%d')
-            end_date = (as_of_date + timedelta(days=1)).strftime('%Y-%m-%d')
-            hist = stock.history(start=start_date, end=end_date)
+            try:
+                hist = yf.download(ticker, period="2y", progress=False)
+                if hist.empty:
+                    raise ValueError("Empty history")
+            except Exception as e:
+                try:
+                    hist = yf.download(ticker, period="1y", progress=False)
+                except Exception as e2:
+                     return {"ticker": ticker, "name": ticker, "metrics": {}, "technical": {}}
+            
+            # yfinance.download returns MultiIndex columns if multiple tickers or recent version.
+            # Robustly flatten to single level
+            if isinstance(hist.columns, pd.MultiIndex):
+                # Try levels to find Close/Open etc.
+                if len(hist.columns.levels) > 1:
+                    # If multiple tickers/levels, try to select the current ticker
+                    # Note: yfinance often uppercases the ticker in column labels
+                    found = False
+                    for t_query in [ticker, ticker.upper(), ticker.lower()]:
+                        try:
+                            # Level 1 usually contains Tickers
+                            hist = hist.xs(t_query, axis=1, level=1)
+                            found = True
+                            break
+                        except:
+                            continue
+                    
+                    if not found:
+                        # Fallback: Just take level 0 (Price components)
+                        hist.columns = hist.columns.get_level_values(0)
+                else:
+                    hist.columns = hist.columns.get_level_values(0)
+
             # yfinanceはtz-awareなindexを返す場合があるため、tz-naiveに変換
             if hist.index.tz is not None:
                 hist.index = hist.index.tz_localize(None)
-            hist = hist[hist.index <= pd.Timestamp(as_of_date)]
+            
+            # as_of_date 以前のデータを抽出
+            # テクニカル計算用に1年分程度あれば十分だが、余裕を持って
+            end_dt = pd.Timestamp(as_of_date) + pd.Timedelta(days=1)
+            start_dt = pd.Timestamp(as_of_date) - pd.Timedelta(days=400)
+            
+            hist = hist[(hist.index >= start_dt) & (hist.index < end_dt)] if not hist.empty else hist
         else:
             hist = stock.history(period="1y")
 
@@ -365,7 +417,14 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
 
         # 直近の株価
         latest = hist.iloc[-1]
-        current_price = latest['Close']
+        
+        # Seriesの場合（MultiIndexが残っている等）はスカラー値を取り出す
+        def _get_scalar(val):
+            if isinstance(val, (pd.Series, pd.DataFrame)):
+                return val.iloc[0] if not val.empty else 0.0
+            return val
+
+        current_price = _get_scalar(latest['Close'])
         
         # 財務データ（直近決算を採用）
         def get_latest_financial(df_quarterly):
@@ -516,6 +575,14 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
             ma75 = closes.rolling(window=75).mean().iloc[-1]
             technical['ma75_deviation'] = round((current_price - ma75) / ma75 * 100, 2)
 
+        # Raw MAs for Backtester
+        if len(closes) >= 5:
+            technical['ma5'] = round(closes.rolling(window=5).mean().iloc[-1], 2)
+        if len(closes) >= 25:
+            technical['ma25'] = round(closes.rolling(window=25).mean().iloc[-1], 2)
+        if len(closes) >= 75:
+            technical['ma75'] = round(closes.rolling(window=75).mean().iloc[-1], 2)
+
         # ボリンジャーバンド (20, 2)
         if len(closes) >= 20:
             ma20 = closes.rolling(window=20).mean().iloc[-1]
@@ -533,6 +600,8 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
             vol_cur = vols.iloc[-1]
             if vol_avg > 0:
                 technical['volume_ratio'] = round(vol_cur / vol_avg, 2)
+            technical['vol_ma20'] = round(vol_avg, 0)
+            technical['volume'] = vol_cur
         
         # --- ATR (Average True Range) ---
         if len(hist) >= 15:
@@ -543,6 +612,10 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
             atr = tr.rolling(window=14).mean().iloc[-1]
             technical['atr'] = round(atr, 2)
             technical['atr_pct'] = round((atr / current_price) * 100, 2)
+        else:
+            # Fallback for ATR if data is missing (approx 3% of price)
+            technical['atr'] = round(current_price * 0.03, 2)
+            technical['atr_pct'] = 3.0
         
         if not as_of_date:
             technical['analyst_target'] = info.get('targetMeanPrice')
@@ -558,7 +631,6 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
             "currency": currency,
             "metrics": metrics,
             "technical": technical,
-            "technical": technical,
             "macro": macro_info,
             "news": [],
             "description": ""
@@ -567,7 +639,7 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
         # --- Save to Cache ---
         try:
             with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump(result_data, f, indent=2, ensure_ascii=False)
+                json.dump(result_data, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
         except Exception as e:
             print(f"  ⚠️ キャッシュ保存エラー: {e}")
             

@@ -21,7 +21,25 @@
   },
   "signals": {
     "BUY": {
-      "min_score": 6.5
+      "min_score": 6.5,
+      "min_fundamental": 5.0,
+      "regime_overrides": {
+        "RISK_ON": {
+          "min_score": 5.5
+        },
+        "RISK_OFF": {
+          "min_score": 7.5
+        },
+        "YIELD_INVERSION": {
+          "min_score": 8.0
+        },
+        "RATE_HIKE": {
+          "min_score": 7.0
+        },
+        "RATE_CUT": {
+          "min_score": 6.0
+        }
+      }
     },
     "WATCH": {
       "min_score": 4.0
@@ -54,7 +72,13 @@
       "take_profit_atr_multiplier": 0.0,
       "_tp_note": "長期間保有のため利確ターゲットは設定せず、トレーリングストップのみ有効化",
       "trailing_stop_atr_multiplier": 3.0,
-      "_trailing_note": "高値から 3.0ATR 下落で利確/損切り"
+      "_trailing_note": "高値から 3.0ATR 下落で利確/損切り",
+      "watch_zone_exit": {
+        "enabled": true,
+        "score_threshold": 4.5,
+        "consecutive_months": 3,
+        "_note": "スコア4.5未満が3ヶ月続いたら損切り/利確（ATRヒット前でも撤退）"
+      }
     },
     "short": {
       "mode": "atr",
@@ -71,8 +95,31 @@
       "fixed_stop_loss_pct": -3.0,
       "fixed_take_profit_pct": 5.0,
       "_cooldown_note": "再エントリー禁止期間（日）",
-      "cooldown_days_after_loss": 5,
-      "cooldown_days_after_profit": 3
+      "cooldown_days_after_loss": 15,
+      "cooldown_days_after_profit": 7,
+      "trend_filter": {
+        "enabled": true,
+        "rules": [
+          {
+            "type": "price_above_ma",
+            "ma_period": 75
+          },
+          {
+            "type": "short_ma_cross",
+            "fast_period": 5,
+            "slow_period": 25,
+            "_note": "MA5>MA25: 短期モメンタムが上向き"
+          },
+          {
+            "type": "volume_confirm",
+            "volume_ma_period": 20,
+            "volume_multiplier": 1.0,
+            "_note": "出来高≥20日平均: 価格変動に裏付けあり"
+          }
+        ],
+        "require_all": false,
+        "_require_note": "price_above_ma必須 + 残り2条件のうち1つ以上でOK"
+      }
     }
   },
   "_comment_ai": "=== NEW: AIエンジン管理（A6）: モデル使用ログ・出力一貫性 ===",
@@ -190,7 +237,7 @@
     "doc_type_code": "120",
     "target_sections": [
       "事業等のリスク",
-      "經營方針、経営環境及び対処すべき課題等",
+      "経営方針、経営環境及び対処すべき課題等",
       "研究開発活動"
     ]
   },

@@ -1,12 +1,15 @@
-"""
-backtester.py - 投資戦略バックテストモジュール
-==============================================
-過去の時点に遡ってデータを取得・分析し、Layer 1-3 のスコアリング基準が
-実際の市場で有効であったかを検証する。
-"""
-
 import sys
 import os
+import io
+
+# 文字化け対策 (Windows環境用)
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, Exception):
+        pass
+
 import pandas as pd
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
@@ -93,17 +96,14 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
                         macro_data=data.get("macro")
                     )
                     current_month_score = scorecard
+                    current_month_score["raw_technical"] = data.get("technical", {}) # Store raw data for trading
                     last_scored_month = current_date.month
                     
                     # ログ出力
                     total_score = scorecard.get("total_score")
                     signal = scorecard.get("signal")
-                    with open("debug_backtester.log", "a", encoding="utf-8") as f:
-                        f.write(f"DEBUG: Score: {total_score}, Signal: {signal}\n")
                     print(f"  📅 {current_date.strftime('%Y-%m-%d')} | 株価: {price:,.0f} | 月次スコア: {total_score} ({signal}){' '*20}")
                 else:
-                    with open("debug_backtester.log", "a", encoding="utf-8") as f:
-                        f.write(f"DEBUG: Data missing for {current_date}\n")
                     print(f"  ⚠️ {current_date.strftime('%Y-%m-%d')}: データ不足のためスキップ{' '*20}")
                     current_month_score = None
 
@@ -116,10 +116,12 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
                     "low": row.get('Low', price),
                     "signal": current_month_score.get("signal"), 
                     "score": current_month_score.get("total_score"),
-                    "atr": current_month_score.get("technical", {}).get("atr"),
+                    "atr": current_month_score.get("raw_technical", {}).get("atr") or 0,
+                    "tech_data": current_month_score.get("raw_technical", {}), 
                     "fundamental": current_month_score.get("fundamental", {}).get("score"),
                     "valuation": current_month_score.get("valuation", {}).get("score"),
                     "technical": current_month_score.get("technical", {}).get("score"),
+                    "regime": (data.get("macro") or {}).get("regime", "")
                 })
 
     # --- 月次ループ (Long戦略 - 従来通り) ---
@@ -165,9 +167,11 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
                 "signal": signal,
                 "score": total_score,
                 "atr": scorecard.get("technical", {}).get("atr"),
+                "tech_data": scorecard.get("technical", {}), # Pass full technical data
                 "fundamental": scorecard.get("fundamental", {}).get("score"),
                 "valuation": scorecard.get("valuation", {}).get("score"),
                 "technical": scorecard.get("technical", {}).get("score"),
+                "regime": (data.get("macro") or {}).get("regime", "")
             })
             
             print(f"  📅 {current_date.strftime('%Y-%m-%d')} | 株価: {price:,.0f} | 総合スコア: {total_score} ({signal})")
@@ -241,6 +245,9 @@ def calculate_performance(results: list, strategy: str = "long", benchmark_data:
     # ポートフォリオ価値の推移
     portfolio_values = []
     
+    # フィルタログ抑制用カウンタ
+    filter_log_counter = 0
+
     buy_price = 0
     trailing_high_price = 0
     last_sell_date = None
@@ -257,6 +264,18 @@ def calculate_performance(results: list, strategy: str = "long", benchmark_data:
     except:
         cost_rate = 0.0
         exit_cfg = {}
+    
+    # Watch Zone Counter (Long Strategy)
+    low_score_months = 0
+    wz_cfg = exit_cfg.get("long", {}).get("watch_zone_exit", {})
+    wz_enabled = wz_cfg.get("enabled", False) and strategy == "long"
+    wz_threshold = wz_cfg.get("score_threshold", 4.5)
+    wz_limit = wz_cfg.get("consecutive_months", 3)
+
+    # Fundamental Filter Config
+    min_fundamental_base = cfg.get("signals", {}).get("BUY", {}).get("min_fundamental", 0.0)
+    min_score_base = cfg.get("signals", {}).get("BUY", {}).get("min_score", 6.5)
+    regime_overrides = cfg.get("signals", {}).get("BUY", {}).get("regime_overrides", {})
 
     for i, row in df.iterrows():
         price = row['price']
@@ -266,8 +285,102 @@ def calculate_performance(results: list, strategy: str = "long", benchmark_data:
         
         # 売買ロジック
         if holdings == 0:
-            # 買い条件: BUYシグナル
-            if signal == "BUY":
+                # --- Regime Overrides ---
+                current_regime = row.get('regime', 'NEUTRAL')
+                min_score = min_score_base
+                if current_regime in regime_overrides:
+                    min_score = regime_overrides[current_regime].get("min_score", min_score_base)
+                
+                # Minimum Score Check (Dynamic)
+                if row['score'] < min_score:
+                    continue
+
+                # --- Trend Filter Check (Multi-Rule) ---
+                s_cfg = exit_cfg.get(strategy, {})
+                trend_filter = s_cfg.get("trend_filter", {})
+                is_trend_ok = True
+                
+                if trend_filter.get("enabled", False):
+                    rules = trend_filter.get("rules", [])
+                    # 旧形式互換
+                    if not rules and "rule" in trend_filter:
+                         rules = [{"type": trend_filter["rule"], "ma_period": trend_filter.get("ma_period", 75)}]
+
+                    tech_data = row.get("tech_data", {})
+                    price = row['price']
+                    
+                    passed_rules = []
+                    has_price_rule = False
+                    price_rule_passed = False
+                    
+                    for rule in rules:
+                        r_type = rule.get("type")
+                        
+                        if r_type == "price_above_ma":
+                            has_price_rule = True
+                            p = rule.get("ma_period", 75)
+                            # DataFetcher calculates ma{p}_deviation
+                            # If unavailable, try to compute from raw MA if present, else skip (fail safe)
+                            dev = tech_data.get(f"ma{p}_deviation")
+                            if dev is None and f"ma{p}" in tech_data:
+                                ma_val = tech_data[f"ma{p}"]
+                                if ma_val > 0:
+                                    dev = (price - ma_val) / ma_val * 100
+                            
+                            if dev is not None and dev > 0:
+                                price_rule_passed = True
+                                passed_rules.append(r_type)
+                                
+                        elif r_type == "short_ma_cross":
+                            f_p = rule.get("fast_period", 5)
+                            s_p = rule.get("slow_period", 25)
+                            ma_fast = tech_data.get(f"ma{f_p}")
+                            ma_slow = tech_data.get(f"ma{s_p}")
+                            
+                            if ma_fast and ma_slow and ma_fast > ma_slow:
+                                passed_rules.append(r_type)
+                                
+                        elif r_type == "volume_confirm":
+                            v_p = rule.get("volume_ma_period", 20)
+                            multi = rule.get("volume_multiplier", 1.0)
+                            vol = tech_data.get("volume")
+                            vol_ma = tech_data.get(f"vol_ma{v_p}")
+                            
+                            if vol and vol_ma and vol >= (vol_ma * multi):
+                                passed_rules.append(r_type)
+                    
+                    require_all = trend_filter.get("require_all", False)
+                    
+                    if has_price_rule and not price_rule_passed:
+                        is_trend_ok = False
+                        if filter_log_counter < 5:
+                            print(f"  📉 Trend Filter: Price below MA (Regime: {current_regime})")
+                            filter_log_counter += 1
+                    elif require_all:
+                         if len(passed_rules) < len(rules):
+                             is_trend_ok = False
+                    else:
+                        # Logic: Price Rule (if exists) + at least 1 other rule (if others exist)
+                        # If only price rule exists, it already passed here.
+                        # If price rule + 2 others, we need passed_rules >= 2 (Price + 1 other)
+                        if len(rules) > 1:
+                            if len(passed_rules) < 2:
+                                is_trend_ok = False
+                                if filter_log_counter < 5:
+                                    print(f"  📉 Trend Filter: Momentum/Volume not confirmed (Passed: {len(passed_rules)}/{len(rules)})")
+                                    filter_log_counter += 1
+                
+                if not is_trend_ok:
+                    continue
+
+                # --- Fundamental Filter Check ---
+                fund_score = row.get('fundamental', 0.0)
+                if fund_score < min_fundamental_base:
+                    if filter_log_counter < 5:
+                        print(f"  📉 Fund Filter: Skip BUY at {date.strftime('%Y-%m-%d')} (Fund: {fund_score} < {min_fundamental_base})")
+                        filter_log_counter += 1
+                    continue
+
                 # --- Cooldown Check ---
                 is_cooldown = False
                 if last_sell_date and last_sell_reason:
@@ -306,6 +419,17 @@ def calculate_performance(results: list, strategy: str = "long", benchmark_data:
             
             if current_high > trailing_high_price:
                 trailing_high_price = current_high
+            
+            # --- Watch Zone Check (Long Strategy) ---
+            if wz_enabled:
+                if row['score'] < wz_threshold:
+                    low_score_months += 1
+                else:
+                    low_score_months = 0 # Reset
+                
+                if low_score_months >= wz_limit:
+                    sell_signal = True
+                    reason = "Watch Zone Exit"
             
             # 戦略別のエグジット判定
             s_cfg = exit_cfg.get(strategy, {})
