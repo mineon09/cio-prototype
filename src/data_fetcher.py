@@ -46,7 +46,7 @@ def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b
         completion = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are a helpful financial analyst. Output valid JSON when requested."},
+                {"role": "system", "content": "あなたは優秀な金融アナリストです。指定された際は有効なJSON形式で出力してください。また、レポートなどは日本語で出力してください。"},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
@@ -223,6 +223,61 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
             
     print(f"❌ Gemini リトライ回数超過 ({max_retries}回) -> Groq (Llama 3) へフォールバック")
     return call_groq(prompt, parse_json)
+
+
+def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
+    """
+    対象銘柄の競合銘柄、代替資産、ベンチマークをAIに選定させる。
+    マクロ環境が渡された場合、その影響を受けやすい競合や相関銘柄を含めるよう促す。
+    """
+    ticker = target_data.get('ticker')
+    name = target_data.get('name')
+    sector = target_data.get('sector')
+    
+    # 既存の config から数を取得
+    c_count = CONFIG.get("competitor_selection", {}).get("direct_count", 3)
+    s_count = CONFIG.get("competitor_selection", {}).get("substitute_count", 2)
+    b_count = CONFIG.get("competitor_selection", {}).get("benchmark_count", 2)
+
+    macro_text = ""
+    if macro_data and macro_data.get("regime"):
+        macro_text = f"現在のマクロ環境は '{macro_data['regime']}' です。この環境下で特に比較的重要となる競合、あるいは逆相関・ヘッジ先となる銘柄を優先的に含めてください。"
+
+    prompt = f"""
+あなたは機関投資家のポートフォリオマネージャーです。以下の銘柄を分析するための比較対象セットをJSONで出力してください。
+
+対象銘柄: {name} ({ticker})
+セクター: {sector}
+{macro_text}
+
+【出力内容】
+1. 'direct': 直接競合する企業 ({c_count}件)
+2. 'substitute': 代替となり得る資産、または逆相関の関係にある銘柄 ({s_count}件)
+3. 'benchmark': 同じ経済圏・指数の代表銘柄 ({b_count}件)
+4. 'reasoning': このセットを選んだプロの視点での短い日本語の解説 (100文字程度)
+
+【書式】
+{{
+  "direct": ["TICKER1", "TICKER2"],
+  "substitute": ["TICKER3"],
+  "benchmark": ["TICKER4"],
+  "reasoning": "解説文"
+}}
+
+※出力は有効なJSONのみ、余計な解説文は不要。米国株はティッカーのみ、日本株は.Tを付けること。
+"""
+    print(f"🚀 [API] 比較対象を選定中...")
+    result = call_gemini(prompt, parse_json=True)
+    
+    # デフォルト値
+    default = {"direct": [], "substitute": [], "benchmark": [], "reasoning": "AI選定失敗。"}
+    if not result: return default
+    return {
+        "direct": result.get("direct", []),
+        "substitute": result.get("substitute", []),
+        "benchmark": result.get("benchmark", []),
+        "reasoning": result.get("reasoning", "選定完了。")
+    }
 
 
 # ==========================================
@@ -452,6 +507,16 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
             vol_cur = vols.iloc[-1]
             if vol_avg > 0:
                 technical['volume_ratio'] = round(vol_cur / vol_avg, 2)
+        
+        # --- ATR (Average True Range) ---
+        if len(hist) >= 15:
+            high = hist['High']
+            low = hist['Low']
+            close = hist['Close'].shift(1)
+            tr = pd.concat([high - low, (high - close).abs(), (low - close).abs()], axis=1).max(axis=1)
+            atr = tr.rolling(window=14).mean().iloc[-1]
+            technical['atr'] = round(atr, 2)
+            technical['atr_pct'] = round((atr / current_price) * 100, 2)
         
         if not as_of_date:
             technical['analyst_target'] = info.get('targetMeanPrice')

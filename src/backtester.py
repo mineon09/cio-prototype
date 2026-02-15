@@ -13,8 +13,12 @@ from dateutil.relativedelta import relativedelta
 import yfinance as yf
 
 # src パッケージ内のモジュールを利用
-from .data_fetcher import fetch_stock_data
-from .analyzers import generate_scorecard
+try:
+    from .data_fetcher import fetch_stock_data
+    from .analyzers import generate_scorecard
+except ImportError:
+    from data_fetcher import fetch_stock_data
+    from analyzers import generate_scorecard
 
 def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, strategy: str = "long"):
     """
@@ -107,11 +111,11 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
                 results.append({
                     "date": current_date,
                     "price": price,
-                    # Short戦略では、日々の判定はcalculate_performance側で行うため、
-                    # ここでは「月次で決まったシグナル」と「当日の価格」を渡す。
-                    # 利確/損切り判定はcalculate_performance内で日次価格を見て行われる。
+                    "high": row.get('High', price),
+                    "low": row.get('Low', price),
                     "signal": current_month_score.get("signal"), 
                     "score": current_month_score.get("total_score"),
+                    "atr": current_month_score.get("technical", {}).get("atr"),
                     "fundamental": current_month_score.get("fundamental", {}).get("score"),
                     "valuation": current_month_score.get("valuation", {}).get("score"),
                     "technical": current_month_score.get("technical", {}).get("score"),
@@ -155,8 +159,11 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
             results.append({
                 "date": current_date,
                 "price": price,
+                "high": price,
+                "low": price,
                 "signal": signal,
                 "score": total_score,
+                "atr": scorecard.get("technical", {}).get("atr"),
                 "fundamental": scorecard.get("fundamental", {}).get("score"),
                 "valuation": scorecard.get("valuation", {}).get("score"),
                 "technical": scorecard.get("technical", {}).get("score"),
@@ -193,66 +200,102 @@ def calculate_performance(results: list, strategy: str = "long") -> dict:
     
     buy_price = 0
     
-    # コスト設定の読み込み
+    # コスト設定・エグジット設定の読み込み
     try:
         import json
         with open("config.json", encoding="utf-8") as f:
             cfg = json.load(f)
             cost_bps = cfg.get("execution_cost_bps", 0)
             cost_rate = cost_bps / 10000.0
+            exit_cfg = cfg.get("exit_strategy", {})
     except:
         cost_rate = 0.0
+        exit_cfg = {}
 
     for i, row in df.iterrows():
         price = row['price']
         signal = row['signal']
         date = row['date']
+        atr = row.get('atr', 0)
         
         # 売買ロジック
         if holdings == 0:
             # 買い条件: BUYシグナル
             if signal == "BUY":
-                # 購入コストを引いた上でポジションを持つ
-                # cash = price * units * (1 + cost) -> units = cash / (price * (1 + cost))
                 holdings = cash / (price * (1 + cost_rate))
                 cash = 0
                 buy_price = price
-                trades.append({"date": date, "type": "BUY", "price": price, "score": row['score']})
+                # エントリー時のATRを保持（損切り/利確ライン固定用）
+                entry_atr = atr
+                trades.append({"date": date, "type": "BUY", "price": price, "score": row['score'], "atr": atr})
             
         elif holdings > 0:
             # 戦略分岐
             sell_signal = False
             reason = ""
-            # 現在のリターン（含み益ベース）
             current_return = (price - buy_price) / buy_price * 100
             
-            if strategy == "short":
-                # 短期戦略: 利確+5%, 損切り-3%
-                if current_return >= 5.0:
+            # 戦略別のエグジット判定
+            s_cfg = exit_cfg.get(strategy, {})
+            mode = s_cfg.get("mode", "signal")
+            
+            if mode == "atr" and entry_atr and entry_atr > 0:
+                # ATRベースの動的判定
+                sl_multi = s_cfg.get("stop_loss_atr_multiplier", 1.5)
+                tp_multi = s_cfg.get("take_profit_atr_multiplier", 2.5)
+                
+                stop_loss_price = buy_price - (entry_atr * sl_multi)
+                take_profit_price = buy_price + (entry_atr * tp_multi)
+                
+                # 日中の高値・安値があればそれを使用、なければ終値で判定
+                current_low = row.get('low', price)
+                current_high = row.get('high', price)
+                
+                if current_low <= stop_loss_price:
                     sell_signal = True
-                    reason = "Take Profit"
-                elif current_return <= -3.0:
+                    reason = "ATR 損切り"
+                    price = stop_loss_price # 損切り価格で約定とみなす
+                elif current_high >= take_profit_price:
                     sell_signal = True
-                    reason = "Stop Loss"
+                    reason = "ATR 利確"
+                    price = take_profit_price # 利確価格で約定とみなす
                 elif signal == "SELL":
                     sell_signal = True
-                    reason = "Signal"
+                    reason = "シグナル"
             else:
-                # 長期戦略: SELLシグナルのみで売却
-                if signal == "SELL":
-                    sell_signal = True
-                    reason = "Signal"
+                # 従来のシグナルまたは固定%判定 (フォールバック)
+                if strategy == "short":
+                    # 短期戦略（固定%）
+                    fixed_sl = s_cfg.get("fixed_stop_loss_pct", -3.0)
+                    fixed_tp = s_cfg.get("fixed_take_profit_pct", 5.0)
+                    
+                    if current_return >= fixed_tp:
+                        sell_signal = True
+                        reason = "固定利確"
+                    elif current_return <= fixed_sl:
+                        sell_signal = True
+                        reason = "固定損切り"
+                    elif signal == "SELL":
+                        sell_signal = True
+                        reason = "シグナル"
+                else:
+                    # 長期戦略: SELLシグナルのみ
+                    if signal == "SELL":
+                        sell_signal = True
+                        reason = "シグナル"
 
             if sell_signal:
-                # 売却代金 = units * price * (1 - cost)
                 cash = holdings * price * (1 - cost_rate)
                 holdings = 0
-                
-                # 実際のトレード損益（手数料控除後）を計算するのは難しいが、
-                # ここでは単純に (売値 - 買値)/買値 を記録し、最終資産でコスト影響を見る
-                trades.append({"date": date, "type": f"SELL ({reason})", "price": price, "score": row['score'], "return": current_return})
+                trades.append({
+                    "date": date, 
+                    "type": f"SELL ({reason})", 
+                    "price": price, 
+                    "score": row['score'], 
+                    "return": (price - buy_price) / buy_price * 100
+                })
         
-        # 資産評価額 (手数料は考慮せず時価評価)
+        # 資産評価額
         current_value = cash + (holdings * price)
         portfolio_values.append({"date": date, "value": current_value})
     

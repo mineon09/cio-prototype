@@ -377,7 +377,7 @@ if view_ticker and view_ticker in results:
     # ── Trend Chart ──
     history = raw.get("history", [])
     if len(history) >= 2:
-        st.subheader("📈 Score Trend")
+        st.subheader("📈 スコア推移")
         import pandas as pd
         trend_data = {
             "日付": [h.get("date", "").split(" ")[0] for h in history],
@@ -391,7 +391,7 @@ if view_ticker and view_ticker in results:
         st.line_chart(df, height=250)
 
     # ── Report ──
-    st.subheader("📝 Analysis Report")
+    st.subheader("📝 分析レポート")
     report_text = data.get("report", "")
     if report_text:
         st.markdown(report_text.replace("\n", "\n\n"))

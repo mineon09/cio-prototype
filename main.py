@@ -163,7 +163,7 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
     print(f"🚀 [API 1/1] 全分析を一括生成中...")
     prompt = f"""
 あなたは外資系ヘッジファンドのCIOです。
-以下のデータをすべて使い、投資レポートを1つのレスポンスで完成させてください。
+以下のデータをすべて使い、投資レポートを日本語で1つのレスポンスとして完成させてください。
 
 【比較の文脈】{competitors.get('reasoning', '')}
 
