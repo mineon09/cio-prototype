@@ -669,10 +669,10 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
     )
 
     # シグナル判定
-    sig_cfg = _CFG.get("signals", {"BUY": {"min_score": 7}, "WATCH": {"min_score": 4}, "SELL": {"max_score": 3}})
-    if total >= sig_cfg.get("BUY", {}).get("min_score", 7):
+    sig_cfg = _CFG.get("signals", {"BUY": {"min_score": 6.5}, "WATCH": {"min_score": 4}, "SELL": {"max_score": 3.5}})
+    if total >= sig_cfg.get("BUY", {}).get("min_score", 6.5):
         signal = "BUY"
-    elif total <= sig_cfg.get("SELL", {}).get("max_score", 3):
+    elif total <= sig_cfg.get("SELL", {}).get("max_score", 3.5):
         signal = "SELL"
     else:
         signal = "WATCH"

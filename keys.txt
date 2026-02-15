@@ -1,0 +1,133 @@
+--- Financials Keys (7203.T) ---
+Tax Effect Of Unusual Items
+Tax Rate For Calcs
+Normalized EBITDA
+Total Unusual Items
+Total Unusual Items Excluding Goodwill
+Net Income From Continuing Operation Net Minority Interest
+Reconciled Depreciation
+Reconciled Cost Of Revenue
+EBITDA
+EBIT
+Net Interest Income
+Interest Expense
+Interest Income
+Normalized Income
+Net Income From Continuing And Discontinued Operation
+Total Expenses
+Total Operating Income As Reported
+Diluted Average Shares
+Basic Average Shares
+Diluted EPS
+Basic EPS
+Diluted NI Availto Com Stockholders
+Net Income Common Stockholders
+Net Income
+Minority Interests
+Net Income Including Noncontrolling Interests
+Net Income Continuous Operations
+Tax Provision
+Pretax Income
+Other Income Expense
+Other Non Operating Income Expenses
+Earnings From Equity Interest
+Gain On Sale Of Security
+Net Non Operating Interest Income Expense
+Interest Expense Non Operating
+Interest Income Non Operating
+Operating Income
+Operating Expense
+Selling General And Administration
+Gross Profit
+Cost Of Revenue
+Total Revenue
+Operating Revenue
+
+--- Balance Sheet Keys ({ticker}) ---
+Treasury Shares Number
+Ordinary Shares Number
+Share Issued
+Net Debt
+Total Debt
+Tangible Book Value
+Invested Capital
+Working Capital
+Net Tangible Assets
+Capital Lease Obligations
+Common Stock Equity
+Total Capitalization
+Total Equity Gross Minority Interest
+Minority Interest
+Stockholders Equity
+Other Equity Interest
+Gains Losses Not Affecting Retained Earnings
+Other Equity Adjustments
+Treasury Stock
+Retained Earnings
+Additional Paid In Capital
+Capital Stock
+Common Stock
+Total Liabilities Net Minority Interest
+Total Non Current Liabilities Net Minority Interest
+Other Non Current Liabilities
+Employee Benefits
+Non Current Pension And Other Postretirement Benefit Plans
+Non Current Deferred Liabilities
+Non Current Deferred Taxes Liabilities
+Long Term Debt And Capital Lease Obligation
+Long Term Capital Lease Obligation
+Long Term Debt
+Current Liabilities
+Other Current Liabilities
+Current Debt And Capital Lease Obligation
+Current Capital Lease Obligation
+Current Debt
+Other Current Borrowings
+Commercial Paper
+Payables And Accrued Expenses
+Current Accrued Expenses
+Payables
+Other Payable
+Total Tax Payable
+Income Tax Payable
+Accounts Payable
+Total Assets
+Total Non Current Assets
+Other Non Current Assets
+Non Current Deferred Assets
+Non Current Deferred Taxes Assets
+Non Current Accounts Receivable
+Investments And Advances
+Investmentin Financial Assets
+Available For Sale Securities
+Long Term Equity Investment
+Investmentsin Joint Venturesat Cost
+Investmentsin Associatesat Cost
+Goodwill And Other Intangible Assets
+Other Intangible Assets
+Net PPE
+Accumulated Depreciation
+Gross PPE
+Construction In Progress
+Other Properties
+Machinery Furniture Equipment
+Buildings And Improvements
+Land And Improvements
+Properties
+Current Assets
+Other Current Assets
+Assets Held For Sale Current
+Inventory
+Finished Goods
+Work In Process
+Raw Materials
+Receivables
+Receivables Adjustments Allowances
+Other Receivables
+Taxes Receivable
+Accounts Receivable
+Cash Cash Equivalents And Short Term Investments
+Other Short Term Investments
+Cash And Cash Equivalents
+Cash Equivalents
+Cash Financial

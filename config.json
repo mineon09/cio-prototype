@@ -1,8 +1,10 @@
 {
-  "spreadsheet_id": "11q5zORCYlP9ZeNjZLopoeiQhuM5_hXeSE4Evp0NNChA",
+  "spreadsheet_id": "YOUR_GOOGLE_SHEET_ID_HERE",
   "sheets": {
     "output": "分析結果"
   },
+  "execution_cost_bps": 15,
+  "benchmark_ticker": "^TOPIX",
   "competitor_selection": {
     "direct_count": 3,
     "substitute_count": 2,
@@ -16,13 +18,13 @@
   },
   "signals": {
     "BUY": {
-      "min_score": 7
+      "min_score": 6.5
     },
     "WATCH": {
       "min_score": 4
     },
     "SELL": {
-      "max_score": 3
+      "max_score": 3.5
     }
   },
   "edinet": {

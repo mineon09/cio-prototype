@@ -5,6 +5,7 @@ yfinance による株式データの取得と、Gemini API による比較対象
 """
 
 import os, re, json, time, math, unicodedata
+import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 from google import genai
@@ -141,10 +142,6 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 model: str = "flash"):
     """
     Gemini API を呼び出す。
-
-    Args:
-        model: "flash" (高速・低コスト), "pro" (高精度・高コスト),
-               または直接モデル名を指定
     """
     if not _get_gemini_key() or "your_gemini" in _get_gemini_key():
         print("⚠️ Gemini APIキー未設定 -> Groq (Llama 3) で試行します...")
@@ -153,27 +150,24 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
     client = genai.Client(api_key=_get_gemini_key())
 
     # モデル名の解決
-    # Gemini 3.0 系を使用（2026-02-14 API確認済み）
     MODEL_MAP = {
         "flash": "gemini-3-flash-preview",
         "pro":   "gemini-3-pro-preview",
     }
     target_model = MODEL_MAP.get(model, model)
     
-    # フォールバック用（3.0が使えない場合）
+    # フォールバック用
     stable_model = "gemini-2.5-flash"
 
     current_model = target_model
     
     for attempt in range(max_retries):
         try:
-            # generate_content の呼び出し
             response = client.models.generate_content(
                 model=current_model,
                 contents=prompt
             )
             
-            # テキスト抽出
             text = response.text
             if not text:
                 raise ValueError("Empty response from Gemini")
@@ -193,23 +187,18 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
             err_msg = str(e)
             print(f"  ⚠️ Gemini リカバリ ({current_model}) ({attempt+1}/{max_retries}): {err_msg[:100]}...")
             
-            # レート制限 (429) または 容量超過 (RESOURCE_EXHAUSTED)
             if '429' in err_msg or 'RESOURCE_EXHAUSTED' in err_msg:
-                # "quota" (1日上限) エラーか判定
                 is_quota_error = "quota" in err_msg.lower()
                 
-                # Quotaエラーなら待っても無駄なので、即座に安定版へ切り替え
                 if is_quota_error:
                     if current_model != stable_model:
                         print(f"    🚫 1日上限(Quota)に到達しました。待機時間をスキップして安定版 ({stable_model}) に切り替えます...")
                         current_model = stable_model
-                        continue  # sleepせずに即リトライ
+                        continue
                     
-                    # 安定版も上限なら、Groq (Llama 3) に逃げる
                     print(f"    🚫 Gemini 全モデル上限到達。Groq (Llama 3) にフォールバックします...")
                     return call_groq(prompt, parse_json)
 
-                # それ以外のレート制限(RPM)なら待機する
                 wait_time = 5 * (2 ** attempt)
                 m = re.search(r'retry.*?in.*?(\d+)', err_msg)
                 if m:
@@ -218,14 +207,12 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 print(f"    ⏳ レート制限待機: {wait_time}秒...")
                 time.sleep(wait_time)
                 
-                # Pro で失敗し続けている場合 (RPM制限)、回数を重ねたら切り替え
                 if current_model != stable_model and attempt >= 1:
                     print(f"    🔄 レート制限が続いているため、安定版 ({stable_model}) に切り替えます...")
                     current_model = stable_model
                 
                 continue
             
-            # サーバーエラー (5xx)
             if '500' in err_msg or '503' in err_msg:
                 time.sleep(5)
                 continue
@@ -242,212 +229,258 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
 # yfinance データ取得
 # ==========================================
 
-def fetch_stock_data(ticker: str) -> dict:
-    print(f"  📊 {ticker} データ取得中...")
+def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
+    """
+    yfinance から株価・財務データを取得する。
+    Args:
+        ticker (str): 銘柄コード
+        as_of_date (datetime, optional): 指定日時点のデータを取得（バックテスト用）。Noneの場合は最新。
+    """
+    # --- Cache Check ---
+    CACHE_DIR = "data/cache"
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    
+    # 日付を含むユニークなキャッシュキーを作成
+    date_str = as_of_date.strftime('%Y%m%d') if as_of_date else "latest"
+    cache_file = os.path.join(CACHE_DIR, f"{ticker}_{date_str}.json")
+    
+    # 24時間以内のキャッシュがあれば使用 (latestの場合)
+    # バックテスト用(date指定あり)は永続的に使ってOK
+    if os.path.exists(cache_file):
+        try:
+            mtime = os.path.getmtime(cache_file)
+            if as_of_date or (time.time() - mtime < 24 * 3600):
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    print(f"  ⚡ {ticker} キャッシュを使用 ({date_str})")
+                    return json.load(f)
+        except Exception as e:
+            print(f"  ⚠️ キャッシュ読み込みエラー: {e}")
+
+    msg = f"  📊 {ticker} データ取得中..."
+    if as_of_date:
+        msg += f" (基準日: {as_of_date.strftime('%Y-%m-%d')})"
+    print(msg)
+    
     try:
         stock = yf.Ticker(ticker)
-        info  = stock.info
-        hist  = stock.history(period="1y")
-        fin   = stock.financials
-        cf    = stock.cashflow
-        bs    = stock.balance_sheet
+        
+        start_date = None
+        end_date = None
+        if as_of_date:
+            # 過去1年分のデータ（テクニカル計算用）
+            start_date = (as_of_date - timedelta(days=400)).strftime('%Y-%m-%d')
+            end_date = (as_of_date + timedelta(days=1)).strftime('%Y-%m-%d')
+            hist = stock.history(start=start_date, end=end_date)
+            # yfinanceはtz-awareなindexを返す場合があるため、tz-naiveに変換
+            if hist.index.tz is not None:
+                hist.index = hist.index.tz_localize(None)
+            hist = hist[hist.index <= pd.Timestamp(as_of_date)]
+        else:
+            hist = stock.history(period="1y")
+
+        if hist.empty:
+            print(f"  ⚠️ {ticker}: No price data found")
+            return {"ticker": ticker, "name": ticker, "metrics": {}, "technical": {}}
+
+        # 直近の株価
+        latest = hist.iloc[-1]
+        current_price = latest['Close']
+        
+        # 財務データ（直近決算を採用）
+        def get_latest_financial(df_quarterly):
+            if df_quarterly is None or df_quarterly.empty: return None
+            # 日付カラムを探してフィルタリング
+            try:
+                # yfinanceはカラムがTimestampの場合が多いが、文字列の可能性も考慮
+                dates = pd.to_datetime(df_quarterly.columns)
+            except Exception as e:
+                return None
+            
+            valid_col_indices = []
+            for i, d in enumerate(dates):
+                if as_of_date:
+                    # tz-naive同士で比較する
+                    d_naive = d.tz_localize(None) if d.tzinfo else d
+                    as_of_naive = pd.Timestamp(as_of_date).tz_localize(None) if pd.Timestamp(as_of_date).tzinfo else pd.Timestamp(as_of_date)
+                    
+                    if d_naive <= as_of_naive:
+                        valid_col_indices.append(i)
+                else:
+                    valid_col_indices.append(i)
+            
+            if not valid_col_indices:
+                return None
+            
+            valid_cols = df_quarterly.columns[valid_col_indices]
+            # 日付としてソートして最新を取得
+            sorted_cols = sorted(valid_cols, key=pd.to_datetime, reverse=True)
+            return df_quarterly[sorted_cols[0]]
+
+        fin_latest = get_latest_financial(stock.quarterly_financials)
+        if fin_latest is None:
+            fin_latest = get_latest_financial(stock.financials)
+
+        bs_latest  = get_latest_financial(stock.quarterly_balance_sheet)
+        if bs_latest is None:
+            bs_latest = get_latest_financial(stock.balance_sheet)
+
+        cf_latest  = get_latest_financial(stock.quarterly_cashflow)
+        if cf_latest is None:
+            cf_latest = get_latest_financial(stock.cashflow)
+
+        # info
+        info = stock.info if not as_of_date else {}
+        
+        # ヘルパー: 値の取得
+        def get_val(series, keys, default=None):
+            if series is None: return default
+            for k in keys:
+                if k in series.index:
+                    val = series[k]
+                    if pd.isna(val): continue
+                    return val
+            return default
+
+        # --- Metrics 構築 ---
+        metrics = {}
+        
+        # 1. ROE
+        net_income = get_val(fin_latest, ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests'])
+        equity     = get_val(bs_latest, ['Total Stockholder Equity', 'Stockholders Equity', 'Total Equity Gross Minority Interest', 'Total Equity'])
+        if net_income and equity and equity != 0:
+            metrics['roe'] = round((net_income / equity) * 100, 2)
+        else:
+            # Fallback for some Japanese tickers
+            metrics['roe'] = info.get('returnOnEquity', 0) * 100 if info.get('returnOnEquity') else None
+
+        # 2. 営業利益率
+        op_income = get_val(fin_latest, ['Operating Income', 'EBIT', 'Operating Revenue', 'Total Revenue']) # Fallback to Revenue if Op Income missing (rare but happens)
+        revenue   = get_val(fin_latest, ['Total Revenue', 'Operating Revenue', 'Total Operating Income As Reported'])
+        
+        # Specific check: if op_income == revenue, try to find a cost to subtract or look for Operating Expense
+        if op_income == revenue and revenue:
+             op_exp = get_val(fin_latest, ['Operating Expense', 'Total Operating Expenses'])
+             if op_exp:
+                 op_income = revenue - op_exp
+        
+        if op_income and revenue and revenue != 0:
+            metrics['op_margin'] = round((op_income / revenue) * 100, 2)
+        else:
+            metrics['op_margin'] = info.get('operatingMargins', 0) * 100 if info.get('operatingMargins') else None
+
+        # 3. 自己資本比率
+        assets = get_val(bs_latest, ['Total Assets'])
+        if equity and assets and assets != 0:
+            metrics['equity_ratio'] = round((equity / assets) * 100, 2)
+        else:
+            metrics['equity_ratio'] = None
+
+        # 4. CF品質 (Operating CF / Net Income)
+        op_cf = get_val(cf_latest, ['Operating Cash Flow', 'Total Cash From Operating Activities'])
+        if op_cf and net_income and net_income != 0:
+             metrics['cf_quality'] = round(op_cf / net_income, 2)
+        else:
+             metrics['cf_quality'] = None
+
+        # 5. R&D比率
+        # yfinanceではR&D取得が不安定なため、バックテストでは省略(0)
+        metrics['rd_ratio'] = 0 
+        
+        # 6. PER, PBR
+        if as_of_date:
+            shares = get_val(bs_latest, ['Share Issued', 'Ordinary Shares Number'])
+            eps = (net_income * 4) / shares if net_income and shares else None
+            
+            if current_price and eps and eps > 0:
+                metrics['per'] = round(current_price / eps, 2)
+            else:
+                metrics['per'] = None
+                
+            bps = equity / shares if equity and shares else None
+            
+            if current_price and bps and bps > 0:
+                metrics['pbr'] = round(current_price / bps, 2)
+            else:
+                metrics['pbr'] = None
+            
+            metrics['dividend_yield'] = None
+        else:
+            metrics['per'] = info.get('trailingPE')
+            metrics['pbr'] = info.get('priceToBook')
+            metrics['dividend_yield'] = (info.get('dividendYield') or 0) * 100
+
+        # --- Technical 構築 ---
+        technical = {}
+        technical['current_price'] = current_price
+        
+        closes = hist['Close']
+        
+        # RSI (14)
+        if len(closes) >= 15:
+            delta = closes.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            technical['rsi'] = round(rsi.iloc[-1], 2)
+        else:
+            technical['rsi'] = 50.0
+
+        # MA乖離
+        if len(closes) >= 25:
+            ma25 = closes.rolling(window=25).mean().iloc[-1]
+            technical['ma25_deviation'] = round((current_price - ma25) / ma25 * 100, 2)
+        
+        if len(closes) >= 75:
+            ma75 = closes.rolling(window=75).mean().iloc[-1]
+            technical['ma75_deviation'] = round((current_price - ma75) / ma75 * 100, 2)
+
+        # ボリンジャーバンド (20, 2)
+        if len(closes) >= 20:
+            ma20 = closes.rolling(window=20).mean().iloc[-1]
+            sigma = closes.rolling(window=20).std().iloc[-1]
+            upper = ma20 + 2 * sigma
+            lower = ma20 - 2 * sigma
+            if upper != lower:
+                pos = (current_price - lower) / (upper - lower) * 100
+                technical['bb_position'] = round(pos, 2)
+
+        # 出来高倍率
+        vols = hist['Volume']
+        if len(vols) >= 21:
+            vol_avg = vols.rolling(window=20).mean().iloc[-2]
+            vol_cur = vols.iloc[-1]
+            if vol_avg > 0:
+                technical['volume_ratio'] = round(vol_cur / vol_avg, 2)
+        
+        if not as_of_date:
+            technical['analyst_target'] = info.get('targetMeanPrice')
+
+        name = info.get('longName', ticker) if not as_of_date else ticker
+        sector = info.get('sector', "Unknown") if not as_of_date else "Unknown"
+        currency = info.get('currency', 'USD') if not as_of_date else 'USD'
+
+        result_data = {
+            "ticker": ticker,
+            "name": name,
+            "sector": sector,
+            "currency": currency,
+            "metrics": metrics,
+            "technical": technical,
+            "news": [],
+            "description": ""
+        }
+        
+        # --- Save to Cache ---
+        try:
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(result_data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"  ⚠️ キャッシュ保存エラー: {e}")
+            
+        return result_data
+
     except Exception as e:
         print(f"  ⚠️ {ticker} 取得失敗: {e}")
         return {"ticker": ticker, "name": ticker, "currency": "USD",
                 "metrics": {}, "technical": {}, "news": [], "description": ""}
-
-    def sg(df, row):
-        try:
-            v = df.loc[row].iloc[0]
-            return None if (v is None or (isinstance(v, float) and math.isnan(v))) else v
-        except:
-            return None
-
-    metrics = {}
-    op, rev, ni = sg(fin,'Operating Income'), sg(fin,'Total Revenue'), sg(fin,'Net Income')
-    ocf, eq, ta = sg(cf,'Operating Cash Flow'), sg(bs,'Stockholders Equity'), sg(bs,'Total Assets')
-    rd = sg(fin, 'Research And Development')
-
-    if op  and rev and rev != 0: metrics['op_margin']    = round(op  / rev * 100, 1)
-    if ni  and rev and rev != 0: metrics['net_margin']   = round(ni  / rev * 100, 1)
-    if rd  and rev and rev != 0: metrics['rd_ratio']     = round(abs(rd) / rev * 100, 1)
-    if ocf and ni  and ni  != 0: metrics['cf_quality']   = round(ocf / ni, 2)
-    if eq  and ta  and ta  != 0: metrics['equity_ratio'] = round(eq  / ta * 100, 1)
-
-    def safe_pct(key, mult=100):
-        v = info.get(key)
-        if v is None or (isinstance(v, float) and math.isnan(v)):
-            return None
-        return round(v * mult, 1)
-
-    metrics['roe']             = safe_pct('returnOnEquity')
-    metrics['revenue_growth']  = safe_pct('revenueGrowth')
-    metrics['earnings_growth'] = safe_pct('earningsGrowth')
-
-    def safe_info(key):
-        v = info.get(key)
-        if v is None or (isinstance(v, float) and math.isnan(v)):
-            return None
-        return v
-
-    metrics['per']            = safe_info('forwardPE')
-    metrics['pbr']            = safe_info('priceToBook')
-    metrics['dividend_yield'] = safe_pct('dividendYield')
-
-    technical = {}
-    if not hist.empty:
-        cur  = hist['Close'].iloc[-1]
-        ma25 = hist['Close'].rolling(25).mean().iloc[-1]
-        ma75 = hist['Close'].rolling(75).mean().iloc[-1]
-        delta = hist['Close'].diff()
-        gain  = delta.where(delta > 0, 0).rolling(14).mean()
-        loss  = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rsi   = round(100 - 100 / (1 + gain.iloc[-1] / loss.iloc[-1]), 1) if loss.iloc[-1] != 0 else 50.0
-        std   = hist['Close'].rolling(25).std().iloc[-1]
-        bb_u, bb_l = ma25 + 2*std, ma25 - 2*std
-        technical = {
-            'current_price': round(cur, 2),
-            'ma25_deviation': round((cur-ma25)/ma25*100, 1) if ma25 else 0,
-            'ma75_deviation': round((cur-ma75)/ma75*100, 1) if ma75 else 0,
-            'rsi':            rsi,
-            'bb_position':    round((cur-bb_l)/(bb_u-bb_l)*100, 1) if (bb_u-bb_l) != 0 else 50,
-            'volatility':     round(hist['Close'].pct_change().std() * (252**0.5) * 100, 1),
-            'volume_ratio':   round(safe_info('volume') / max(safe_info('averageVolume') or 1, 1), 2),
-            'analyst_target': safe_info('targetMeanPrice'),
-        }
-
-    cutoff = datetime.now() - timedelta(days=7)
-    news = [
-        f"[{datetime.fromtimestamp(n.get('providerPublishTime',0)).strftime('%m/%d')}] {n.get('title','')} ({n.get('publisher','')})"
-        for n in (stock.news or [])[:8]
-        if datetime.fromtimestamp(n.get('providerPublishTime', 0)) >= cutoff
-    ]
-
-    return {
-        'ticker':      ticker,
-        'name':        info.get('longName', ticker),
-        'sector':      info.get('sector', '不明'),
-        'country':     info.get('country', '不明'),
-        'currency':    info.get('currency', 'USD'),
-        'description': (info.get('longBusinessSummary') or '')[:200],
-        'metrics':     metrics,
-        'technical':   technical,
-        'news':        news,
-    }
-
-
-# ==========================================
-# 比較対象の自動選定（ローカルロジック、API不使用）
-# ==========================================
-
-# セクター別の定型競合マッピング
-SECTOR_COMPETITORS = {
-    # Technology
-    "Technology": {
-        "us": {"direct": ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMZN", "CRM", "ORCL", "ADBE", "INTC", "AMD", "AVGO", "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "MU", "IBM"],
-               "benchmark": ["MSFT", "AAPL", "GOOGL"]},
-        "jp": {"direct": ["6758.T", "6902.T", "6861.T", "6501.T", "6503.T", "4063.T", "6367.T", "7741.T", "6857.T", "6723.T"],
-               "benchmark": ["AAPL", "MSFT"]},
-    },
-    "Communication Services": {
-        "us": {"direct": ["GOOGL", "META", "NFLX", "DIS", "CMCSA", "T", "VZ", "TMUS", "SPOT"],
-               "benchmark": ["GOOGL", "META"]},
-        "jp": {"direct": ["9432.T", "9433.T", "9434.T", "4689.T", "3659.T"],
-               "benchmark": ["GOOGL", "META"]},
-    },
-    # Financial Services
-    "Financial Services": {
-        "us": {"direct": ["JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SCHW", "AXP", "V", "MA", "PYPL"],
-               "benchmark": ["JPM", "BLK"]},
-        "jp": {"direct": ["8306.T", "8316.T", "8411.T", "8604.T", "8766.T", "8697.T", "8591.T"],
-               "benchmark": ["JPM", "GS"]},
-    },
-    # Healthcare
-    "Healthcare": {
-        "us": {"direct": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "LLY", "TMO", "ABT", "BMY", "AMGN", "GILD"],
-               "benchmark": ["JNJ", "UNH"]},
-        "jp": {"direct": ["4502.T", "4503.T", "4568.T", "4519.T", "4523.T", "4151.T"],
-               "benchmark": ["JNJ", "PFE"]},
-    },
-    # Consumer Cyclical
-    "Consumer Cyclical": {
-        "us": {"direct": ["AMZN", "TSLA", "HD", "NKE", "MCD", "SBUX", "TGT", "LOW", "F", "GM"],
-               "benchmark": ["AMZN", "TSLA"]},
-        "jp": {"direct": ["7203.T", "7267.T", "7269.T", "9983.T", "3382.T", "7974.T", "9984.T"],
-               "benchmark": ["AMZN", "TSLA"]},
-    },
-    # Industrials
-    "Industrials": {
-        "us": {"direct": ["CAT", "DE", "BA", "HON", "UPS", "RTX", "LMT", "GE", "MMM"],
-               "benchmark": ["CAT", "HON"]},
-        "jp": {"direct": ["6301.T", "7011.T", "6273.T", "6103.T", "7013.T", "6302.T"],
-               "benchmark": ["CAT", "HON"]},
-    },
-    # Energy
-    "Energy": {
-        "us": {"direct": ["XOM", "CVX", "COP", "SLB", "EOG", "OXY", "MPC", "PSX", "VLO"],
-               "benchmark": ["XOM", "CVX"]},
-        "jp": {"direct": ["5020.T", "5019.T", "1605.T", "5021.T"],
-               "benchmark": ["XOM", "CVX"]},
-    },
-    # Consumer Defensive
-    "Consumer Defensive": {
-        "us": {"direct": ["PG", "KO", "PEP", "COST", "WMT", "CL", "MDLZ", "PM"],
-               "benchmark": ["PG", "KO"]},
-        "jp": {"direct": ["2914.T", "2502.T", "2503.T", "4452.T", "2802.T"],
-               "benchmark": ["PG", "KO"]},
-    },
-    # Real Estate
-    "Real Estate": {
-        "us": {"direct": ["AMT", "PLD", "CCI", "EQIX", "SPG", "O", "WELL"],
-               "benchmark": ["AMT", "PLD"]},
-        "jp": {"direct": ["8801.T", "8802.T", "3289.T", "8830.T", "3231.T"],
-               "benchmark": ["AMT", "PLD"]},
-    },
-}
-
-
-def select_competitors(target: dict, macro_data: dict = None) -> dict:
-    """セクター情報を元にローカルで競合を選定する（API不使用）"""
-    cfg = CONFIG['competitor_selection']
-    ticker = target['ticker']
-    sector = target.get('sector', '不明')
-    is_jp = ticker.endswith('.T')
-    region = "jp" if is_jp else "us"
-
-    print(f"📋 比較対象をローカル選定中 (セクター: {sector})...")
-
-    # セクターマッピングから取得
-    sector_data = SECTOR_COMPETITORS.get(sector, {})
-    region_data = sector_data.get(region, {})
-
-    if not region_data:
-        # セクターが見つからない場合、全セクターからフォールバック
-        # 近いセクターを探す
-        for s_name, s_data in SECTOR_COMPETITORS.items():
-            if s_data.get(region):
-                region_data = s_data[region]
-                print(f"  ℹ️ セクター '{sector}' のマッピングなし → '{s_name}' で代替")
-                break
-
-    # 自分自身を除外
-    candidates = [t for t in region_data.get("direct", []) if t != ticker]
-    benchmarks = [t for t in region_data.get("benchmark", []) if t != ticker]
-
-    direct = candidates[:cfg['direct_count']]
-    substitute = candidates[cfg['direct_count']:cfg['direct_count'] + cfg['substitute_count']]
-    benchmark = benchmarks[:cfg['benchmark_count']]
-
-    # ベンチマークが空なら候補から補充
-    if not benchmark and len(candidates) > cfg['direct_count'] + cfg['substitute_count']:
-        benchmark = candidates[cfg['direct_count'] + cfg['substitute_count']:][:cfg['benchmark_count']]
-
-    all_c = direct + substitute + benchmark
-    print(f"✅ 比較対象: {all_c}")
-    return {
-        "direct": direct,
-        "substitute": substitute,
-        "benchmark": benchmark,
-        "reasoning": f"セクター({sector})に基づくローカル選定",
-    }
-

@@ -1,36 +1,37 @@
-# 環境変数・認証情報（絶対にコミットしない）
+# API Keys and Environment Variables
 .env
-*.json
-!config.json
+.env.*
 
-
-# クレデンシャル・秘密情報
-google_json.txt
-edinet_api.txt
-*_key*.txt
-*_secret*.txt
-.streamlit/secrets.toml
+# Data & Cache
+data/cache/
+data/results.json
+*.log
+results.txt
+results_v2.txt
+debug_out.txt
+debug_clean.txt
+debug_clean_v2.txt
+verification_result.txt
+debug_toyota_check.txt
+debug_sb_check.txt
+backtest_short_check.txt
+backtest_jp_test.txt
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
-.Python
-venv/
+*.pyd
 .venv/
 env/
-*.egg-info/
+venv/
+.pytest_cache/
 
-# EDINET キャッシュ
-.edinet_cache/
+# IDEs
+.vscode/
+.idea/
+*.swp
 
 # OS
 .DS_Store
 Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-
-# ログ
-*.log
