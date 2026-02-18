@@ -60,7 +60,8 @@ except ImportError:
     def detect_regime(): return {}
 
 from src.notifier import send_line_push
-from main import analyze_all, save_to_dashboard_json
+from src.utils import load_config_with_overrides
+from main import analyze_all, save_to_dashboard_json, run_strategy_analysis
 
 
 # ============================================================
@@ -283,7 +284,8 @@ if run_analysis and ticker_input:
         
         # Step 6.5: Run Strategy Analysis (Shared Logic)
         st.write(f"🔬 戦略分析実行中 ({strategy})...")
-        from main import run_strategy_analysis
+        from src.utils import load_config_with_overrides
+        config = load_config_with_overrides(ticker)
         scorecard = run_strategy_analysis(ticker, strategy, base_scorecard, macro_data, config)
         
         # 保存用に戦略名を記録
