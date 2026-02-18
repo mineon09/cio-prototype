@@ -156,7 +156,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🔑 APIステータス")
-    from data_fetcher import _get_gemini_key, _get_groq_key, HAS_GROQ
+    from src.data_fetcher import _get_gemini_key, _get_groq_key, HAS_GROQ
     gemini_ok = bool(_get_gemini_key())
     groq_ok = bool(_get_groq_key())
     
