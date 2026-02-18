@@ -262,7 +262,7 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 # メインフロー
 # ==========================================
 
-def run(ticker: str, gc=None):
+def run(ticker: str, gc=None, strategy: str = "long"):
     print(f"\n{'='*60}\n🚀 {ticker} の司令塔分析を開始 (Professional CIO Edition)\n{'='*60}")
 
     target_data = fetch_stock_data(ticker)
@@ -314,14 +314,74 @@ def run(ticker: str, gc=None):
     sector = target_data.get('sector', '')
     if sector and sector != '不明':
         print(f"🏭 セクター: {sector}")
-    scorecard = generate_scorecard(
-        target_data.get('metrics', {}),
-        target_data.get('technical', {}),
-        yuho_data,
-        sector=sector,
-        dcf_data=dcf_data,
-        macro_data=macro_data,
+    # ── コンフィグ読み込み (Override適用) ──
+    from src.utils import load_config_with_overrides
+    config = load_config_with_overrides(ticker)
+
+    # ── 4軸スコアカード算出（セクター別閾値 + DCF + マクロ補正） ──
+    sector = target_data.get('sector', '')
+    if sector and sector != '不明':
+        print(f"🏭 セクター: {sector}")
+        
+    # ベースのスコアカード生成 needed for Fundamental score
+    base_scorecard = generate_scorecard(
+            target_data.get('metrics', {}),
+            target_data.get('technical', {}),
+            yuho_data,
+            sector=sector,
+            dcf_data=dcf_data,
+            macro_data=macro_data,
     )
+    scorecard = base_scorecard # Default
+
+    # 戦略に応じたスコアカード生成/判定
+    if strategy in ["bounce", "breakout"]:
+        print(f"🔄 スイング戦略 ({strategy}) で分析を実行します... (Shared Logic)")
+        
+        # 1. 必要なデータ取得 (History)
+        import yfinance as yf
+        # 取得期間は長めに (MA75等計算用)
+        hist = yf.Ticker(ticker).history(period="1y") 
+        if hist.empty:
+             print("⚠️ ヒストリカルデータ取得失敗")
+             return "Data Error", "", "Error"
+
+        from src.analyzers import TechnicalAnalyzer
+        from src.strategies import BounceStrategy, BreakoutStrategy
+        
+        ta = TechnicalAnalyzer(hist)
+        
+        # 2. Strategy インスタンス化
+        strat_map = {
+            "bounce": BounceStrategy,
+            "breakout": BreakoutStrategy
+        }
+        strat_class = strat_map.get(strategy)
+        strat = strat_class(strategy, config)
+        
+        # 3. Rowデータの作成 (Strategyが期待する形式)
+        row = hist.iloc[-1].copy()
+        row['regime'] = macro_data.get('regime', 'NEUTRAL')
+        row['fundamental'] = base_scorecard.get('fundamental', {}).get('score', 0)
+        row['score'] = base_scorecard.get('total_score', 0)
+        
+        # 4. エントリー分析実行
+        result = strat.analyze_entry(row, hist, ta)
+        
+        is_entry = result["is_entry"]
+        details = result["details"]
+        
+        signal = "BUY" if is_entry else "WATCH"
+        scorecard['signal'] = signal
+        scorecard['strategy_details'] = details
+        scorecard['summary_text'] = f"【{strategy.upper()}戦略 (v1.5)】\n判定: {signal}\n" + "\n".join(details)
+
+    else:
+        # Long戦略 (Traditional config-based logic in generate_scorecard mostly, 
+        # but we could wrap LongStrategy if we wanted to be 100% consistent.
+        # For now, generate_scorecard does the heavy lifting for 'Long' fundamental analysis.
+        pass
+
     summary_text = scorecard.get('summary_text', '')
     if summary_text:
         print(f"\n{summary_text}")
@@ -473,11 +533,18 @@ def main():
     gc = get_sheets_client()
 
     args = sys.argv[1:]
-    tickers, skip = [], False
+    tickers = []
+    strategy = "long" # Default
+    skip = False
+    
     for i, arg in enumerate(args):
         if skip: skip = False; continue
         if arg.lower() == '--ticker':
             if i + 1 < len(args): tickers.append(args[i+1].upper()); skip = True
+        elif arg.lower() == '--strategy':
+            if i + 1 < len(args): 
+                strategy = args[i+1].lower()
+                skip = True
         elif not arg.startswith('--'):
             tickers.append(arg.upper())
 
@@ -493,7 +560,7 @@ def main():
     for i, ticker in enumerate(tickers):
         print(f"\n[{i+1}/{len(tickers)}] {ticker}")
         try:
-            run(ticker, gc)
+            run(ticker, gc, strategy=strategy)
         except Exception as e:
             print(f"❌ {ticker} 失敗: {e}")
         if i < len(tickers) - 1:

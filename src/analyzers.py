@@ -11,7 +11,17 @@ Fundamental / Valuation / Technical / Qualitative の4レイヤーで
 各スコアは 0–10 のスケールで、根拠テキスト付きで返す。
 """
 
-import json, math
+import json, math, logging
+import pandas as pd
+
+# ロガー設定
+logger = logging.getLogger("CIO_Analyzers")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 try:
     with open("config.json", encoding="utf-8") as f:
@@ -123,21 +133,17 @@ def score_fundamental(metrics: dict, sector: str = "") -> dict:
     roe = _safe(metrics.get('roe'))
     if roe is not None:
         roe_good = cfg.get("roe_good", 10)
-        if roe >= roe_good * 2:
-            s = 10
-            parts.append(f"ROE {roe}% — 極めて高い資本効率")
-        elif roe >= roe_good:
+        # 数学的連続性を確保 (roe_good で 7点、 roe_good*2 で 10点、0 で 0点)
+        if roe >= roe_good:
             s = 7 + (roe - roe_good) / roe_good * 3
-            parts.append(f"ROE {roe}% — 良好な資本効率")
-        elif roe >= 5:
-            s = 4 + (roe - 5) / 5 * 3
-            parts.append(f"ROE {roe}% — 平均的")
-        elif roe > 0:
-            s = roe / 5 * 4
-            parts.append(f"ROE {roe}% — 低い資本効率")
+            status = "良好" if roe < roe_good * 2 else "極めて高い"
         else:
-            s = 0
-            parts.append(f"ROE {roe}% — 赤字")
+            s = (roe / roe_good) * 7
+            status = "平均的" if roe >= 5 else "低い"
+        
+        if roe <= 0: s = 0; status = "赤字"
+            
+        parts.append(f"ROE {roe}% — {status}な資本効率")
         total += _clamp(s)
         count += 1
 
@@ -145,21 +151,16 @@ def score_fundamental(metrics: dict, sector: str = "") -> dict:
     op = _safe(metrics.get('op_margin'))
     if op is not None:
         op_good = cfg.get("op_margin_good", 15)
-        if op >= op_good * 2:
-            s = 10
-            parts.append(f"営業利益率 {op}% — 圧倒的収益力")
-        elif op >= op_good:
+        if op >= op_good:
             s = 7 + (op - op_good) / op_good * 3
-            parts.append(f"営業利益率 {op}% — 高収益")
-        elif op >= 5:
-            s = 4 + (op - 5) / 10 * 3
-            parts.append(f"営業利益率 {op}% — 標準的")
-        elif op > 0:
-            s = op / 5 * 4
-            parts.append(f"営業利益率 {op}% — 低収益")
+            status = "高収益" if op < op_good * 2 else "圧倒的収益力"
         else:
-            s = 0
-            parts.append(f"営業利益率 {op}% — 営業赤字")
+            s = (op / op_good) * 7
+            status = "標準的" if op >= 5 else "低収益"
+        
+        if op <= 0: s = 0; status = "営業赤字"
+
+        parts.append(f"営業利益率 {op}% — {status}")
         total += _clamp(s)
         count += 1
 
@@ -167,18 +168,16 @@ def score_fundamental(metrics: dict, sector: str = "") -> dict:
     eq = _safe(metrics.get('equity_ratio'))
     if eq is not None:
         eq_good = cfg.get("equity_ratio_good", 40)
-        if eq >= eq_good * 2:
-            s = 10
-            parts.append(f"自己資本比率 {eq}% — 極めて安全")
-        elif eq >= eq_good:
+        if eq >= eq_good:
             s = 7 + (eq - eq_good) / eq_good * 3
-            parts.append(f"自己資本比率 {eq}% — 安全")
-        elif eq >= 20:
-            s = 4 + (eq - 20) / 20 * 3
-            parts.append(f"自己資本比率 {eq}% — 注意")
+            status = "安全" if eq < eq_good * 2 else "極めて安全"
         else:
-            s = max(0, eq / 20 * 4)
-            parts.append(f"自己資本比率 {eq}% — 財務リスクあり")
+            s = (eq / eq_good) * 7
+            status = "注意" if eq >= 20 else "財務リスクあり"
+            
+        if eq <= 0: s = 0
+
+        parts.append(f"自己資本比率 {eq}% — {status}")
         total += _clamp(s)
         count += 1
 
@@ -497,6 +496,140 @@ def score_technical(technical: dict, sector: str = "") -> dict:
 # Layer 4: Qualitative（有報による定性分析）
 # ==========================================
 
+
+# ==========================================
+# Technical Analyzer (v1.4 Swing Strategy Support)
+# ==========================================
+
+class TechnicalAnalyzer:
+    """
+    バックテストおよび日次分析のためのテクニカル判定クラス。
+    Bounce/Breakout戦略のエントリー/エグジット判定を集約。
+    """
+    def __init__(self, daily_df):
+        self.df = daily_df
+
+    def get_latest(self):
+        return self.df.iloc[-1]
+
+    def check_rsi_condition(self, threshold: float, period: int = 9, condition: str = "below") -> bool:
+        """RSIが閾値以下(below)か以上(above)かを判定"""
+        # RSI計算はデータフェッチャー側で行われている前提だが、期間が違う場合再計算が必要
+        # ここでは簡易的に既存の 'RSI' カラムがあればそれを使うが、
+        # period=9指定などで厳密にやるなら再計算ロジックが必要。
+        # v1.4では data_fetcher.py で RSI(9) も計算するようにするか、ここで計算する。
+        # ここでは計算済みと仮定し、カラム名が 'RSI_9' などでない場合は 'RSI' (通常14) を使う妥協案か、
+        # talib等で再計算する。依存関係を減らすため、pandasで簡易計算する。
+        
+        delta = self.df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        current_rsi = rsi.iloc[-1]
+        if condition == "below":
+            return current_rsi < threshold
+        elif condition == "above":
+            return current_rsi > threshold
+        return False
+
+    def check_bollinger_touch(self, sigma: float = 2.0, period: int = 20) -> tuple:
+        """株価がボリンジャーバンド下限以下か、位置(%)を返す"""
+        close = self.df['Close']
+        ma = close.rolling(window=period).mean()
+        std = close.rolling(window=period).std()
+        upper = ma + (std * sigma)
+        lower = ma - (std * sigma)
+        
+        current_close = close.iloc[-1]
+        current_lower = lower.iloc[-1]
+        
+        is_touching_lower = current_close <= current_lower
+        
+        # BB Position %
+        current_upper = upper.iloc[-1]
+        if (current_upper - current_lower) == 0:
+            pct = 0.5
+        else:
+            pct = (current_close - current_lower) / (current_upper - current_lower)
+            
+        return is_touching_lower, pct
+
+    def check_ma_cross(self, fast_period: int = 5, slow_period: int = 25, lookback: int = 3) -> bool:
+        """指定期間内(lookback)にゴールデンクロスが発生したか"""
+        close = self.df['Close']
+        ma_fast = close.rolling(window=fast_period).mean()
+        ma_slow = close.rolling(window=slow_period).mean()
+        
+        # 直近 lookback 日分をチェック
+        for i in range(lookback):
+            idx = -(i + 1)
+            prev_idx = -(i + 2)
+            if abs(prev_idx) > len(self.df):
+                break
+                
+            # GC: 前日 Fast <= Slow, 当日 Fast > Slow
+            if ma_fast.iloc[prev_idx] <= ma_slow.iloc[prev_idx] and \
+               ma_fast.iloc[idx] > ma_slow.iloc[idx]:
+                return True
+        return False
+    
+    def check_ma_alignment(self) -> bool:
+        """
+        パーフェクトオーダー (Price > MA5 > MA25 > MA75) を判定する (Momentum Bonus用)
+        """
+        try:
+            if len(self.df) < 75:
+                return False
+                
+            current = self.df.iloc[-1]
+            
+            # キャッシュまたは再計算
+            ma5 = current.get('MA5')
+            if ma5 is None or pd.isna(ma5):
+                ma5 = self.df['Close'].rolling(5).mean().iloc[-1]
+                
+            ma25 = current.get('MA25')
+            if ma25 is None or pd.isna(ma25):
+                ma25 = self.df['Close'].rolling(25).mean().iloc[-1]
+                
+            ma75 = current.get('MA75')
+            if ma75 is None or pd.isna(ma75):
+                ma75 = self.df['Close'].rolling(75).mean().iloc[-1]
+                
+            if pd.isna(ma5) or pd.isna(ma25) or pd.isna(ma75):
+                return False
+                
+            price = current['Close']
+            # Price > MA5 > MA25 > MA75
+            return price > ma5 > ma25 > ma75
+        except Exception as e:
+            logger.debug(f"MA Alignment Check Error: {e}")
+            return False
+
+    def check_volume_spike(self, multiplier: float = 1.3, period: int = 20) -> bool:
+        """出来高急増判定"""
+        vol = self.df['Volume']
+        ma_vol = vol.rolling(window=period).mean()
+        
+        current_vol = vol.iloc[-1]
+        return current_vol >= (ma_vol.iloc[-1] * multiplier)
+
+    def check_high_breakout(self, period: int = 20) -> bool:
+        """直近高値ブレイク判定"""
+        close = self.df['Close']
+        current_close = close.iloc[-1]
+        # 当日を除く過去period日間の最高値
+        past_high = close.iloc[-(period+1):-1].max()
+        
+        return current_close > past_high
+
+
+# ==========================================
+# Layer 4: Qualitative（有報による定性分析）
+# ==========================================
+
 def score_qualitative(yuho_data: dict) -> dict:
     """
     有報解析データ（リスクTOP3, 堀, R&D, 経営課題）からスコアを算出。
@@ -610,22 +743,10 @@ def score_qualitative(yuho_data: dict) -> dict:
 
 def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
                        sector: str = "", dcf_data: dict = None,
-                       macro_data: dict = None) -> dict:
+                       macro_data: dict = None, buy_threshold: float = None) -> dict:
     """
     4軸スコアを一括算出し、統合スコアカードを生成する。
-    sectorに応じた閾値でFundamental/Valuationを評価。
-    macro_dataがある場合、環境×セクターで重みを動的に調整。
-
-    Returns:
-        dict: {
-            "fundamental": {...},
-            "valuation": {...},
-            "technical": {...},
-            "qualitative": {...},
-            "total_score": float,
-            "signal": "BUY" | "WATCH" | "SELL",
-            "summary_text": str,
-        }
+    buy_threshold が指定されている場合、その値をシグナル判定(BUY)に使用する。
     """
     fund = score_fundamental(metrics, sector=sector)
     valu = score_valuation(metrics, technical, sector=sector, dcf_data=dcf_data)
@@ -651,8 +772,11 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
             # マクロモジュールから補正値を取得
             try:
                 from .macro_regime import get_weight_adjustments
-            except ImportError:
-                from src.macro_regime import get_weight_adjustments
+            except (ImportError, ValueError):
+                try:
+                    from macro_regime import get_weight_adjustments
+                except ImportError:
+                    from src.macro_regime import get_weight_adjustments
             
             regime_label = macro_data["regime"]
             adj = get_weight_adjustments(regime_label, sector)
@@ -671,37 +795,34 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
         except Exception as e:
             print(f"⚠️ マクロ重み適用エラー: {e}")
 
-    # --- Momentum Logic (v1.2.1) ---
-    # 上昇トレンドが強い場合、Valuation（割高感）による減点を緩和する
-    momentum_boost = 0.0
-    ma25_dev = technical.get("ma25_deviation", 0)
-    ma75_dev = technical.get("ma75_deviation", 0)
-    rsi = technical.get("rsi", 50)
+    # テクニカル指標の抽出
+    ma25_dev = technical.get("ma25_deviation", 0) or 0
+    ma75_dev = technical.get("ma75_deviation", 0) or 0
+    rsi = technical.get("rsi", 50) or 50
 
-    momentum_bonus = 0.0
-    if ma25_dev > 0 and ma75_dev > 0:
-        # パーフェクトオーダー的な状態 (簡易)
-        if rsi > 50 and rsi < 75:
-             # 過熱しすぎず、上昇トレンド
-             momentum_bonus = 3.0
-             
+    # --- Momentum Bonus Logic (v1.4.3 Remediated) ---
+    # パーフェクトオーダー (Price > MA5 > MA25 > MA75) が確認されている場合
+    if technical.get("perfect_order", False):
+        momentum_bonus = 0.5
+        tech["score"] = min(10.0, tech["score"] + momentum_bonus)
+        if "details" not in tech:
+            tech["details"] = []
+        tech["details"].append(f"Momentum Bonus +{momentum_bonus} (Perfect Order Alignment)")
+
     total = _clamp(
         fund["score"] * weights["fundamental"] +
         valu["score"] * weights["valuation"] +
         tech["score"] * weights["technical"] +
         qual["score"] * weights["qualitative"]
     )
-    
-    # Apply Momentum Bonus to Total
-    if momentum_bonus > 0:
-        total = min(10.0, total + momentum_bonus)
-        # 理由をどこかに追記したいが、totalはfloat。signal生成時に考慮される。
-        # tech["reason"] に追記しておく (ログ用)
-        tech["reason"] = tech.get("reason", "") + f" (Momentum Bonus +{momentum_bonus})"
 
     # シグナル判定
     sig_cfg = _CFG.get("signals", {"BUY": {"min_score": 6.5}, "WATCH": {"min_score": 4}, "SELL": {"max_score": 3.5}})
-    if total >= sig_cfg.get("BUY", {}).get("min_score", 6.5):
+    
+    # buy_threshold が渡された場合は優先使用 (Regime Overrides対応)
+    buy_limit = buy_threshold if buy_threshold is not None else sig_cfg.get("BUY", {}).get("min_score", 6.5)
+
+    if total >= buy_limit:
         signal = "BUY"
     elif total <= sig_cfg.get("SELL", {}).get("max_score", 3.5):
         signal = "SELL"
@@ -875,12 +996,12 @@ if __name__ == "__main__":
     test_sector = "Consumer Cyclical"  # トヨタ = 自動車 = Valueプロファイル
 
     print(f"--- セクタープロファイル解決 ---")
-    profile_name, f_cfg, v_cfg = resolve_sector_profile(test_sector)
+    profile_name, f_cfg, v_cfg, _, _ = resolve_sector_profile(test_sector)
     print(f"  {test_sector} => [{profile_name}]")
     print(f"  ROE閾値: {f_cfg.get('roe_good')}, PER閾値: {v_cfg.get('per_cheap')}")
-    profile_name2, _, _ = resolve_sector_profile("Technology")
+    profile_name2, _, _, _, _ = resolve_sector_profile("Technology")
     print(f"  Technology => [{profile_name2}]")
-    profile_name3, _, _ = resolve_sector_profile("Financial Services")
+    profile_name3, _, _, _, _ = resolve_sector_profile("Financial Services")
     print(f"  Financial Services => [{profile_name3}]")
 
     print("\n--- Fundamental (セクター対応) ---")
@@ -925,3 +1046,15 @@ if __name__ == "__main__":
     print(f"  {'✅' if valid else '❌'} 全スコアが 0–10 範囲内: {all_scores}")
 
     print("\n=== テスト完了 ===")
+
+# エクスポート
+__all__ = [
+    "score_fundamental",
+    "score_valuation",
+    "score_technical",
+    "score_qualitative",
+    "generate_scorecard",
+    "format_yuho_for_prompt",
+    "resolve_sector_profile",
+    "TechnicalAnalyzer",
+]

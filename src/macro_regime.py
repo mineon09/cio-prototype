@@ -11,6 +11,7 @@ v1.2 Update:
 
 import yfinance as yf
 import pandas as pd
+from datetime import datetime
 
 def _fetch_macro_data() -> dict:
     """
@@ -167,3 +168,99 @@ if __name__ == "__main__":
     import json
     result = detect_regime()
     print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+# ---------------------------------------------------------
+# v1.3: Historical Regime Detection (For Backtest)
+# ---------------------------------------------------------
+
+_MACRO_HISTORY_CACHE = {}
+
+def get_macro_regime(current_date, config: dict = None) -> str:
+    """
+    指定日のマクロレジームを判定して返す（バックテスト要）。
+    全期間のデータを一度だけ取得し、メモリにキャッシュして高速化。
+    """
+    from datetime import timedelta
+    
+    global _MACRO_HISTORY_CACHE
+    
+    tickers = {
+        'us10y':  '^TNX',
+        'us2y':   '^IRX',
+        'vix':    '^VIX',
+        'hyg':    'HYG',
+    }
+
+    # キャッシュがなければ一括取得 (過去10年分取得しておけば安全)
+    if not _MACRO_HISTORY_CACHE:
+        print("  📥 Fetching Macro Data for Backtest (Once)...")
+        start_cache = (current_date - timedelta(days=365*10)).strftime('%Y-%m-%d')
+        end_cache = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        for key, symbol in tickers.items():
+            try:
+                df = yf.download(symbol, start=start_cache, end=end_cache, progress=False)
+                # MultiIndex handling
+                if isinstance(df.columns, pd.MultiIndex):
+                    try:
+                        df = df.xs(symbol, axis=1, level=1)
+                    except:
+                        df.columns = df.columns.get_level_values(0)
+                        
+                # Timezone remove
+                if df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
+                
+                if df.empty: raise Exception("Empty Data")
+                _MACRO_HISTORY_CACHE[key] = df
+            except Exception as e:
+                print(f"  ⚠️ Macro Fetch Error ({symbol}): {e} -> Using Mock Data")
+                # Mock Data Generation
+                dates = pd.date_range(start=start_cache, end=end_cache, freq='D')
+                mock_vals = {
+                    'us10y': 4.0, 'us2y': 4.0, 'vix': 20.0, 'hyg': 75.0
+                }
+                _MACRO_HISTORY_CACHE[key] = pd.DataFrame(
+                    {'Close': [mock_vals.get(key, 0.0)] * len(dates)},
+                    index=dates
+                )
+
+    indicators = {}
+    
+    # メモリから検索
+    for key, df in _MACRO_HISTORY_CACHE.items():
+        if df.empty:
+            indicators[key] = {'current': 0, 'ma20': 0, 'change_1m': 0}
+            continue
+
+        # current_date以前のデータ
+        past_df = df[df.index <= pd.Timestamp(current_date)]
+        if past_df.empty:
+            indicators[key] = {'current': 0, 'ma20': 0, 'change_1m': 0}
+            continue
+            
+        try:
+            closes = past_df['Close']
+            current_val = float(closes.iloc[-1])
+            
+            # MA20
+            ma20 = float(closes.rolling(20).mean().iloc[-1]) if len(closes) >= 20 else current_val
+            
+            # Change 1M
+            change_1m = 0
+            if len(closes) >= 20:
+                prev = float(closes.iloc[-20])
+                if prev != 0:
+                    change_1m = (current_val - prev) / prev * 100
+                    
+            indicators[key] = {
+                'current': current_val,
+                'ma20': ma20,
+                'change_1m': change_1m
+            }
+        except:
+             indicators[key] = {'current': 0, 'ma20': 0, 'change_1m': 0}
+            
+    regime, _ = _determine_regime(indicators)
+    return regime

@@ -3,10 +3,8 @@
   "sheets": {
     "output": "分析結果"
   },
-  "_comment_costs": "=== 取引コスト（実装済み S1）===",
   "execution_cost_bps": 15,
-  "_comment_benchmark": "=== ベンチマーク（実装済み A5）: 日本株=TOPIX、米国株=S&P500 ===",
-  "benchmark_ticker": "^TOPIX",
+  "benchmark_ticker": "1306.T",
   "benchmark_ticker_us": "^GSPC",
   "competitor_selection": {
     "direct_count": 3,
@@ -39,6 +37,15 @@
         "RATE_CUT": {
           "min_score": 6.0
         }
+      },
+      "premium_quality_override": {
+        "enabled": true,
+        "min_fundamental": 8.0,
+        "min_score": 5.5
+      },
+      "momentum_bonus": {
+        "enabled": true,
+        "bonus_value": 0.5
       }
     },
     "WATCH": {
@@ -48,53 +55,31 @@
       "max_score": 3.5
     }
   },
-  "_comment_position": "=== NEW: ポジションサイジング（A7）===",
   "position_sizing": {
     "method": "fixed_pct",
-    "_method_options": [
-      "fixed_pct",
-      "kelly",
-      "equal_weight"
-    ],
-    "pct_per_trade": 0.10,
-    "_pct_per_trade_note": "1ポジションあたり投資可能資金の10%",
+    "pct_per_trade": 0.1,
     "max_positions": 5,
-    "_max_positions_note": "同時保有最大銘柄数。分散によりポートフォリオ単位リスクを管理",
-    "max_sector_exposure_pct": 0.30,
-    "_max_sector_note": "同一セクターへの最大集中度（30%上限）"
+    "max_sector_exposure_pct": 0.3
   },
-  "_comment_exit": "=== NEW: エグジット戦略（A4）: ATRベース動的損切り ===",
   "exit_strategy": {
     "long": {
       "mode": "atr",
-      "_mode_note": "ATRベースのトレーリングストップで利益確保 (S4)",
       "stop_loss_atr_multiplier": 2.0,
       "take_profit_atr_multiplier": 0.0,
-      "_tp_note": "長期間保有のため利確ターゲットは設定せず、トレーリングストップのみ有効化",
       "trailing_stop_atr_multiplier": 3.0,
-      "_trailing_note": "高値から 3.0ATR 下落で利確/損切り",
       "watch_zone_exit": {
         "enabled": true,
         "score_threshold": 4.5,
-        "consecutive_months": 3,
-        "_note": "スコア4.5未満が3ヶ月続いたら損切り/利確（ATRヒット前でも撤退）"
+        "consecutive_months": 3
       }
     },
     "short": {
       "mode": "atr",
-      "_mode_options": [
-        "fixed_pct",
-        "atr"
-      ],
       "atr_period": 14,
       "stop_loss_atr_multiplier": 1.5,
-      "_stop_note": "損切り = エントリー価格 - ATR(14)×1.5。ボラを考慮した動的損切り",
       "take_profit_atr_multiplier": 2.5,
-      "_tp_note": "利確 = エントリー価格 + ATR(14)×2.5。RR比≈1.67:1を維持",
-      "_fallback_note": "ATRデータ取得失敗時は以下の固定%にフォールバック",
       "fixed_stop_loss_pct": -3.0,
       "fixed_take_profit_pct": 5.0,
-      "_cooldown_note": "再エントリー禁止期間（日）",
       "cooldown_days_after_loss": 15,
       "cooldown_days_after_profit": 7,
       "trend_filter": {
@@ -105,130 +90,218 @@
             "ma_period": 75
           },
           {
-            "type": "short_ma_cross",
-            "fast_period": 5,
-            "slow_period": 25,
-            "_note": "MA5>MA25: 短期モメンタムが上向き"
+            "type": "high_breakout",
+            "period": 20,
+            "min_days_since_high": 1
           },
           {
             "type": "volume_confirm",
             "volume_ma_period": 20,
-            "volume_multiplier": 1.0,
-            "_note": "出来高≥20日平均: 価格変動に裏付けあり"
+            "volume_multiplier": 1.0
           }
         ],
-        "require_all": false,
-        "_require_note": "price_above_ma必須 + 残り2条件のうち1つ以上でOK"
+        "require_all": false
       }
     }
   },
-  "_comment_ai": "=== NEW: AIエンジン管理（A6）: モデル使用ログ・出力一貫性 ===",
+  "strategies": {
+    "bounce": {
+      "description": "売られすぎからの短期反発（逆張り）",
+      "timeframe": "daily",
+      "enabled_regimes": [
+        "RISK_ON",
+        "NEUTRAL",
+        "RATE_CUT"
+      ],
+      "entry": {
+        "fundamental_min": 0.0,
+        "price_above_ma": 75,
+        "rsi_period": 9,
+        "rsi_threshold": 35,
+        "bb_period": 20,
+        "bb_std": 2.0,
+        "require_price_at_lower_bb": true,
+        "volume_multiplier": 1.1
+      },
+      "exit": {
+        "hard_stop_pct": -2.5,
+        "take_profit_pct": 5.0,
+        "time_stop_bars": 7,
+        "time_stop_condition": "loss_only",
+        "atr_trailing_multiplier": 1.2,
+        "atr_trailing_activation_pct": 2.0,
+        "rsi_exit_threshold": 65,
+        "stop_loss_atr_multiplier": 0.0,
+        "take_profit_atr_multiplier": 0.0
+      },
+      "risk": {
+        "pct_per_trade": 0.1,
+        "max_positions": 2,
+        "cooldown_days_after_loss": 10,
+        "cooldown_days_after_profit": 3
+      }
+    },
+    "breakout": {
+      "description": "トレンド初動への順張りブレイクアウト",
+      "timeframe": "daily",
+      "enabled_regimes": [
+        "RISK_ON",
+        "NEUTRAL",
+        "RATE_CUT"
+      ],
+      "entry": {
+        "fundamental_min": 0.0,
+        "price_above_ma": 75,
+        "gc_lookback_days": 5,
+        "volume_multiplier": 1.2,
+        "require_20d_high_break": true
+      },
+      "exit": {
+        "hard_stop_pct": -3.0,
+        "take_profit_pct": 8.0,
+        "time_stop_bars": 15,
+        "time_stop_condition": "loss_only",
+        "atr_trailing_multiplier": 1.5,
+        "atr_trailing_activation_pct": 3.0,
+        "exit_on_death_cross": true,
+        "stop_loss_atr_multiplier": 2.0,
+        "take_profit_atr_multiplier": 3.0
+      },
+      "risk": {
+        "pct_per_trade": 0.1,
+        "max_positions": 3,
+        "cooldown_days_after_loss": 10,
+        "cooldown_days_after_profit": 3
+      }
+    }
+  },
+  "ticker_overrides": {
+    "8035.T": {
+      "strategies": {
+        "breakout": {
+          "enabled_regimes": [
+            "RISK_ON",
+            "NEUTRAL",
+            "RATE_CUT",
+            "RATE_HIKE",
+            "RISK_OFF",
+            "YIELD_INVERSION"
+          ],
+          "entry": {
+            "volume_multiplier": 1.2,
+            "gc_lookback_days": 8
+          },
+          "exit": {
+            "take_profit_pct": 10.0,
+            "take_profit_atr_multiplier": 4.0
+          }
+        }
+      }
+    },
+    "7203.T": {
+      "strategies": {
+        "bounce": {
+          "enabled_regimes": [
+            "RISK_ON",
+            "NEUTRAL",
+            "RATE_CUT",
+            "RATE_HIKE",
+            "RISK_OFF",
+            "YIELD_INVERSION"
+          ],
+          "entry": {
+            "rsi_threshold": 30,
+            "volume_multiplier": 1.3
+          },
+          "exit": {
+            "stop_loss_atr_multiplier": 1.5
+          }
+        }
+      }
+    }
+  },
   "ai_engine": {
     "primary": "gemini",
     "primary_model": "gemini-2.0-flash",
     "fallback": "groq",
     "fallback_model": "llama3-70b-8192",
     "log_model_used": true,
-    "_log_note": "分析結果にどのモデルで生成したかを記録（再現性の確保）",
     "enforce_output_schema": true,
-    "_schema_note": "両モデルに同一JSONスキーマを強制し、フォールバック時の品質ズレを防止",
     "max_retries": 3,
-    "temperature": 0.2,
-    "_temperature_note": "分析の一貫性を高めるため低めに設定（0=完全決定論的）"
+    "temperature": 0.2
   },
-  "_comment_validation": "=== NEW: バックテスト統計的検証（S3）===",
   "backtest_validation": {
     "walkforward": {
       "enabled": true,
       "in_sample_months": 9,
-      "_in_sample_note": "最初の9ヶ月でロジックを最適化（In-Sample）",
-      "out_of_sample_months": 3,
-      "_out_sample_note": "残り3ヶ月で未知データに対する性能を検証（Out-of-Sample）"
+      "out_of_sample_months": 3
     },
     "montecarlo": {
-      "enabled": false,
-      "_enabled_note": "重い処理のためデフォルトOFF。--validate フラグで有効化",
-      "iterations": 500,
+      "enabled": true,
+      "iterations": 1000,
       "confidence_intervals": [
         0.05,
         0.25,
-        0.50,
+        0.5,
         0.75,
         0.95
-      ],
-      "_ci_note": "5%ile（最悪ケース）〜95%ile（最良ケース）の分布を提示"
+      ]
     },
-    "min_trades_for_validity": 10,
-    "_min_trades_note": "有効な検証とみなす最低トレード数。これ未満の場合は警告を表示"
+    "min_trades_for_validity": 10
   },
-  "_comment_macro": "=== NEW: 拡張マクロ指標（B9）: イールドカーブ・信用スプレッド追加 ===",
   "macro": {
     "indicators": {
       "vix": "^VIX",
-      "_vix_note": "恐怖指数",
       "us_10y_yield": "^TNX",
-      "_10y_note": "米10年債利回り",
       "us_2y_yield": "^IRX",
-      "_2y_note": "米2年債利回り（イールドカーブ計算用）",
       "dxy": "DX-Y.NYB",
-      "_dxy_note": "ドルインデックス",
       "crude_oil": "CL=F",
-      "_oil_note": "原油先物",
       "credit_spread_hy": "HYG",
-      "_hyg_note": "ハイイールド債ETF（信用スプレッドの代理変数）",
       "usdjpy": "JPY=X",
-      "_fx_note": "ドル円",
-      "nikkei": "^N225",
-      "_nk_note": "日経平均（日本株分析時の国内センチメント）"
+      "nikkei": "^N225"
     },
     "thresholds": {
       "vix_risk_off": 25,
-      "_vix_roff_note": "VIX25超でRISK_OFF判定",
       "vix_risk_on": 18,
-      "_vix_ron_note": "VIX18未満でRISK_ON判定",
       "yield_curve_inversion_bps": -10,
-      "_yc_note": "2y-10yスプレッド가-10bps以下で逆イールド警告（景気後退先行指標）",
-      "hyg_stress_drop_pct": -5.0,
-      "_hyg_note": "HYGが20MA比-5%以下で信用収縮シグナル（RISK_OFF強化）"
+      "hyg_stress_drop_pct": -5.0
     },
     "regime_weights": {
-      "_note": "レジーム別スコアカード重み調整（既存macro_regime.pyで使用）",
       "RISK_ON": {
         "fundamental": 0.25,
-        "valuation": 0.30,
+        "valuation": 0.3,
         "technical": 0.25,
-        "qualitative": 0.20
+        "qualitative": 0.2
       },
       "RISK_OFF": {
-        "fundamental": 0.40,
-        "valuation": 0.30,
+        "fundamental": 0.4,
+        "valuation": 0.3,
         "technical": 0.15,
         "qualitative": 0.15
       },
       "RATE_HIKE": {
-        "fundamental": 0.30,
+        "fundamental": 0.3,
         "valuation": 0.35,
-        "technical": 0.20,
+        "technical": 0.2,
         "qualitative": 0.15
       },
       "RATE_CUT": {
-        "fundamental": 0.20,
+        "fundamental": 0.2,
         "valuation": 0.25,
-        "technical": 0.30,
+        "technical": 0.3,
         "qualitative": 0.25
       },
       "YIELD_INVERSION": {
-        "_note": "逆イールド検出時: ファンダ重視・テクニカル軽視",
         "fundamental": 0.45,
-        "valuation": 0.30,
-        "technical": 0.10,
+        "valuation": 0.3,
+        "technical": 0.1,
         "qualitative": 0.15
       },
       "NEUTRAL": {
-        "fundamental": 0.30,
+        "fundamental": 0.3,
         "valuation": 0.25,
         "technical": 0.25,
-        "qualitative": 0.20
+        "qualitative": 0.2
       }
     }
   },
@@ -263,10 +336,10 @@
         "Communication Services"
       ],
       "weights": {
-        "fundamental": 0.20,
+        "fundamental": 0.2,
         "valuation": 0.25,
         "technical": 0.25,
-        "qualitative": 0.30
+        "qualitative": 0.3
       },
       "fundamental": {
         "roe_good": 15,
@@ -289,8 +362,8 @@
       ],
       "weights": {
         "fundamental": 0.25,
-        "valuation": 0.20,
-        "technical": 0.20,
+        "valuation": 0.2,
+        "technical": 0.2,
         "qualitative": 0.35
       },
       "fundamental": {
@@ -320,8 +393,8 @@
       ],
       "weights": {
         "fundamental": 0.35,
-        "valuation": 0.30,
-        "technical": 0.20,
+        "valuation": 0.3,
+        "technical": 0.2,
         "qualitative": 0.15
       },
       "fundamental": {
@@ -346,8 +419,8 @@
       ],
       "weights": {
         "fundamental": 0.35,
-        "valuation": 0.30,
-        "technical": 0.20,
+        "valuation": 0.3,
+        "technical": 0.2,
         "qualitative": 0.15
       },
       "fundamental": {

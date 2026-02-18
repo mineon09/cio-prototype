@@ -12,7 +12,12 @@
 最も詳細な分析を行う場合は、`main.py` を使用します。
 
 ```powershell
+# 通常分析（長期戦略）
 python main.py --ticker 7203.T
+
+# スイング戦略（Bounce: 逆張り / Breakout: 順張り）で分析
+python main.py --ticker 7203.T --strategy bounce
+python main.py --ticker 7011.T --strategy breakout
 ```
 - **実行内容**: データの取得、DCF算出、マクロ判定、競合比較、AIレポート生成、Googleスプレッドシートへの書き出し。
 
@@ -34,21 +39,26 @@ streamlit run app.py
 ### 実行コマンド
 `backtest.py` を使用します。
 
-```powershell
 # 例：トヨタ(7203.T)を2024年1月1日から12ヶ月間シミュレーション（長期戦略：デフォルト）
 python backtest.py --ticker 7203.T --start 2024-01-01 --months 12
 
-# 短期トレード戦略で実行する場合（利確+5%, 損切り-3%）
+# 短期トレード戦略 (v1.2以前)
 python backtest.py --ticker 7203.T --start 2024-01-01 --months 12 --strategy short
+
+# スイング戦略 (v1.4)
+python backtest.py --ticker 7203.T --start 2024-01-01 --months 12 --strategy bounce
+python backtest.py --ticker 7011.T --start 2024-01-01 --months 12 --strategy breakout
 ```
 
 ### パラメータ
 - `--ticker`: 分析対象の銘柄コード（例: `7203.T`, `NVDA`）
 - `--start`: バックテスト開始日（`YYYY-MM-DD`）
 - `--months`: シミュレーション期間（月数。デフォルトは12ヶ月）
-- `--strategy`: 売買戦略を選択します。
-    - `long` (デフォルト): 長期投資。BUYシグナルで購入し、SELLシグナルが出るまで保有。
-    - `short`: 短期トレード。+5%で利益確定、-3%で損切りを行います。
+- **--strategy**: 売買戦略を選択します。
+    - `long` (デフォルト): 中長期投資。合算スコアベース。
+    - `short`: 短期トレード。ATRブラケット（利確/損切り）ベース。
+    - `bounce`: スイング逆張り。RSI/BB/出来高急増で判定。
+    - `breakout`: スイング順張り。MAクロス/20日高値更新/出来高急増で判定。
 
 ### 結果の見方
 - **地力（Fundamental）**: 財務力（ROE、自己資本比率など）
@@ -59,7 +69,19 @@ python backtest.py --ticker 7203.T --start 2024-01-01 --months 12 --strategy sho
 
 ---
 
-## 3. 設定のカスタマイズ
+## 3. 一括検証（バッチ・シミュレーション）
+
+複数の銘柄に対して一括でバックテストを実行し、サマリーレポートを生成します。
+
+```powershell
+python batch_sim.py
+```
+- **出力**: `batch_sim_report.md` が生成されます。
+- **用途**: 戦略の全体的な期待値や、現在の設定（パラメータ）が機能しているかを多銘柄で検証する場合に使用します。
+
+---
+
+## 4. 設定のカスタマイズ
 
 `config.json` を編集することで、分析のしきい値やAIの重み付けを変更できます。
 

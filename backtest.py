@@ -22,16 +22,42 @@ def main():
     parser.add_argument("--ticker", required=True, help="銘柄コード (例: 7203.T)")
     parser.add_argument("--start", required=True, help="開始日 (YYYY-MM-DD)")
     parser.add_argument("--months", type=int, default=12, help="テスト期間(月)")
-    parser.add_argument("--strategy", default="long", choices=["long", "short"], help="戦略 (long: 長期, short: 短期)")
+    parser.add_argument("--strategy", default="long", choices=["long", "short", "bounce", "breakout"], help="戦略 (long: 長期, short: 短期, bounce: 逆張り, breakout: 順張り)")
     
     # New Arguments
     parser.add_argument("--montecarlo", type=int, default=0, help="モンテカルロ・シミュレーション試行回数 (例: 1000)")
     parser.add_argument("--rolling", action="store_true", help="ローリングバックテスト(Walk-Forward)を実行")
     parser.add_argument("--window", type=int, default=12, help="ローリングバックテストのウィンドウサイズ(月)")
     parser.add_argument("--step", type=int, default=3, help="ローリングバックテストのステップサイズ(月)")
+    
+    # Strategy Param Overrides
+    parser.add_argument("--rsi-threshold", type=float, default=None, help="RSI閾値 (例: 30)")
+    parser.add_argument("--volume-multiplier", type=float, default=None, help="出来高倍率 (例: 1.2)")
+    parser.add_argument("--entry-price-ma", type=int, default=None, help="移動平均乖離判定 (例: 75)")
 
     args = parser.parse_args()
+
+    # --- Ticker Normalization (BUG-1 Fix) ---
+    def normalize_ticker(ticker: str) -> str:
+        """
+        Tickerを正規化する。
+        - 米国株: 大文字 (xom → XOM, nvda → NVDA)
+        - 日本株: 末尾 .T を大文字に (7203.t → 7203.T)
+        """
+        ticker = ticker.strip()
+        if "." in ticker:
+            base, suffix = ticker.rsplit(".", 1)
+            return f"{base}.{suffix.upper()}"
+        return ticker.upper()
+
+    args.ticker = normalize_ticker(args.ticker)
     
+    # Create CLI Overrides
+    cli_overrides = {}
+    if args.rsi_threshold: cli_overrides["rsi_threshold"] = args.rsi_threshold
+    if args.volume_multiplier: cli_overrides["volume_multiplier"] = args.volume_multiplier
+    if args.entry_price_ma: cli_overrides["price_above_ma"] = args.entry_price_ma
+
     try:
         if args.rolling:
             print(f"\n🚀 ローリングバックテスト開始: {args.ticker}")
@@ -53,8 +79,12 @@ def main():
                 
         else:
             # 通常バックテスト
-            result = run_backtest(args.ticker, args.start, args.months, strategy=args.strategy)
+            result = run_backtest(args.ticker, args.start, args.months, strategy=args.strategy, cli_overrides=cli_overrides)
             
+            if "error" in result:
+                print(f"❌ エラー: {result['error']}")
+                return
+
             print("\n" + "="*50)
             print(f"📊 バックテスト結果: {args.ticker}")
             print("="*50)
@@ -63,6 +93,8 @@ def main():
             print(f"トータル収益率: {result['total_return_pct']}%")
             print(f"  vs 市場ベンチマーク: {result['benchmark_return_pct']}% (Alpha: {result['alpha']}%)")
             print(f"  vs 個別株Buy&Hold:   {result.get('stock_return_pct', 'N/A')}%")
+            print(f"  Sharpe Ratio: {result.get('sharpe_ratio', 'N/A')} | Profit Factor: {result.get('profit_factor', 'N/A')}")
+            print(f"  Max Drawdown: {result.get('max_drawdown_pct', 'N/A')}%")
             print("-" * 50)
             print("売買履歴:")
             for t in result['trades']:
@@ -84,6 +116,16 @@ def main():
                     print(f"  95%信頼区間:       {fv['percentile_5']:,.0f}円 ~ {fv['percentile_95']:,.0f}円")
                     print(f"  最大DD予測 (95%Tile): {dd['percentile_95']:.2f}% (Worst: {dd['worst']:.2f}%)")
                     print("="*50)
+
+            # Save result to JSON for verification
+            import json
+            from datetime import datetime, date
+            def json_serial(obj):
+                if isinstance(obj, (datetime, date)):
+                    return obj.isoformat()
+                return str(obj)
+            with open("backtest_result.json", "w", encoding="utf-8") as f:
+                json.dump(result, f, default=json_serial, indent=2)
 
     except Exception as e:
         print(f"❌ バックテスト実行エラー: {e}")

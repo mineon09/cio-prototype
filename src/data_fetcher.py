@@ -311,12 +311,18 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
 # yfinance データ取得
 # ==========================================
 
-def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
+def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd.DataFrame = None) -> dict:
     """
     指定した銘柄のデータを取得・計算して返す。
     as_of_date が指定された場合、その時点での過去データを返す（バックテスト用）。
+    price_history が指定された場合、yf.downloadを行わずにそのデータを使用する（高速化）。
     """
-    print(f"🔍 {ticker} データ取得開始... (基準日: {as_of_date.strftime('%Y-%m-%d') if as_of_date else '最新'})")
+    if not price_history is None:
+        # バックテスト高速化用: 既存のDataFrameを使用
+        # print(f"  ⚡ {ticker} 提供されたヒストリデータを使用 (基準日: {as_of_date})") # Verboseすぎるのでスキップ
+        hist = price_history
+    else:
+        print(f"🔍 {ticker} データ取得開始... (基準日: {as_of_date.strftime('%Y-%m-%d') if as_of_date else '最新'})")
     
     # --- Macro Data Injection (v1.2) ---
     macro_info = None
@@ -333,83 +339,84 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None) -> dict:
             print(f"  ⚠️ マクロデータ取得失敗: {e}")
             macro_info = None
     
-    # キャッシュ確認 (バックテスト時は日付込みで管理推奨だが、簡易実装としてticker単位)
+    # キャッシュファイルパスの準備
     CACHE_DIR = "data/cache"
     os.makedirs(CACHE_DIR, exist_ok=True)
-    
-    # 日付を含むユニークなキャッシュキーを作成
     date_str = as_of_date.strftime('%Y%m%d') if as_of_date else "latest"
     cache_file = os.path.join(CACHE_DIR, f"{ticker}_{date_str}.json")
-    
-    # 24時間以内のキャッシュがあれば使用 (latestの場合)
-    # バックテスト用(date指定あり)は永続的に使ってOK
-    if os.path.exists(cache_file):
-        try:
-            mtime = os.path.getmtime(cache_file)
-            if as_of_date or (time.time() - mtime < 24 * 3600):
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    print(f"  ⚡ {ticker} キャッシュを使用 ({date_str})")
-                    return json.load(f)
-        except Exception as e:
-            print(f"  ⚠️ キャッシュ読み込みエラー: {e}")
 
-    msg = f"  📊 {ticker} データ取得中..."
-    if as_of_date:
-        msg += f" (基準日: {as_of_date.strftime('%Y-%m-%d')})"
-    print(msg)
+    # キャッシュ確認 (price_historyがない場合のみ = Live/Latest mode)
+    if price_history is None:
+        # 24時間以内のキャッシュがあれば使用 (latestの場合)
+        # バックテスト用(date指定あり)は永続的に使ってOK
+        if os.path.exists(cache_file):
+            try:
+                mtime = os.path.getmtime(cache_file)
+                if as_of_date or (time.time() - mtime < 24 * 3600):
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        print(f"  ⚡ {ticker} キャッシュを使用 ({date_str})")
+                        return json.load(f)
+            except Exception as e:
+                print(f"  ⚠️ キャッシュ読み込みエラー: {e}")
+
+    if price_history is None:
+        msg = f"  📊 {ticker} データ取得中..."
+        if as_of_date:
+            msg += f" (基準日: {as_of_date.strftime('%Y-%m-%d')})"
+        print(msg)
     
     try:
         stock = yf.Ticker(ticker)
         
-        start_date = None
-        end_date = None
-        # yf.Ticker.history fails with 404 in some envs, use yf.download
-        if as_of_date:
-            try:
-                hist = yf.download(ticker, period="2y", progress=False)
-                if hist.empty:
-                    raise ValueError("Empty history")
-            except Exception as e:
+        if price_history is None:
+            # yf.Ticker.history fails with 404 in some envs, use yf.download
+            if as_of_date:
                 try:
-                    hist = yf.download(ticker, period="1y", progress=False)
-                except Exception as e2:
-                     return {"ticker": ticker, "name": ticker, "metrics": {}, "technical": {}}
-            
-            # yfinance.download returns MultiIndex columns if multiple tickers or recent version.
-            # Robustly flatten to single level
-            if isinstance(hist.columns, pd.MultiIndex):
-                # Try levels to find Close/Open etc.
-                if len(hist.columns.levels) > 1:
-                    # If multiple tickers/levels, try to select the current ticker
-                    # Note: yfinance often uppercases the ticker in column labels
-                    found = False
-                    for t_query in [ticker, ticker.upper(), ticker.lower()]:
-                        try:
-                            # Level 1 usually contains Tickers
-                            hist = hist.xs(t_query, axis=1, level=1)
-                            found = True
-                            break
-                        except:
-                            continue
-                    
-                    if not found:
-                        # Fallback: Just take level 0 (Price components)
+                    hist = yf.download(ticker, period="2y", progress=False)
+                    if hist.empty:
+                        # Retry with Ticker.history as fallback
+                         hist = stock.history(period="2y")
+                except Exception as e:
+                    try:
+                        hist = yf.download(ticker, period="1y", progress=False)
+                    except Exception as e2:
+                         return {"ticker": ticker, "name": ticker, "metrics": {}, "technical": {}}
+                
+                # yfinance.download returns MultiIndex columns if multiple tickers or recent version.
+                # Robustly flatten to single level
+                if isinstance(hist.columns, pd.MultiIndex):
+                    # Try levels to find Close/Open etc.
+                    if len(hist.columns.levels) > 1:
+                        # If multiple tickers/levels, try to select the current ticker
+                        # Note: yfinance often uppercases the ticker in column labels
+                        found = False
+                        for t_query in [ticker, ticker.upper(), ticker.lower()]:
+                            try:
+                                # Level 1 usually contains Tickers
+                                hist = hist.xs(t_query, axis=1, level=1)
+                                found = True
+                                break
+                            except:
+                                continue
+                        
+                        if not found:
+                            # Fallback: Just take level 0 (Price components)
+                            hist.columns = hist.columns.get_level_values(0)
+                    else:
                         hist.columns = hist.columns.get_level_values(0)
-                else:
-                    hist.columns = hist.columns.get_level_values(0)
 
-            # yfinanceはtz-awareなindexを返す場合があるため、tz-naiveに変換
-            if hist.index.tz is not None:
-                hist.index = hist.index.tz_localize(None)
-            
-            # as_of_date 以前のデータを抽出
-            # テクニカル計算用に1年分程度あれば十分だが、余裕を持って
-            end_dt = pd.Timestamp(as_of_date) + pd.Timedelta(days=1)
-            start_dt = pd.Timestamp(as_of_date) - pd.Timedelta(days=400)
-            
-            hist = hist[(hist.index >= start_dt) & (hist.index < end_dt)] if not hist.empty else hist
-        else:
-            hist = stock.history(period="1y")
+                # yfinanceはtz-awareなindexを返す場合があるため、tz-naiveに変換
+                if hist.index.tz is not None:
+                    hist.index = hist.index.tz_localize(None)
+                
+                # as_of_date 以前のデータを抽出
+                # テクニカル計算用に1年分程度あれば十分だが、余裕を持って
+                end_dt = pd.Timestamp(as_of_date) + pd.Timedelta(days=1)
+                start_dt = pd.Timestamp(as_of_date) - pd.Timedelta(days=400)
+                
+                hist = hist[(hist.index >= start_dt) & (hist.index < end_dt)] if not hist.empty else hist
+            else:
+                hist = stock.history(period="1y")
 
         if hist.empty:
             print(f"  ⚠️ {ticker}: No price data found")

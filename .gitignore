@@ -24,3 +24,12 @@ short_verification.txt
 # Data and Cache
 data/cache/
 data/results.json
+
+# Verification Artifacts
+result_*.json
+wfa_*.csv
+backtest_result.json
+output_*.txt
+mega_backtest_report*.csv
+mega_sim_summary*.txt
+debug_*.py
