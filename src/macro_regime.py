@@ -110,10 +110,12 @@ REGIME_WEIGHT_TABLE = {
     },
     "RATE_HIKE": {
         "Technology":       {"fundamental": 0, "valuation": +0.10, "technical": 0, "qualitative": -0.10},
+        "Financial Services": {"fundamental": 0, "valuation": -0.05, "technical": +0.10, "qualitative": +0.05}, # 銀行は金利上昇で有利
         "_default":         {"fundamental": 0, "valuation": +0.05, "technical": 0, "qualitative": -0.05},
     },
     "RATE_CUT": {
         "Technology":       {"fundamental": -0.05, "valuation": -0.05, "technical": +0.05, "qualitative": +0.05},
+        "Financial Services": {"fundamental": +0.05, "valuation": +0.10, "technical": -0.10, "qualitative": -0.05}, # 銀行は金利低下で弱体化
         "_default":         {"fundamental": 0, "valuation": -0.05, "technical": +0.05, "qualitative": 0},
     },
     "RISK_OFF": {
@@ -121,12 +123,35 @@ REGIME_WEIGHT_TABLE = {
         "_default":         {"fundamental": +0.10, "valuation": 0, "technical": +0.05, "qualitative": -0.15},
     },
     "RISK_ON": {
+        "Financial Services": {"fundamental": 0, "valuation": -0.05, "technical": +0.05, "qualitative": 0},
         "_default":         {"fundamental": -0.05, "valuation": 0, "technical": 0, "qualitative": +0.05},
     },
     "NEUTRAL": {
         "_default":         {"fundamental": 0, "valuation": 0, "technical": 0, "qualitative": 0},
     },
 }
+
+# セクター別の環境適性（銀行株などは特定環境で閾値を調整するために使用可能）
+SECTOR_REGIME_AFFINITY = {
+    "Financial Services": {
+        "positive": ["RATE_HIKE", "NEUTRAL"],
+        "negative": ["RATE_CUT", "RISK_OFF"]
+    },
+    "Technology": {
+        "positive": ["RATE_CUT", "RISK_ON"],
+        "negative": ["RATE_HIKE"]
+    }
+}
+
+def get_sector_adjusted_regime(base_regime: str, sector: str) -> str:
+    """
+    セクター特性を考慮してRegimeを実効的に調整する。
+    例：全体は RATE_CUT でも、銀行株にとってはネガティブなので 
+    ロジック上でリスク許容度を下げるなどの判断に使える。
+    """
+    # 銀行株で RATE_CUT の場合、内部的に "慎重" な判定を促すフラグとして扱えるが
+    # ここではシンプルにベースを返す。
+    return base_regime
 
 
 def get_weight_adjustments(regime: str, sector: str) -> dict:

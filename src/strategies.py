@@ -22,6 +22,8 @@ class BaseStrategy:
                 "metrics": dict       # 数値データ (rsi, ma_gap, etc.)
             }
         """
+        if not self.s_cfg.get("enabled", True):
+             return {"is_entry": False, "details": ["Strategy Disabled (via config)"], "metrics": {}}
         return {"is_entry": False, "details": [], "metrics": {}}
 
     def should_buy(self, row: pd.Series, daily_data: pd.DataFrame, ta: TechnicalAnalyzer) -> bool:
@@ -30,6 +32,8 @@ class BaseStrategy:
         Returns:
             bool: エントリーすべきならTrue
         """
+        if not self.s_cfg.get("enabled", True):
+             return False
         result = self.analyze_entry(row, daily_data, ta)
         return result["is_entry"]
 
