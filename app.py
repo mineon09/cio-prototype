@@ -124,6 +124,7 @@ with st.sidebar:
     st.markdown("---")
 
     # Ticker Input
+    # Ticker Input
     st.subheader("📈 銘柄分析")
     ticker_input = st.text_input(
         "ティッカー入力",
@@ -131,7 +132,27 @@ with st.sidebar:
         help="米国株はそのまま、日本株は .T 付きで入力"
     )
 
+    # Strategy Selection
+    st.caption("戦略設定")
+    strategy = st.selectbox(
+        "戦略を選択",
+        ["long", "bounce", "breakout"],
+        index=0,
+        help="long: 割安優良株, bounce: 短期リバウンド, breakout: 高値ブレイク"
+    )
+
     run_analysis = st.button("🚀 分析実行", type="primary", width="stretch")
+
+    # Backtest Controls
+    with st.expander("🛠️ バックテスト設定"):
+        bt_days = st.number_input("期間 (日)", value=365, step=30)
+        # start date defaults to 1 year ago? or manual?
+        # backtester.py takes --start YYYY-MM-DD and --days (or months)
+        # Let's use simple text or date input
+        default_start = datetime.now().replace(year=datetime.now().year - 1)
+        bt_start = st.date_input("開始日", value=default_start)
+
+    run_backtest_btn = st.button("▶️ バックテスト実行", width="stretch")
 
     st.markdown("---")
     st.subheader("🔑 APIステータス")
@@ -173,8 +194,12 @@ with st.sidebar:
             emoji = {"BUY": "🟢", "SELL": "🔴", "WATCH": "🟡"}.get(signal, "⚪")
             score = d.get("total_score", 0)
             hist_count = len(results[t].get("history", []))
+            
+            # 履歴ボタンのラベルに戦略名も含めると分かりやすいかも
+            strat_label = d.get("strategy", "long")
+            
             if st.sidebar.button(
-                f"{emoji} {t} — {d.get('name', '')[:15]} ({score:.1f}) [{hist_count}件]",
+                f"{emoji} {t} ({strat_label}) — {d.get('name', '')[:10]} ({score:.1f})",
                 key=f"hist_{t}",
                 width="stretch",
             ):
@@ -205,6 +230,11 @@ if run_analysis and ticker_input:
     st.session_state["view_ticker"] = ticker
 
     with st.status(f"🔍 {ticker} を分析中...", expanded=True) as status:
+        # Step 0: Load Config
+        st.write("⚙️ 設定読み込み中...")
+        from src.utils import load_config_with_overrides
+        config = load_config_with_overrides(ticker)
+    
         # Step 1: Fetch stock data
         st.write("📊 株価データ取得中...")
         target_data = fetch_stock_data(ticker)
@@ -233,7 +263,7 @@ if run_analysis and ticker_input:
         # Step 6: Scorecard
         st.write("📋 4軸スコア算出中...")
         sector = target_data.get("sector", "")
-        scorecard = generate_scorecard(
+        base_scorecard = generate_scorecard(
             target_data.get("metrics", {}),
             target_data.get("technical", {}),
             yuho_data,
@@ -241,11 +271,20 @@ if run_analysis and ticker_input:
             dcf_data=dcf_data,
             macro_data=macro_data,
         )
+        
+        # Step 6.5: Run Strategy Analysis (Shared Logic)
+        st.write(f"🔬 戦略分析実行中 ({strategy})...")
+        from main import run_strategy_analysis
+        scorecard = run_strategy_analysis(ticker, strategy, base_scorecard, macro_data, config)
+        
+        # 保存用に戦略名を記録
+        scorecard["strategy"] = strategy
 
         # Step 7: Report (Gemini)
         st.write("📝 最終レポート生成中...")
         from main import analyze_all, save_to_dashboard_json
-        report, table_str = analyze_all(
+        
+        report, table_str, model_name = analyze_all(
             ticker, {ticker: target_data}, competitors,
             yuho_data=yuho_data, scorecard=scorecard,
         )
@@ -260,11 +299,89 @@ if run_analysis and ticker_input:
     results = load_results()
 
 # ============================================================
+# Run Backtest
+# ============================================================
+if run_backtest_btn and ticker_input:
+    ticker = ticker_input.strip().upper()
+    st.session_state["view_ticker"] = ticker # Switch view to this ticker if needed, or just show result
+
+    with st.status(f"🛠️ {ticker} のバックテストを実行中...", expanded=True) as status:
+        st.write(f"Strategy: {strategy}, Start: {bt_start}, Duration: {bt_days} days")
+        
+        # Convert params
+        start_str = bt_start.strftime("%Y-%m-%d")
+        months = int(bt_days / 30)
+        if months < 1: months = 1
+        
+        from src.backtester import run_backtest
+        # CLI overrides are not needed here as we want to use the config.json + ticker_overrides
+        # But run_backtest handles config loading internally. 
+        # We might want to pass explicit overrides if we had UI controls for them.
+        # For now, rely on config.json
+        
+        try:
+            # Capture stdout to show logs? 
+            # run_backtest prints to stdout provided by sys.stdout override in backtest.py, 
+            # but here in Streamlit it goes to console.
+            # We can rely on the return value.
+            
+            result = run_backtest(ticker, start_str, months, strategy=strategy)
+            
+            if "error" in result:
+                st.error(f"バックテストエラー: {result['error']}")
+                status.update(label="❌ エラー発生", state="error")
+            else:
+                st.session_state["backtest_result"] = result
+                st.session_state["backtest_ticker"] = ticker
+                st.session_state["backtest_strategy"] = strategy
+                status.update(label="✅ バックテスト完了!", state="complete")
+        except Exception as e:
+            st.error(f"実行例外: {e}")
+            status.update(label="❌ 例外発生", state="error")
+
+# ============================================================
 # Main View
 # ============================================================
 view_ticker = st.session_state.get("view_ticker")
 
-if view_ticker and view_ticker in results:
+# Check if we should show Backtest Results
+if st.session_state.get("backtest_result") and st.session_state.get("backtest_ticker") == view_ticker:
+    # ── Backtest View ──
+    st.title(f"🛠️ バックテスト結果: {view_ticker}")
+    res = st.session_state["backtest_result"]
+    
+    st.caption(f"Strategy: {st.session_state.get('backtest_strategy')} | Period: {res.get('period')}")
+    
+    # Metrics
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Return", f"{res.get('total_return_pct')}%")
+    c2.metric("Alpha", f"{res.get('alpha')}%")
+    c3.metric("Max Drawdown", f"{res.get('max_drawdown_pct')}%")
+    c4.metric("Sharpe Ratio", res.get('sharpe_ratio'))
+    
+    # Chart
+    st.subheader("资产推移 (Equity Curve)")
+    if "history" in res:
+        import pandas as pd
+        hist_df = pd.DataFrame(res["history"])
+        if not hist_df.empty:
+            hist_df['date'] = pd.to_datetime(hist_df['date'])
+            hist_df = hist_df.set_index('date')
+            st.line_chart(hist_df['value'])
+    
+    # Trades
+    st.subheader("売買履歴")
+    if "trades" in res:
+        trades_df = pd.DataFrame(res["trades"])
+        st.dataframe(trades_df, use_container_width=True)
+        
+    if st.button("🔙 分析結果に戻る"):
+        del st.session_state["backtest_result"]
+        st.rerun()
+    
+    st.markdown("---")
+
+elif view_ticker and view_ticker in results:
     # 戻るボタン (メインエリア)
     if st.button("🔙 一覧に戻る", key="back_to_list_main"):
         del st.session_state["view_ticker"]
@@ -277,12 +394,14 @@ if view_ticker and view_ticker in results:
     tech = data.get("technical_data", {})
     dcf = data.get("dcf", {})
     macro = data.get("macro", {})
+    
+    current_strategy = data.get("strategy", "long")
 
     # ── Header ──
     col1, col2, col3, col4 = st.columns([3, 1, 1, 2])
     with col1:
         st.title(f"{view_ticker}")
-        st.caption(f"{data.get('name', '')} | {data.get('sector', '')} | {data.get('date', '')}")
+        st.caption(f"{data.get('name', '')} | {data.get('sector', '')} | {data.get('date', '')} | Strategy: {current_strategy}")
     with col2:
         total = data.get("total_score", 0)
         color = score_color(total)
@@ -305,6 +424,27 @@ if view_ticker and view_ticker in results:
             regime = macro.get("regime", "")
             st.metric("🌍 Regime", regime)
             st.caption(macro.get("description", "")[:60])
+
+    st.markdown("---")
+    
+    # ── Strategy Details (New) ──
+    if "strategy_details" in data:
+        with st.expander("🔬 戦略判定の詳細 (Strategy Details)", expanded=True):
+            st.info(f"適用戦略: {current_strategy.upper()}")
+            
+            # シンプルなリスト表示
+            for detail in data["strategy_details"]:
+                if "OK" in detail:
+                    st.markdown(f"- ✅ {detail}")
+                elif "NG" in detail:
+                    st.markdown(f"- ❌ {detail}")
+                else:
+                    st.markdown(f"- {detail}")
+            
+            # メトリクスがあれば表示
+            if "strategy_metrics" in data:
+                sm = data["strategy_metrics"]
+                st.json(sm) # デバッグ用にJSON表示、あるいは綺麗に整形しても良い
 
     st.markdown("---")
 
