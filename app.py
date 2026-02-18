@@ -98,8 +98,17 @@ st.markdown("""
 def load_results():
     path = os.path.join(os.path.dirname(__file__), "data", "results.json")
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, Exception) as e:
+            # st がインポートされている前提（app.py なので）
+            try:
+                import streamlit as st
+                st.error(f"⚠️ 分析結果データが破損しています: {e}")
+            except ImportError:
+                print(f"⚠️ 分析結果データが破損しています: {e}")
+            return {}
     return {}
 
 def get_latest(ticker_data):

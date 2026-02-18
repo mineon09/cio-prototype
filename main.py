@@ -530,13 +530,22 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
             "history": [new_entry],
         }
     
+    import tempfile
     try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(all_results, f, indent=2, ensure_ascii=False)
+        # 一時ファイルに書き込んでから置換（アトミックな書き込み）
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=data_dir, suffix=".tmp") as tf:
+            json.dump(all_results, tf, indent=2, ensure_ascii=False)
+            tempname = tf.name
+        
+        # Windows では os.replace を使用する前にファイルを閉じる必要がある（上記 with で閉じられる）
+        if os.path.exists(file_path):
+            os.remove(file_path) # Windows対策: replace前に削除
+        os.rename(tempname, file_path)
+        
         history_count = len(all_results[ticker]["history"])
-        print(f"📁 ダッシュボード用データ保存完了: {file_path} (履歴: {history_count}件)")
+        print(f"📁 ダッシュボード用データ保存完了 ({ticker}, 履歴数: {history_count})")
     except Exception as e:
-        print(f"⚠️ JSON保存失敗: {e}")
+        print(f"❌ データ保存失敗: {e}")
 
 
 def main():
