@@ -197,7 +197,11 @@ class BounceStrategy(BaseStrategy):
             
         # 2. Time Stop (期間切れ)
         # エントリーからの経過日数
-        bars_held = len(daily_data.loc[ctx['entry_date']:row['date']]) - 1
+        start_ts = pd.Timestamp(ctx['entry_date'])
+        end_ts = pd.Timestamp(row['date'])
+        # daily_dataのインデックスもTimestampであることを前提とするか、安全に変換してカウント
+        mask = (daily_data.index >= start_ts) & (daily_data.index <= end_ts)
+        bars_held = max(0, mask.sum() - 1)
         if bars_held >= exit_cfg.get("time_stop_bars", 7):
             condition = exit_cfg.get("time_stop_condition", "loss_only")
             if condition == "always" or (price < buy_price):
@@ -283,8 +287,8 @@ class BreakoutStrategy(BaseStrategy):
             ma75_ok = price > ma75
             details.append(f"Trend (Price > MA75): {'OK' if ma75_ok else 'NG'} ({price:.1f} vs {ma75:.1f})")
         else:
-            ma75_ok = True # Default True where data missing or questionable? Original logic was True
-            details.append("Trend: Data Missing -> OK (Default)")
+            ma75_ok = False # Data missing -> Safety first
+            details.append("Trend: Data Missing -> NG (Safety default)")
         
         is_entry = gc_ok and break_ok and vol_ok and ma75_ok
         return {"is_entry": is_entry, "details": details, "metrics": metrics}
@@ -310,7 +314,10 @@ class BreakoutStrategy(BaseStrategy):
                 return True, f"Hard Stop ({stop_pct}%)", stop_price
             
         # 2. Time Stop
-        bars_held = len(daily_data.loc[ctx['entry_date']:row['date']]) - 1
+        start_ts = pd.Timestamp(ctx['entry_date'])
+        end_ts = pd.Timestamp(row['date'])
+        mask = (daily_data.index >= start_ts) & (daily_data.index <= end_ts)
+        bars_held = max(0, mask.sum() - 1)
         if bars_held >= exit_cfg.get("time_stop_bars", 15):
             if price < buy_price:
                 return True, f"Time Stop ({bars_held} days)", price

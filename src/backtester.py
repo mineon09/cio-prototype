@@ -78,17 +78,20 @@ def get_atr_at_entry(daily_df: pd.DataFrame, entry_date, config: dict, strategy:
 
     return atr_val if atr_val and atr_val > 0 else None
 
-def execute_short_entry(entry_price, entry_date, daily_df, config):
-    atr = get_atr_at_entry(daily_df, entry_date, config)
-    cfg = config["exit_strategy"]["short"]
+def execute_short_entry(entry_price, entry_date, daily_df, config, strategy_name: str = "short"):
+    atr = get_atr_at_entry(daily_df, entry_date, config, strategy=strategy_name)
+    cfg = config.get("exit_strategy", {}).get(
+        strategy_name,
+        config.get("exit_strategy", {}).get("short", {})
+    )
 
     if atr is not None:
-        stop_loss   = entry_price - atr * cfg["stop_loss_atr_multiplier"]
-        take_profit = entry_price + atr * cfg["take_profit_atr_multiplier"]
+        stop_loss   = entry_price - atr * cfg.get("stop_loss_atr_multiplier", 1.5)
+        take_profit = entry_price + atr * cfg.get("take_profit_atr_multiplier", 2.0)
         mode = "ATR"
     else:
-        stop_loss   = entry_price * (1 + cfg["fixed_stop_loss_pct"]   / 100)
-        take_profit = entry_price * (1 + cfg["fixed_take_profit_pct"] / 100)
+        stop_loss   = entry_price * (1 + cfg.get("fixed_stop_loss_pct", -2.5)   / 100)
+        take_profit = entry_price * (1 + cfg.get("fixed_take_profit_pct", 5.0) / 100)
         mode = "固定"
     return stop_loss, take_profit, mode
 
@@ -120,10 +123,11 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
 
     # Apply CLI Overrides (Highest Priority)
     if cli_overrides:
-        print(f"DEBUG: Applying CLI Overrides: {cli_overrides}")
-        if strategy in config["strategies"]:
+        logger.debug(f"Applying CLI Overrides: {cli_overrides}")
+        strategies_cfg = config.get("strategies", {})
+        if strategy in strategies_cfg:
             # Deep merge into entry/exit if keys match specific known params
-            s_cfg = config["strategies"][strategy]
+            s_cfg = strategies_cfg[strategy]
             if "entry" not in s_cfg: s_cfg["entry"] = {}
             
             # Map common CLI args to config structure
@@ -328,6 +332,9 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
                     cash = 0
                     buy_price = price
                     entry_atr = get_atr_at_entry(daily_data, date, config, strategy_name) if strategy_name != "long" else row.get('atr', 0)
+                    if strategy_name != "long":
+                         stop_loss, take_profit, mode = execute_short_entry(price, date, daily_data, config, strategy_name)
+                    
                     ctx = {'buy_price': buy_price, 'entry_date': date, 'entry_atr': entry_atr, 'trailing_high': price, 'low_score_months': 0}
                     trades.append({
                         "date": date, 
@@ -388,7 +395,7 @@ def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float
     
     final_values, max_drawdowns = [], []
     for _ in range(iterations):
-        sampled = random.sample(returns, k=len(returns))
+        sampled = random.choices(returns, k=len(returns))
         cap, peak, max_dd = initial_capital, initial_capital, 0.0
         for r in sampled:
             cap *= (1 + r / 100.0)
@@ -403,7 +410,7 @@ def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float
         "max_drawdown": {"median": np.median(max_drawdowns), "mean": np.mean(max_drawdowns), "worst": np.max(max_drawdowns)}
     }
 
-def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 24, window_months: int = 12, step_months: int = 1):
+def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 24, window_months: int = 12, step_months: int = 1, strategy: str = "bounce"):
     start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
     results = []
     current_start = start_dt
@@ -413,7 +420,7 @@ def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 2
         try:
             w_start_str = current_start.strftime("%Y-%m-%d")
             logger.info(f"Rolling Window: {w_start_str}")
-            bt_result = run_backtest(ticker, w_start_str, duration_months=window_months, strategy="bounce")
+            bt_result = run_backtest(ticker, w_start_str, duration_months=window_months, strategy=strategy)
             if "error" not in bt_result:
                 results.append({
                     "start": w_start_str, "total_return": bt_result["total_return_pct"],

@@ -183,8 +183,6 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
 
 {table_str}
 
-{port_constraint_text}
-
 【テクニカル（{target_ticker}）】
 現在価格:{cur} {currency} / MA25乖離:{tech.get('ma25_deviation')}% / MA75乖離:{tech.get('ma75_deviation')}%
 RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('volatility')}% / 出来高比:{tech.get('volume_ratio')}x
@@ -312,10 +310,6 @@ def run(ticker: str, gc=None, strategy: str = "long"):
     if HAS_DCF:
         dcf_data = estimate_fair_value(ticker)
 
-    # ── 4軸スコアカード算出（セクター別閾値 + DCF + マクロ補正） ──
-    sector = target_data.get('sector', '')
-    if sector and sector != '不明':
-        print(f"🏭 セクター: {sector}")
     # ── コンフィグ読み込み (Override適用) ──
     from src.utils import load_config_with_overrides
     config = load_config_with_overrides(ticker)
@@ -325,7 +319,7 @@ def run(ticker: str, gc=None, strategy: str = "long"):
     if sector and sector != '不明':
         print(f"🏭 セクター: {sector}")
         
-    # ベースのスコアカード生成 needed for Fundamental score
+    # ベースのスコアカード生成
     base_scorecard = generate_scorecard(
             target_data.get('metrics', {}),
             target_data.get('technical', {}),
@@ -334,10 +328,32 @@ def run(ticker: str, gc=None, strategy: str = "long"):
             dcf_data=dcf_data,
             macro_data=macro_data,
     )
-    scorecard = base_scorecard # Default
-
+    
     # 戦略分析を実行
     scorecard = run_strategy_analysis(ticker, strategy, base_scorecard, macro_data, config)
+
+    summary_text = scorecard.get('summary_text', '')
+    if summary_text:
+        print(f"\n{summary_text}")
+
+    report, table_str, model_name = analyze_all(
+        ticker, all_data, competitors,
+        yuho_data=yuho_data, scorecard=scorecard,
+    )
+
+    if gc:
+        write_to_sheets(
+            gc, ticker, target_data, competitors,
+            report, table_str,
+            yuho_data=yuho_data, scorecard=scorecard,
+        )
+
+    # ── ダッシュボード用JSON出力（履歴蓄積型） ──
+    save_to_dashboard_json(ticker, target_data, scorecard, report,
+                           dcf_data=dcf_data, macro_data=macro_data, model_name=model_name)
+
+    print("\n" + "="*60 + "\n" + report + "\n" + "="*60)
+    return report
 
 def run_strategy_analysis(ticker, strategy, base_scorecard, macro_data, config):
     """
@@ -397,29 +413,6 @@ def run_strategy_analysis(ticker, strategy, base_scorecard, macro_data, config):
     scorecard['summary_text'] = f"【{strategy.upper()}戦略 (v1.5)】\n判定: {signal}\n" + "\n".join(details)
     
     return scorecard
-
-    summary_text = scorecard.get('summary_text', '')
-    if summary_text:
-        print(f"\n{summary_text}")
-
-    report, table_str, model_name = analyze_all(
-        ticker, all_data, competitors,
-        yuho_data=yuho_data, scorecard=scorecard,
-    )
-
-    if gc:
-        write_to_sheets(
-            gc, ticker, target_data, competitors,
-            report, table_str,
-            yuho_data=yuho_data, scorecard=scorecard,
-        )
-
-    # ── ダッシュボード用JSON出力（履歴蓄積型） ──
-    save_to_dashboard_json(ticker, target_data, scorecard, report,
-                           dcf_data=dcf_data, macro_data=macro_data, model_name=model_name)
-
-    print("\n" + "="*60 + "\n" + report + "\n" + "="*60)
-    return report
 
 
 def save_to_dashboard_json(ticker, target_data, scorecard, report,
