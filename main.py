@@ -460,6 +460,41 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
                 except Exception:
                     all_results = {}
 
+            # new_entry の定義 (C-1: holding / position_size を含む)
+            new_entry = {
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "scores": {
+                    "fundamental": scorecard.get("fundamental", {}).get("score", 0),
+                    "valuation":   scorecard.get("valuation", {}).get("score", 0),
+                    "technical":   scorecard.get("technical", {}).get("score", 0),
+                    "qualitative": scorecard.get("qualitative", {}).get("score", 0),
+                },
+                "weights":    scorecard.get("weights", {}),
+                "signal":     scorecard.get("signal", "WATCH"),
+                "holding":    scorecard.get("signal") == "BUY",       # C-1
+                "position_size": 0.10,                                # C-1
+                "total_score": scorecard.get("total_score", 0),
+                "metrics":    target_data.get("metrics", {}),
+                "technical_data": target_data.get("technical", {}),
+                "report":     report,
+                "ai_model":   model_name or "Unknown",
+            }
+
+            # DCF データがあれば追加
+            if dcf_data and dcf_data.get("available"):
+                new_entry["dcf"] = {
+                    "fair_value": dcf_data.get("fair_value"),
+                    "upside": dcf_data.get("upside"),
+                    "wacc": dcf_data.get("wacc"),
+                }
+
+            # マクロ環境データがあれば追加
+            if macro_data and macro_data.get("regime"):
+                new_entry["macro"] = {
+                    "regime": macro_data.get("regime"),
+                    "detail": macro_data.get("detail", ""),
+                }
+
             # 既存のエントリを取得 or 新規作成
             if ticker in all_results:
                 existing = all_results[ticker]
