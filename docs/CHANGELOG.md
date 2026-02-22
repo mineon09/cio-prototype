@@ -4,6 +4,17 @@
 
 ---
 
+### [v2.1.1] - 2026-02-22 (8306.T Strategy Fix)
+- **日付**: 2026-02-22
+- **カテゴリ**: Config Fix / Backtest Accuracy
+- **変更内容**:
+  - 8306.T bounce: `enabled_regimes` に `YIELD_INVERSION` を追加、`fundamental_min` を 5.0 → 4.0 に緩和
+  - 8306.T breakout: `enabled: false` を撤廃し有効化、`enabled_regimes` に `YIELD_INVERSION` を追加、`fundamental_min` を 4.0 に設定
+  - Issue #05 として原因分析ドキュメント作成 (`docs/issues/05_8306T_bounce_block.md`)
+- **理由**: 2024年のYIELD_INVERSION レジーム期間中、bounce/breakout 両戦略が8306.Tで0トレードとなる問題を解消（レジームフィルター + ファンダメンタル閾値 + enabled:false の多段ブロック）。根本解決（案C: 日本株用マクロ判定分離）は別Issueとして管理。
+
+---
+
 ### [v2.1.0] - 2026-02-22 (External Review Fixes + Hotfix)
 - **日付**: 2026-02-22
 - **カテゴリ**: Quant Logic / Architecture / State Management / Bug Fix

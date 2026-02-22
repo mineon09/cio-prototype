@@ -125,7 +125,8 @@ class BounceStrategy(BaseStrategy):
         metrics = {}
         
         # 1. 基礎フィルター (Fundamental / Regime)
-        fund_score = row.get('fundamental', 0)
+        fund_val = row.get('fundamental', 0)
+        fund_score = float(fund_val) if isinstance(fund_val, (int, float)) else fund_val.get('score', 0) if isinstance(fund_val, dict) else 0
         fund_min = entry_cfg.get("fundamental_min", 5.0)
         metrics["fundamental"] = fund_score
         
@@ -168,8 +169,8 @@ class BounceStrategy(BaseStrategy):
             past_data = daily_data[daily_data.index <= pd.Timestamp(current_date)]
         else:
             past_data = daily_data
+        
         ma75 = past_data['Close'].rolling(75).mean().iloc[-1]
-        ma75_ok = True
         price = past_data['Close'].iloc[-1]
         if not pd.isna(ma75):
              ma75_ok = price > ma75
@@ -256,7 +257,8 @@ class BreakoutStrategy(BaseStrategy):
         details = []
         metrics = {}
         
-        fund_score = row.get('fundamental', 0)
+        fund_val = row.get('fundamental', 0)
+        fund_score = float(fund_val) if isinstance(fund_val, (int, float)) else fund_val.get('score', 0) if isinstance(fund_val, dict) else 0
         fund_min = entry_cfg.get("fundamental_min", 5.0)
         metrics["fundamental"] = fund_score
 
@@ -291,8 +293,8 @@ class BreakoutStrategy(BaseStrategy):
             past_data = daily_data[daily_data.index <= pd.Timestamp(current_date)]
         else:
             past_data = daily_data
+            
         ma75 = past_data['Close'].rolling(75).mean().iloc[-1]
-        ma75_ok = True
         price = past_data['Close'].iloc[-1]
         
         if not pd.isna(ma75):

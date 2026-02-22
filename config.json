@@ -112,7 +112,11 @@
         "RISK_ON",
         "NEUTRAL",
         "RATE_CUT",
-        "YIELD_INVERSION"
+        "YIELD_INVERSION",
+        "BOJ_HIKE",
+        "YEN_WEAK",
+        "YEN_STRONG",
+        "NIKKEI_BULL"
       ],
       "entry": {
         "fundamental_min": 5.0,
@@ -149,7 +153,11 @@
         "RISK_ON",
         "NEUTRAL",
         "RATE_CUT",
-        "YIELD_INVERSION"
+        "YIELD_INVERSION",
+        "BOJ_HIKE",
+        "YEN_WEAK",
+        "YEN_STRONG",
+        "NIKKEI_BULL"
       ],
       "entry": {
         "fundamental_min": 5.0,
@@ -185,9 +193,20 @@
           "reason_disabled": "Low volatility bank sector unsuitable for momentum breakout"
         },
         "bounce": {
+          "enabled_regimes": [
+            "RISK_ON",
+            "NEUTRAL",
+            "RATE_CUT",
+            "YIELD_INVERSION",
+            "BOJ_HIKE",
+            "YEN_WEAK",
+            "YEN_STRONG",
+            "NIKKEI_BULL"
+          ],
           "entry": {
+            "fundamental_min": 3.5,
             "volume_multiplier": 1.0,
-            "rsi_threshold": 32
+            "rsi_threshold": 40
           }
         }
       }
@@ -201,7 +220,11 @@
             "RATE_CUT",
             "RATE_HIKE",
             "RISK_OFF",
-            "YIELD_INVERSION"
+            "YIELD_INVERSION",
+            "BOJ_HIKE",
+            "YEN_WEAK",
+            "YEN_STRONG",
+            "NIKKEI_BULL"
           ],
           "entry": {
             "volume_multiplier": 1.2,
@@ -223,6 +246,10 @@
             "RATE_CUT",
             "RATE_HIKE",
             "RISK_OFF",
+            "BOJ_HIKE",
+            "YEN_WEAK",
+            "YEN_STRONG",
+            "NIKKEI_BULL",
             "YIELD_INVERSION"
           ],
           "entry": {
@@ -282,6 +309,12 @@
       "yield_curve_inversion_bps": -10,
       "hyg_stress_drop_pct": -5.0
     },
+    "jp_thresholds": {
+      "boj_hike_yen_change_pct": -3.0,
+      "yen_strong_change_pct": -1.0,
+      "nikkei_bull_change_pct": 3.0,
+      "vix_risk_off": 25
+    },
     "regime_weights": {
       "RISK_ON": {
         "fundamental": 0.25,
@@ -318,6 +351,30 @@
         "valuation": 0.25,
         "technical": 0.25,
         "qualitative": 0.2
+      },
+      "BOJ_HIKE": {
+        "fundamental": 0.35,
+        "valuation": 0.25,
+        "technical": 0.25,
+        "qualitative": 0.15
+      },
+      "YEN_WEAK": {
+        "fundamental": 0.25,
+        "valuation": 0.25,
+        "technical": 0.30,
+        "qualitative": 0.20
+      },
+      "YEN_STRONG": {
+        "fundamental": 0.30,
+        "valuation": 0.30,
+        "technical": 0.20,
+        "qualitative": 0.20
+      },
+      "NIKKEI_BULL": {
+        "fundamental": 0.25,
+        "valuation": 0.25,
+        "technical": 0.30,
+        "qualitative": 0.20
       }
     }
   },
@@ -332,8 +389,8 @@
   },
   "scoring": {
     "fundamental": {
-      "roe_good": 10,
-      "op_margin_good": 15,
+      "roe_good": 8,
+      "op_margin_good": 10,
       "equity_ratio_good": 40
     },
     "valuation": {
@@ -358,8 +415,8 @@
         "qualitative": 0.3
       },
       "fundamental": {
-        "roe_good": 15,
-        "op_margin_good": 20,
+        "roe_good": 12,
+        "op_margin_good": 15,
         "equity_ratio_good": 30,
         "rd_weight": 1.5
       },
@@ -383,8 +440,8 @@
         "qualitative": 0.35
       },
       "fundamental": {
-        "roe_good": 12,
-        "op_margin_good": 18,
+        "roe_good": 10,
+        "op_margin_good": 15,
         "equity_ratio_good": 35,
         "rd_weight": 2.0
       },
@@ -415,7 +472,7 @@
       },
       "fundamental": {
         "roe_good": 8,
-        "op_margin_good": 10,
+        "op_margin_good": 8,
         "equity_ratio_good": 40,
         "rd_weight": 0.5
       },
@@ -440,8 +497,8 @@
         "qualitative": 0.15
       },
       "fundamental": {
-        "roe_good": 8,
-        "op_margin_good": 25,
+        "roe_good": 6,
+        "op_margin_good": 15,
         "equity_ratio_good": 8,
         "rd_weight": 0.0
       },

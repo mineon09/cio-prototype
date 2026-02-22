@@ -73,7 +73,7 @@ try:
     HAS_MACRO = True
 except ImportError:
     HAS_MACRO = False
-    def detect_regime(): return {}
+    def detect_regime(ticker=""): return {}
 
 
 
@@ -281,7 +281,7 @@ def run(ticker: str, gc=None, strategy: str = "long"):
     macro_data = {"regime": "UNAVAILABLE"}
     if HAS_MACRO:
         try:
-            macro_data = detect_regime()
+            macro_data = detect_regime(ticker)
         except Exception as e:
             print(f"  ⚠️ マクロ取得失敗（NEUTRAL扱いで続行）: {e}")
             macro_data = {"regime": "NEUTRAL", "_fetch_error": True}

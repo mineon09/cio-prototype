@@ -45,6 +45,11 @@ mega_backtest_report*.csv
 mega_sim_summary*.txt
 debug_*.py
 
+# OS-specific
+.DS_Store
+Thumbs.db
+
 # Temporary verification scripts
 verify_*.py
 test_import.py
+*.tmp

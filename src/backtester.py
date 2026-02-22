@@ -19,7 +19,7 @@ if not logger.handlers:
     
 
 
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
 
 # 文字化け対策 (Windows環境用)
 if sys.platform == "win32":
@@ -144,7 +144,7 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
     
     if strategy in ["short", "bounce", "breakout"]:
         try:
-            hist_start = (start_date - timedelta(days=120)).strftime('%Y-%m-%d')
+            hist_start = (start_date - timedelta(days=400)).strftime('%Y-%m-%d')
             hist_end = (end_date + timedelta(days=1)).strftime('%Y-%m-%d')
             stock = yf.Ticker(ticker)
             
@@ -189,7 +189,7 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
                 
                 data = fetch_stock_data(ticker, as_of_date=current_date, price_history=past_slice)
                 if data and data.get("technical"):
-                    regime = get_macro_regime(current_date, config)
+                    regime = get_macro_regime(current_date, config, ticker=ticker)
                     tech_data = data.get("technical", {})
                     tech_data["perfect_order"] = perfect_order
                     
@@ -218,7 +218,7 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
                     "signal": current_month_score.get("signal"), 
                     "score": current_month_score.get("total_score"),
                     "tech_data": current_month_score.get("raw_technical", {}), 
-                    "fundamental": current_month_score.get("fundamental", {}).get("score"),
+                    "fundamental": current_month_score.get("fundamental", 0.0),
                     "regime": regime
                 })
 
@@ -249,7 +249,7 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
             if not data or not data.get("technical"): continue
                 
             price = data["technical"]["current_price"]
-            regime = get_macro_regime(current_date, config)
+            regime = get_macro_regime(current_date, config, ticker=ticker)
             
             # Calculate Perfect Order for Momentum Bonus (Long Strategy)
             ta = TechnicalAnalyzer(past_slice if not past_slice.empty else pd.DataFrame())
@@ -276,7 +276,7 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
                 "signal": scorecard.get("signal"),
                 "score": scorecard.get("total_score"),
                 "tech_data": scorecard.get("technical", {}), 
-                "fundamental": scorecard.get("fundamental", {}).get("score"),
+                "fundamental": scorecard.get("fundamental", 0.0),
                 "regime": regime
             })
             logger.info(f"{current_date.strftime('%Y-%m-%d')} | Score: {scorecard.get('total_score')} (Regime: {regime}, Threshold: {buy_threshold})")

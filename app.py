@@ -56,7 +56,7 @@ except ImportError:
 try:
     from src.macro_regime import detect_regime
 except ImportError:
-    def detect_regime(): return {}
+    def detect_regime(ticker=""): return {}
 
 from src.notifier import send_line_push
 from src.utils import load_config_with_overrides
@@ -263,7 +263,7 @@ if run_analysis and ticker_input:
 
         # Step 5: Macro
         st.write("🌍 マクロ環境を判定中...")
-        macro_data = detect_regime()
+        macro_data = detect_regime(ticker)
 
         # Step 6: Scorecard
         st.write("📋 4軸スコア算出中...")
