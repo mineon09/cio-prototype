@@ -21,7 +21,10 @@ Gemini AIで成長シナリオを予測させて理論株価を算出する。
 """
 
 import math
+import logging
 import yfinance as yf
+
+logger = logging.getLogger("CIO_DCF")
 
 try:
     from .data_fetcher import call_gemini
@@ -30,13 +33,30 @@ except ImportError:
         return None
 
 
-def _get_fcf_history(ticker: str) -> list[float]:
+def _get_fcf_history(ticker: str, as_of_date=None) -> list[float]:
     """過去のフリーキャッシュフロー（FCF）を取得する"""
+    import pandas as pd
     try:
         stock = yf.Ticker(ticker)
         cf = stock.cashflow
         if cf is None or cf.empty:
             return []
+            
+        # B-1c: PIT (Point-in-Time) フィルタ - バックテスト時のルックアヘッド防止
+        if as_of_date:
+            valid_cols = []
+            for d in cf.columns:
+                try:
+                    d_naive = pd.Timestamp(d).tz_localize(None) if pd.Timestamp(d).tzinfo else pd.Timestamp(d)
+                    as_of_naive = pd.Timestamp(as_of_date).tz_localize(None) if pd.Timestamp(as_of_date).tzinfo else pd.Timestamp(as_of_date)
+                    # 決算日(d)から発表まで約45日のラグを考慮
+                    if d_naive + pd.Timedelta(days=45) <= as_of_naive:
+                        valid_cols.append(d)
+                except Exception:
+                    pass
+            if not valid_cols:
+                return []
+            cf = cf[valid_cols]
 
         fcf_list = []
         ocf_row = None
@@ -80,21 +100,44 @@ def _get_fcf_history(ticker: str) -> list[float]:
         return []
 
 
-def _estimate_wacc(ticker: str) -> float:
-    """簡易WACC（加重平均資本コスト）の推定"""
+def _estimate_wacc(ticker: str, macro_data: dict = None) -> float:
+    """WACC（加重平均資本コスト）の推定
+    
+    WACC = (E/V) × Ke + (D/V) × Kd × (1 - Tax)
+    
+    B-2: Cost of Equity のみではなく、有利子負債コストを含めた
+    正式な WACC を計算する。負債比率の高い企業（銀行・製造業等）で
+    理論株価の過大評価を防ぐ。
+    
+    macro_data が渡された場合、リアルタイムの米10年債利回りを使用する。
+    """
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
         beta = info.get('beta', 1.0) or 1.0
 
         # CAPM: Ke = Rf + β × (Rm - Rf)
-        risk_free = 4.3   # 米10年債利回り（概算）
+        # HIGH-002: macro_regime からリアルタイム金利を取得（利用可能な場合）
+        if macro_data and macro_data.get('us10y'):
+            risk_free = macro_data['us10y']
+        else:
+            risk_free = 4.3   # フォールバック: 米10年債利回り概算
         market_premium = 5.5  # 市場リスクプレミアム
         cost_of_equity = risk_free + beta * market_premium
 
-        # 簡易WACC（株式のみ、有利子負債は無視）
-        # 本格的には D/E ratio を使うが、簡略化
-        return round(cost_of_equity, 1)
+        # B-2: 有利子負債を考慮した WACC 計算
+        total_debt = info.get('totalDebt', 0) or 0
+        market_cap = info.get('marketCap', 1) or 1
+        total_value = market_cap + total_debt
+
+        equity_ratio = market_cap / total_value
+        debt_ratio = total_debt / total_value
+
+        tax_rate = 0.30  # 実効税率概算
+        cost_of_debt = risk_free + 1.0  # 簡易クレジットスプレッド (+1%)
+
+        wacc = (equity_ratio * cost_of_equity) + (debt_ratio * cost_of_debt * (1 - tax_rate))
+        return round(max(wacc, 3.0), 1)  # 最低3%（異常値ガード）
     except Exception:
         return 10.0  # デフォルト
 
@@ -122,6 +165,9 @@ def _dcf_valuation(fcf_latest: float, growth_rate: float, wacc: float,
     enterprise_value = pv_fcf + pv_terminal
 
     # 1株あたり理論株価
+    if shares_outstanding <= 0 or math.isnan(shares_outstanding):
+        return 0.0
+        
     fair_value = enterprise_value / shares_outstanding
     if math.isnan(fair_value) or math.isinf(fair_value):
         return 0.0
@@ -148,7 +194,7 @@ def _get_growth_scenarios(ticker: str, fcf_history: list) -> dict:
     }
 
 
-def estimate_fair_value(ticker: str) -> dict:
+def estimate_fair_value(ticker: str, as_of_date=None) -> dict:
     """
     DCF法で理論株価を算出する。
 
@@ -158,13 +204,15 @@ def estimate_fair_value(ticker: str) -> dict:
     print(f"  💰 DCF理論株価を算出中...")
 
     # 1. FCF履歴の取得
-    fcf_history = _get_fcf_history(ticker)
+    fcf_history = _get_fcf_history(ticker, as_of_date=as_of_date)
     if not fcf_history:
+        logger.warning(f"{ticker}: FCFデータなし — DCFスキップ")
         print(f"  ⚠️ FCFデータなし — DCFスキップ")
         return {"available": False, "reason": "FCFデータなし"}
 
     fcf_latest = fcf_history[0]
     if fcf_latest <= 0:
+        logger.warning(f"{ticker}: 直近FCFがマイナス ({fcf_latest}) — DCFスキップ")
         print(f"  ⚠️ 直近FCFがマイナス — DCFスキップ")
         return {"available": False, "reason": "FCFマイナス"}
 
@@ -186,6 +234,8 @@ def estimate_fair_value(ticker: str) -> dict:
     # 5. 各シナリオのDCF算出
     results = {}
     for scenario_name, growth in scenarios.items():
+        if math.isnan(growth) or math.isinf(growth):
+            growth = 0.0
         fv = _dcf_valuation(fcf_latest, growth, wacc, shares_outstanding=shares)
         results[scenario_name] = {
             "growth_rate": growth,
@@ -195,6 +245,10 @@ def estimate_fair_value(ticker: str) -> dict:
     base_fv = results.get("base", {}).get("fair_value", 0) or 0
     if math.isnan(base_fv) or math.isinf(base_fv):
         base_fv = 0
+
+    if current_price is None or math.isnan(current_price) or math.isinf(current_price):
+        current_price = 0.0
+
     upside = round((base_fv - current_price) / current_price * 100, 1) if current_price > 0 and base_fv > 0 else 0
     mos = round(max(0, (base_fv - current_price) / base_fv * 100), 1) if base_fv > 0 else 0
 

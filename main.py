@@ -39,16 +39,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # モジュールインポート
+import yfinance as yf  # DESIGN-003: モジュールレベルに移動
+import pandas as pd
 from src.data_fetcher import (
     fetch_stock_data, select_competitors, call_gemini,
     short_name, clean_val, pad_east_asian, get_east_asian_width_count,
 )
-from src.sheets_writer import get_sheets_client, write_to_sheets
+from src.sheets_writer import get_sheets_client, write_to_sheets, write_system_log
 from src.edinet_client import extract_yuho_data, is_japanese_stock
 from src.analyzers import generate_scorecard, format_yuho_for_prompt
 from src.portfolio import calculate_position_sizing
 
-# SEC EDGARï¼ˆ利用可能な場合のみ）
+# SEC EDGAR（利用可能な場合のみ）
 try:
     from src.sec_client import extract_sec_data, is_us_stock
     HAS_SEC = True
@@ -90,7 +92,7 @@ except Exception:
 # ==========================================
 
 def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
-                yuho_data: dict = None, scorecard: dict = None) -> tuple[str, str]:
+                yuho_data: dict = None, scorecard: dict = None) -> tuple[str, str, str]:
     labels = {
         'op_margin':     '営業利益率(%)',
         'net_margin':    '純利益率(%)',
@@ -266,11 +268,23 @@ def run(ticker: str, gc=None, strategy: str = "long"):
     print(f"\n{'='*60}\n🚀 {ticker} の司令塔分析を開始 (Professional CIO Edition)\n{'='*60}")
 
     target_data = fetch_stock_data(ticker)
+    
+    if "price_warning" in target_data.get("technical", {}) or not target_data.get("metrics"):
+        warning_msg = f"{ticker}: データ品質が基準を満たさないため分析をスキップします (NaN超過 または 株価異常変動)"
+        print(f"  ⚠️ {warning_msg}")
+        if gc:
+            write_system_log(gc, "SKIPPED", warning_msg, ticker)
+        return "分析スキップ (データ品質)"
 
     # ── マクロ環境判定（競合選定の前に実行） ──
-    macro_data = {}
+    # A-1: 失敗時に NEUTRAL との区別がつくよう安全な初期値を設定
+    macro_data = {"regime": "UNAVAILABLE"}
     if HAS_MACRO:
-        macro_data = detect_regime()
+        try:
+            macro_data = detect_regime()
+        except Exception as e:
+            print(f"  ⚠️ マクロ取得失敗（NEUTRAL扱いで続行）: {e}")
+            macro_data = {"regime": "NEUTRAL", "_fetch_error": True}
 
     # ── 競合選定（マクロ環境を考慮） ──
     competitors = select_competitors(target_data, macro_data=macro_data)
@@ -290,7 +304,12 @@ def run(ticker: str, gc=None, strategy: str = "long"):
     yuho_data = {}
     if is_japanese_stock(ticker):
         print(f"\n🇯🇵 日本株: EDINET有報を検索中...")
-        yuho_data = extract_yuho_data(ticker)
+        # A-3: EDINET API障害時も有報なしで分析続行
+        try:
+            yuho_data = extract_yuho_data(ticker)
+        except Exception as e:
+            print(f"  ⚠️ EDINET取得失敗（有報なしで続行）: {e}")
+            yuho_data = {}
         if yuho_data and yuho_data.get('available'):
             print(f"  ✅ 有報データ取得成功")
         else:
@@ -360,8 +379,7 @@ def run_strategy_analysis(ticker, strategy, base_scorecard, macro_data, config):
     指定された戦略に基づいて詳細分析を行う (Shared Logic)
     GUI (app.py) からも利用される。
     """
-    import pandas as pd
-    
+    # DESIGN-003: モジュールレベルで import 済みの pandas / yfinance を使用
     scorecard = base_scorecard.copy() # Baseをコピーして使用
 
     if strategy not in ["bounce", "breakout"]:
@@ -370,7 +388,6 @@ def run_strategy_analysis(ticker, strategy, base_scorecard, macro_data, config):
     print(f"🔄 スイング戦略 ({strategy}) で分析を実行します... (Shared Logic)")
     
     # 1. 必要なデータ取得 (History)
-    import yfinance as yf
     # 取得期間は長めに (MA75等計算用)
     hist = yf.Ticker(ticker).history(period="1y") 
     if hist.empty:
@@ -423,120 +440,73 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
         os.makedirs(data_dir)
     file_path = os.path.join(data_dir, "results.json")
     
-    # 既存データの読み込み
-    all_results = {}
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                all_results = json.load(f)
-        except Exception:
-            all_results = {}
+    # C-3: 排他ロックで並列実行時のデータ競合を防止
+    try:
+        from filelock import FileLock
+        lock = FileLock(file_path + ".lock", timeout=10)
+    except ImportError:
+        from contextlib import nullcontext
+        lock = nullcontext()
 
-    # 新規エントリの作成
-    new_entry = {
-        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "scores": {
-            "fundamental": scorecard.get("fundamental", {}).get("score", 0),
-            "valuation": scorecard.get("valuation", {}).get("score", 0),
-            "technical": scorecard.get("technical", {}).get("score", 0),
-            "qualitative": scorecard.get("qualitative", {}).get("score", 0),
-        },
-        "weights": scorecard.get("weights", {}),
-        "signal": scorecard.get("signal", "WATCH"),
-        "total_score": scorecard.get("total_score", 0),
-        "metrics": target_data.get("metrics", {}),
-        "technical_data": target_data.get("technical", {}),
-        "report": report,
-        "ai_model": model_name or "Unknown" # モデル名を記録
-    }
-
-    # DCFデータがあれば追加（NaN/Infを除去）
-    if dcf_data and dcf_data.get("available"):
-        def _safe_num(v, default=0):
-            """NaN/Infを0に置換"""
-            if v is None:
-                return default
-            try:
-                f = float(v)
-                if f != f or f == float('inf') or f == float('-inf'):
-                    return default
-                return f
-            except (TypeError, ValueError):
-                return default
-        
-        safe_scenarios = {}
-        for k, sc in dcf_data.get("scenarios", {}).items():
-            safe_scenarios[k] = {
-                "growth_rate": _safe_num(sc.get("growth_rate", 0)),
-                "fair_value": _safe_num(sc.get("fair_value", 0)),
-            }
-
-        new_entry["dcf"] = {
-            "fair_value": _safe_num(dcf_data.get("fair_value", 0)),
-            "current_price": _safe_num(dcf_data.get("current_price", 0)),
-            "upside": _safe_num(dcf_data.get("upside", 0)),
-            "margin_of_safety": _safe_num(dcf_data.get("margin_of_safety", 0)),
-            "scenarios": safe_scenarios,
-            "wacc": _safe_num(dcf_data.get("wacc", 0)),
-        }
-
-    # マクロ環境データがあれば追加
-    if macro_data and macro_data.get("regime"):
-        new_entry["macro"] = {
-            "regime": macro_data.get("regime", ""),
-            "description": macro_data.get("description", ""),
-            "indicators": macro_data.get("indicators", {}),
-        }
-
-    # 既存のエントリを取得 or 新規作成
-    if ticker in all_results:
-        existing = all_results[ticker]
-        # 旧フォーマット（historyキーなし）→ マイグレーション
-        if "history" not in existing:
-            old_entry = {
-                "date": existing.get("date", ""),
-                "scores": existing.get("scores", {}),
-                "weights": existing.get("weights", {}),
-                "signal": existing.get("signal", "WATCH"),
-                "total_score": existing.get("total_score", 0),
-                "metrics": existing.get("metrics", {}),
-                "technical_data": existing.get("technical_data", {}),
-                "report": existing.get("report", ""),
-            }
-            existing = {
-                "name": existing.get("name", ticker),
-                "sector": existing.get("sector", "不明"),
-                "currency": existing.get("currency", "USD"),
-                "history": [old_entry],
-            }
-        existing["history"].append(new_entry)
-        # 最大20件保持
-        existing["history"] = existing["history"][-20:]
-        # メタデータの更新
-        existing["name"] = target_data.get("name", ticker)
-        existing["sector"] = target_data.get("sector", "不明")
-        existing["currency"] = target_data.get("currency", "USD")
-        all_results[ticker] = existing
-    else:
-        all_results[ticker] = {
-            "name": target_data.get("name", ticker),
-            "sector": target_data.get("sector", "不明"),
-            "currency": target_data.get("currency", "USD"),
-            "history": [new_entry],
-        }
-    
     import tempfile
     try:
-        # 一時ファイルに書き込んでから置換（アトミックな書き込み）
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=data_dir, suffix=".tmp") as tf:
-            json.dump(all_results, tf, indent=2, ensure_ascii=False)
-            tempname = tf.name
-        
-        # Windows では os.replace を使用する前にファイルを閉じる必要がある（上記 with で閉じられる）
-        if os.path.exists(file_path):
-            os.remove(file_path) # Windows対策: replace前に削除
-        os.rename(tempname, file_path)
-        
+        with lock:
+            # 既存データの読み込み（ロック内で最新状態を取得）
+            all_results = {}
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        all_results = json.load(f)
+                except Exception:
+                    all_results = {}
+
+            # 既存のエントリを取得 or 新規作成
+            if ticker in all_results:
+                existing = all_results[ticker]
+                # 旧フォーマット（historyキーなし）→ マイグレーション
+                if "history" not in existing:
+                    old_entry = {
+                        "date": existing.get("date", ""),
+                        "scores": existing.get("scores", {}),
+                        "weights": existing.get("weights", {}),
+                        "signal": existing.get("signal", "WATCH"),
+                        "total_score": existing.get("total_score", 0),
+                        "metrics": existing.get("metrics", {}),
+                        "technical_data": existing.get("technical_data", {}),
+                        "report": existing.get("report", ""),
+                    }
+                    existing = {
+                        "name": existing.get("name", ticker),
+                        "sector": existing.get("sector", "不明"),
+                        "currency": existing.get("currency", "USD"),
+                        "history": [old_entry],
+                    }
+                existing["history"].append(new_entry)
+                # 最大20件保持
+                existing["history"] = existing["history"][-20:]
+                # メタデータの更新
+                existing["name"] = target_data.get("name", ticker)
+                existing["sector"] = target_data.get("sector", "不明")
+                existing["currency"] = target_data.get("currency", "USD")
+                all_results[ticker] = existing
+            else:
+                all_results[ticker] = {
+                    "name": target_data.get("name", ticker),
+                    "sector": target_data.get("sector", "不明"),
+                    "currency": target_data.get("currency", "USD"),
+                    "history": [new_entry],
+                }
+
+            # 一時ファイルに書き込んでから置換（アトミックな書き込み）
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=data_dir, suffix=".tmp") as tf:
+                json.dump(all_results, tf, indent=2, ensure_ascii=False)
+                tempname = tf.name
+
+            # Windows では os.replace を使用する前にファイルを閉じる必要がある
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            os.rename(tempname, file_path)
+
         history_count = len(all_results[ticker]["history"])
         print(f"📁 ダッシュボード用データ保存完了 ({ticker}, 履歴数: {history_count})")
     except Exception as e:
@@ -579,8 +549,15 @@ def main():
         print(f"\n[{i+1}/{len(tickers)}] {ticker}")
         try:
             run(ticker, gc, strategy=strategy)
+            if gc:
+                write_system_log(gc, "SUCCESS", f"{ticker} の分析が正常に完了しました。", ticker)
         except Exception as e:
-            print(f"❌ {ticker} 失敗: {e}")
+            err_msg = str(e)
+            print(f"❌ {ticker} 失敗: {err_msg}")
+            import traceback
+            tb = traceback.format_exc()
+            if gc:
+                write_system_log(gc, "ERROR", f"{err_msg}\n{tb}", ticker)
         if i < len(tickers) - 1:
             print("⏳ 5秒待機...")
             time.sleep(5)

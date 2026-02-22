@@ -6,6 +6,9 @@ keys.txt
 extra/
 secret/
 
+# EDINET API Cache
+.edinet_cache/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -20,6 +23,14 @@ debug_*
 *.log
 verification_output.txt
 short_verification.txt
+test_*.txt
+__git_tracked.txt
+
+# Streamlit Secrets
+.streamlit/secrets.toml
+
+# Database
+data/*.db
 
 # Data and Cache
 data/cache/
@@ -33,3 +44,7 @@ output_*.txt
 mega_backtest_report*.csv
 mega_sim_summary*.txt
 debug_*.py
+
+# Temporary verification scripts
+verify_*.py
+test_import.py

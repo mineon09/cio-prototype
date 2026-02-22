@@ -39,6 +39,8 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           # EDINET API キー（日本株の有報取得用、オプション）
           EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          # 環境固有の文字化けを防ぐためUTF-8を強制
+          PYTHONUTF8: 1
         run: |
           # 銘柄コードを引数としてPythonを実行
           python main.py --ticker "${{ github.event.inputs.ticker }}"

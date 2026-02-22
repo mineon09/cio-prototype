@@ -375,7 +375,7 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
     
     gross_profit = sum([t['return'] for t in valid_trades if t['return'] > 0])
     gross_loss = abs(sum([t['return'] for t in valid_trades if t['return'] < 0]))
-    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else float('inf')
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 999.99  # CRIT-001: JSON互換値（float('inf')はJSON仕様外）
 
     return {
         "ticker": "", "period": f"{df.iloc[0]['date'].strftime('%Y-%m')} ~ {df.iloc[-1]['date'].strftime('%Y-%m')}",
@@ -387,7 +387,12 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
         "trade_count": len(valid_trades), "trades": trades, "history": portfolio_values, "stock_return_pct": round(stock_return, 2)
     }
 
-def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float = 1000000) -> dict:
+def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float = 1000000, position_pct: float = 0.10) -> dict:
+    """B-3: ポジションサイズを考慮したモンテカルロ・ブートストラップ
+    
+    Args:
+        position_pct: 1トレードあたりの資本投入比率 (default 10%)
+    """
     import random
     if not trades: return {"error": "No trades"}
     returns = [t['return'] for t in trades if 'return' in t]
@@ -398,7 +403,9 @@ def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float
         sampled = random.choices(returns, k=len(returns))
         cap, peak, max_dd = initial_capital, initial_capital, 0.0
         for r in sampled:
-            cap *= (1 + r / 100.0)
+            # B-3: ポジションサイズを反映（全額投入前提を修正）
+            trade_impact = r * position_pct / 100.0
+            cap *= (1 + trade_impact)
             peak = max(peak, cap)
             max_dd = max(max_dd, (peak - cap) / peak * 100.0)
         final_values.append(cap)
@@ -406,30 +413,67 @@ def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float
         
     return {
         "iterations": iterations,
+        "position_pct": position_pct,
         "final_value": {"median": np.median(final_values), "mean": np.mean(final_values), "min": np.min(final_values), "max": np.max(final_values)},
         "max_drawdown": {"median": np.median(max_drawdowns), "mean": np.mean(max_drawdowns), "worst": np.max(max_drawdowns)}
     }
 
-def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 24, window_months: int = 12, step_months: int = 1, strategy: str = "bounce"):
+def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 36, window_months: int = 12, step_months: int = 3, strategy: str = "bounce", cli_overrides: dict = None):
     start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
     results = []
     current_start = start_dt
     end_limit = start_dt + relativedelta(months=total_months)
     
+    print(f"\n🔄 ローリングバックテスト開始: {ticker} ({strategy})")
+    print(f"期間: {start_date_str} から {total_months}ヶ月間 | ウィンドウ: {window_months}ヶ月 | ステップ: {step_months}ヶ月\n")
+
     while current_start + relativedelta(months=window_months) <= end_limit:
         try:
             w_start_str = current_start.strftime("%Y-%m-%d")
-            logger.info(f"Rolling Window: {w_start_str}")
-            bt_result = run_backtest(ticker, w_start_str, duration_months=window_months, strategy=strategy)
+            logger.info(f"--- Rolling Window: {w_start_str} ---")
+            bt_result = run_backtest(ticker, w_start_str, duration_months=window_months, strategy=strategy, cli_overrides=cli_overrides)
             if "error" not in bt_result:
                 results.append({
-                    "start": w_start_str, "total_return": bt_result["total_return_pct"],
-                    "alpha": bt_result["alpha"], "trades": bt_result["trade_count"]
+                    "start": w_start_str,
+                    "end": (current_start + relativedelta(months=window_months)).strftime("%Y-%m-%d"),
+                    "total_return": bt_result.get("total_return_pct", 0),
+                    "market_return": bt_result.get("market_return_pct", 0),
+                    "alpha": bt_result.get("alpha", 0),
+                    "win_rate": bt_result.get("win_rate_pct", 0),
+                    "trades": bt_result.get("trade_count", 0),
+                    "max_drawdown": bt_result.get("max_drawdown_pct", 0),
+                    "sharpe_ratio": bt_result.get("sharpe_ratio", 0),  # B-4
                 })
+                print(f"  [{w_start_str}] Return: {bt_result.get('total_return_pct'):>6.2f}% | Alpha: {bt_result.get('alpha'):>6.2f}% | Trades: {bt_result.get('trade_count'):>3}")
         except Exception as e:
-            logger.error(f"Window Error: {e}")
+            logger.error(f"Window Error ({w_start_str}): {e}")
         current_start += relativedelta(months=step_months)
-    return pd.DataFrame(results)
+    
+    if not results:
+        return {"error": "No valid windows executed"}
+        
+    df = pd.DataFrame(results)
+    
+    # Summary calculation
+    summary = {
+        "ticker": ticker,
+        "strategy": strategy,
+        "total_windows": len(df),
+        "positive_windows": len(df[df["total_return"] > 0]),
+        "positive_alpha_windows": len(df[df["alpha"] > 0]),
+        "avg_return": round(df["total_return"].mean(), 2),
+        "avg_alpha": round(df["alpha"].mean(), 2),
+        "avg_win_rate": round(df["win_rate"].mean(), 2),
+        "avg_trades": round(df["trades"].mean(), 2),
+        "avg_max_drawdown": round(df["max_drawdown"].mean(), 2),
+        "avg_sharpe": round(df["sharpe_ratio"].mean(), 2),  # B-4
+        "windows": results
+    }
+    
+    summary["win_probability"] = round((summary["positive_windows"] / len(df)) * 100, 1)
+    summary["alpha_probability"] = round((summary["positive_alpha_windows"] / len(df)) * 100, 1)
+    
+    return summary
 
 if __name__ == "__main__":
     import argparse
@@ -445,6 +489,11 @@ if __name__ == "__main__":
     parser.add_argument("--volume-multiplier", type=float, default=None)
     parser.add_argument("--entry-price-ma", type=int, default=None)
 
+    # Rolling Options
+    parser.add_argument("--rolling", action="store_true", help="Run rolling backtest (Walk-forward testing)")
+    parser.add_argument("--window-months", type=int, default=12, help="Duration of each rolling window")
+    parser.add_argument("--step-months", type=int, default=3, help="Step size for rolling window")
+    
     args = parser.parse_args()
     start_date = args.start_date if args.start_date else (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
     
@@ -456,12 +505,31 @@ if __name__ == "__main__":
     if args.volume_multiplier: cli_overrides["volume_multiplier"] = args.volume_multiplier
     if args.entry_price_ma: cli_overrides["price_above_ma"] = args.entry_price_ma
     
-    result = run_backtest(args.ticker, start_date, duration_months=duration_months, strategy=args.strategy, cli_overrides=cli_overrides)
-    if "error" in result:
-        print(f"Error: {result['error']}")
+    if args.rolling:
+        result = run_rolling_backtest(
+            args.ticker, start_date, 
+            total_months=duration_months, 
+            window_months=args.window_months, 
+            step_months=args.step_months, 
+            strategy=args.strategy,
+            cli_overrides=cli_overrides
+        )
+        if "error" in result:
+            print(f"Error: {result['error']}")
+        else:
+            print(f"\n✅ ローリングバックテスト結果: {result['ticker']} ({result['strategy']})")
+            print(f"  実行ウィンドウ数: {result['total_windows']} 回")
+            print(f"  プラスリターン勝率 (Win Probability): {result['win_probability']}% ({result['positive_windows']}/{result['total_windows']})")
+            print(f"  超過収益勝率 (Alpha Probability): {result['alpha_probability']}% ({result['positive_alpha_windows']}/{result['total_windows']})")
+            print(f"  平均リターン: {result['avg_return']}% (平均Alpha: {result['avg_alpha']}%)")
+            print(f"  平均トレード勝率: {result['avg_win_rate']}% | 平均トレード数: {result['avg_trades']} | 平均最大DD: {result['avg_max_drawdown']}%")
     else:
-        print(f"\nSummary: {result['ticker']} ({result['strategy']})")
-        print(f"  Return: {result['total_return_pct']}% (Alpha: {result['alpha']}%)")
-        print(f"  Trades: {result['trade_count']} (Win: {result['win_rate_pct']}%)")
-        print(f"  Max DD: {result['max_drawdown_pct']}%")
-        print(f"  Sharpe: {result['sharpe_ratio']} | PF: {result['profit_factor']}")
+        result = run_backtest(args.ticker, start_date, duration_months=duration_months, strategy=args.strategy, cli_overrides=cli_overrides)
+        if "error" in result:
+            print(f"Error: {result['error']}")
+        else:
+            print(f"\nSummary: {result['ticker']} ({result['strategy']})")
+            print(f"  Return: {result['total_return_pct']}% (Alpha: {result['alpha']}%)")
+            print(f"  Trades: {result['trade_count']} (Win: {result['win_rate_pct']}%)")
+            print(f"  Max DD: {result['max_drawdown_pct']}%")
+            print(f"  Sharpe: {result['sharpe_ratio']} | PF: {result['profit_factor']}")

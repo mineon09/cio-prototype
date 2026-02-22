@@ -15,6 +15,9 @@
 # 通常分析（長期戦略）
 python main.py --ticker 7203.T
 
+# 複数銘柄を一括分析
+python main.py --ticker 7203.T 8306.T 9984.T
+
 # スイング戦略（Bounce: 逆張り / Breakout: 順張り）で分析
 python main.py --ticker 7203.T --strategy bounce
 python main.py --ticker 7011.T --strategy breakout
@@ -36,34 +39,28 @@ streamlit run app.py
 ## 2. バックテストの実行
 
 過去のデータを用いて、戦略の有効性をシミュレーションします。
+**Point-in-Time フィルタリング**: 財務データは決算発表のラグ（基本45日）を考慮して「当時利用可能だったデータ」のみを使用し、ルックアヘッドバイアスを排除しています。
 
 ### 基本コマンド
-`backtest.py` を使用します。
+`src.backtester` モジュールを使用します。
 
 ```powershell
 # 例：トヨタ(7203.T)を2024年1月1日から12ヶ月間シミュレーション
-python backtest.py --ticker 7203.T --start 2024-01-01 --months 12
+python -m src.backtester --ticker 7203.T --start 2024-01-01 --months 12
 
 # 戦略指定
-python backtest.py --ticker 7203.T --start 2024-01-01 --months 12 --strategy bounce
+python -m src.backtester --ticker 7203.T --start 2024-01-01 --months 12 --strategy bounce
 ```
 
-### 高度なシミュレーション機能 (v1.5)
+### 高度なシミュレーション機能 (v2.0)
 
-#### 🎲 モンテカルロ・シミュレーション
-将来の不確実性を考慮し、リターンの分布を予測します。ブートストラップ法（復元抽出）を採用しています。
-
-```powershell
-# 1000回の試行を実行
-python backtest.py --ticker 7203.T --start 2024-01-01 --montecarlo 1000
-```
 
 #### 🔄 ローリングバックテスト (Walk-Forward)
 一定期間（ウィンドウ）ごとに期間をずらしながらテストを繰り返し、戦略の堅牢性を検証します。
 
 ```powershell
 # 24ヶ月の総期間を、12ヶ月のウィンドウ、3ヶ月ステップでスライド検証
-python backtest.py --ticker 7203.T --start 2023-01-01 --months 24 --rolling --window 12 --step 3
+python -m src.backtester --ticker 7203.T --start 2023-01-01 --months 24 --rolling --window-months 12 --step-months 3
 ```
 
 #### ⚙️ CLIパラメータ・オーバーライド
@@ -71,10 +68,10 @@ python backtest.py --ticker 7203.T --start 2023-01-01 --months 24 --rolling --wi
 
 ```powershell
 # RSI閾値を25に変更してBounce戦略を検証
-python backtest.py --ticker 7203.T --strategy bounce --rsi-threshold 25
+python -m src.backtester --ticker 7203.T --strategy bounce --rsi-threshold 25
 
 # 出来高急増判定を1.5倍に変更
-python backtest.py --ticker 7203.T --strategy breakout --volume-multiplier 1.5
+python -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplier 1.5
 ```
 
 ---
@@ -87,13 +84,14 @@ python backtest.py --ticker 7203.T --strategy breakout --volume-multiplier 1.5
 - **`strategies`**: 各戦略のデフォルトパラメータ（RSI, 移動平均、出来高倍率など）。
 - **`exit_strategy`**: 戦略ごとの損切り（Stop Loss）および利確（Take Profit）のATR倍率。
 - **`sector_profiles`**: セクターごとのスコア配分（Tech銘柄ならテクニカル重視など）。
+- **`position_sizing`**: 推奨ロットサイズおよびセクター集中度の最大許容範囲。
 
 ---
 
 ## 4. トラブルシューティング
 - **財務データの欠損**: `yfinance` 等でデータが取得できない項目は、安全側のデフォルト値（NG判定）や通期データによる補完が自動で行われます。
-- **NameError / ImportError**: Windows環境では `$OutputEncoding = [System.Text.Encoding]::UTF8` をPowerShellで実行してから起動することを推奨します。
-- **実行ログ**: 詳細は `logs/` ディレクトリ（設定時）またはスプレッドシートの `System_Log` シートに出力されます。
+- **文字化け・環境不整合**: Windows環境では、実行時に `chcp 65001` (CMD) や `$env:PYTHONUTF8=1` (PowerShell) を設定することを推奨します。
+- **実行ログ**: 詳細は `System_Log` シート（スプレッドシート）には詳細なスタックトレースが最大5000文字まで記録されます。
 
 ---
-*Last Updated: 2026-02-19*
+*Last Updated: 2026-02-22 (v2.0.0対応)*

@@ -12,6 +12,7 @@ if sys.platform == "win32":
 import yfinance as yf
 from datetime import datetime, timedelta
 import numpy as np
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from google import genai
 from dotenv import load_dotenv
 
@@ -143,7 +144,6 @@ def short_name(name: str) -> str:
     result = name
     for old, new in replacements:
         result = result.replace(old, new)
-    result = result.strip().strip(",").strip()
     result = result.strip().strip(",").strip()
     return result[:12] if len(result) > 12 else result
 
@@ -311,13 +311,62 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
 # yfinance データ取得
 # ==========================================
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((Exception,)),
+    reraise=True
+)
+def _fetch_yf_with_retry(ticker: str, as_of_date: datetime = None):
+    """
+    yfinance API をリトライ付きで呼び出す内部関数
+    """
+    stock = yf.Ticker(ticker)
+    
+    if as_of_date:
+        try:
+            hist = yf.download(ticker, period="3y", progress=False)
+            if hist.empty:
+                 hist = stock.history(period="3y")
+        except Exception:
+            try:
+                hist = yf.download(ticker, period="2y", progress=False)
+            except Exception:
+                 return None, None
+        
+        if isinstance(hist.columns, pd.MultiIndex):
+            if len(hist.columns.levels) > 1:
+                found = False
+                for t_query in [ticker, ticker.upper(), ticker.lower()]:
+                    try:
+                        hist = hist.xs(t_query, axis=1, level=1)
+                        found = True
+                        break
+                    except KeyError:
+                        continue
+                if not found:
+                    hist.columns = hist.columns.get_level_values(0)
+            else:
+                hist.columns = hist.columns.get_level_values(0)
+
+        if hist.index.tz is not None:
+            hist.index = hist.index.tz_localize(None)
+        
+        end_dt = pd.Timestamp(as_of_date) + pd.Timedelta(days=1)
+        start_dt = pd.Timestamp(as_of_date) - pd.Timedelta(days=400)
+        hist = hist[(hist.index >= start_dt) & (hist.index < end_dt)] if not hist.empty else hist
+    else:
+        hist = stock.history(period="1y")
+
+    return stock, hist
+
 def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd.DataFrame = None) -> dict:
     """
     指定した銘柄のデータを取得・計算して返す。
     as_of_date が指定された場合、その時点での過去データを返す（バックテスト用）。
     price_history が指定された場合、yf.downloadを行わずにそのデータを使用する（高速化）。
     """
-    if not price_history is None:
+    if price_history is not None:
         # バックテスト高速化用: 既存のDataFrameを使用
         # print(f"  ⚡ {ticker} 提供されたヒストリデータを使用 (基準日: {as_of_date})") # Verboseすぎるのでスキップ
         hist = price_history
@@ -325,19 +374,9 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         print(f"🔍 {ticker} データ取得開始... (基準日: {as_of_date.strftime('%Y-%m-%d') if as_of_date else '最新'})")
     
     # --- Macro Data Injection (v1.2) ---
+    # DF-001: Redundant detect_regime() call removed to save API quota.
+    # Macro data should be provided by the orchestrator (main.py / app.py) or fetched as needed.
     macro_info = None
-    if not as_of_date: # バックテスト中は毎回取得すると遅いので、最新分析時のみ取得（または別途キャッシュ管理）
-        try:
-            # 相対インポートと絶対インポートの両方を試行（実行環境依存の回避）
-            try:
-                from .macro_regime import detect_regime
-            except ImportError:
-                from src.macro_regime import detect_regime
-            
-            macro_info = detect_regime()
-        except Exception as e:
-            print(f"  ⚠️ マクロデータ取得失敗: {e}")
-            macro_info = None
     
     # キャッシュファイルパスの準備
     CACHE_DIR = "data/cache"
@@ -366,58 +405,14 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         print(msg)
     
     try:
-        stock = yf.Ticker(ticker)
-        
         if price_history is None:
-            # yf.Ticker.history fails with 404 in some envs, use yf.download
-            if as_of_date:
-                try:
-                    hist = yf.download(ticker, period="2y", progress=False)
-                    if hist.empty:
-                        # Retry with Ticker.history as fallback
-                         hist = stock.history(period="2y")
-                except Exception as e:
-                    try:
-                        hist = yf.download(ticker, period="1y", progress=False)
-                    except Exception as e2:
-                         return {"ticker": ticker, "name": ticker, "metrics": {}, "technical": {}}
-                
-                # yfinance.download returns MultiIndex columns if multiple tickers or recent version.
-                # Robustly flatten to single level
-                if isinstance(hist.columns, pd.MultiIndex):
-                    # Try levels to find Close/Open etc.
-                    if len(hist.columns.levels) > 1:
-                        # If multiple tickers/levels, try to select the current ticker
-                        # Note: yfinance often uppercases the ticker in column labels
-                        found = False
-                        for t_query in [ticker, ticker.upper(), ticker.lower()]:
-                            try:
-                                # Level 1 usually contains Tickers
-                                hist = hist.xs(t_query, axis=1, level=1)
-                                found = True
-                                break
-                            except:
-                                continue
-                        
-                        if not found:
-                            # Fallback: Just take level 0 (Price components)
-                            hist.columns = hist.columns.get_level_values(0)
-                    else:
-                        hist.columns = hist.columns.get_level_values(0)
-
-                # yfinanceはtz-awareなindexを返す場合があるため、tz-naiveに変換
-                if hist.index.tz is not None:
-                    hist.index = hist.index.tz_localize(None)
-                
-                # as_of_date 以前のデータを抽出
-                # テクニカル計算用に1年分程度あれば十分だが、余裕を持って
-                end_dt = pd.Timestamp(as_of_date) + pd.Timedelta(days=1)
-                start_dt = pd.Timestamp(as_of_date) - pd.Timedelta(days=400)
-                
-                hist = hist[(hist.index >= start_dt) & (hist.index < end_dt)] if not hist.empty else hist
-            else:
-                hist = stock.history(period="1y")
-
+            stock, hist = _fetch_yf_with_retry(ticker, as_of_date)
+            if stock is None or hist is None or hist.empty:
+                print(f"  ⚠️ {ticker}: No price data found")
+                return {"ticker": ticker, "name": ticker, "metrics": {}, "technical": {}}
+        else:
+            stock = yf.Ticker(ticker)
+        
         if hist.empty:
             print(f"  ⚠️ {ticker}: No price data found")
             return {"ticker": ticker, "name": ticker, "metrics": {}, "technical": {}}
@@ -450,7 +445,11 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                     d_naive = d.tz_localize(None) if d.tzinfo else d
                     as_of_naive = pd.Timestamp(as_of_date).tz_localize(None) if pd.Timestamp(as_of_date).tzinfo else pd.Timestamp(as_of_date)
                     
-                    if d_naive <= as_of_naive:
+                    # Point-in-Time: 決算日(d_naive)から発表まで約45日のラグを考慮する (Issue 03)
+                    d_available = d_naive + pd.Timedelta(days=45)
+                    
+                    # 利用可能日がバックテスト時点より前の場合のみ採用
+                    if d_available <= as_of_naive:
                         valid_col_indices.append(i)
                 else:
                     valid_col_indices.append(i)
@@ -461,19 +460,28 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
             valid_cols = df_quarterly.columns[valid_col_indices]
             # 日付としてソートして最新を取得
             sorted_cols = sorted(valid_cols, key=pd.to_datetime, reverse=True)
-            return df_quarterly[sorted_cols[0]]
+            return df_quarterly[sorted_cols[0]], sorted_cols  # B-1a: 有効カラムも返す
 
-        fin_latest = get_latest_financial(stock.quarterly_financials)
+        # B-1a: get_latest_financial が (latest_series, sorted_valid_cols) のタプルを返すように変更
+        fin_result = get_latest_financial(stock.quarterly_financials)
+        fin_latest = fin_result[0] if fin_result else None
+        fin_valid_cols = fin_result[1] if fin_result else []
         if fin_latest is None:
-            fin_latest = get_latest_financial(stock.financials)
+            fin_result = get_latest_financial(stock.financials)
+            fin_latest = fin_result[0] if fin_result else None
+            fin_valid_cols = fin_result[1] if fin_result else []
 
-        bs_latest  = get_latest_financial(stock.quarterly_balance_sheet)
+        bs_result = get_latest_financial(stock.quarterly_balance_sheet)
+        bs_latest = bs_result[0] if bs_result else None
         if bs_latest is None:
-            bs_latest = get_latest_financial(stock.balance_sheet)
+            bs_result = get_latest_financial(stock.balance_sheet)
+            bs_latest = bs_result[0] if bs_result else None
 
-        cf_latest  = get_latest_financial(stock.quarterly_cashflow)
+        cf_result = get_latest_financial(stock.quarterly_cashflow)
+        cf_latest = cf_result[0] if cf_result else None
         if cf_latest is None:
-            cf_latest = get_latest_financial(stock.cashflow)
+            cf_result = get_latest_financial(stock.cashflow)
+            cf_latest = cf_result[0] if cf_result else None
 
         # info
         info = stock.info if not as_of_date else {}
@@ -501,7 +509,8 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
             metrics['roe'] = info.get('returnOnEquity', 0) * 100 if info.get('returnOnEquity') else None
 
         # 2. 営業利益率
-        op_income = get_val(fin_latest, ['Operating Income', 'EBIT', 'Operating Revenue', 'Total Revenue']) # Fallback to Revenue if Op Income missing (rare but happens)
+        # DF-003: フォールバックから Revenue を除外し、誤認を防止
+        op_income = get_val(fin_latest, ['Operating Income', 'EBIT'])
         revenue   = get_val(fin_latest, ['Total Revenue', 'Operating Revenue', 'Total Operating Income As Reported'])
         
         # Specific check: if op_income == revenue, try to find a cost to subtract or look for Operating Expense
@@ -529,14 +538,52 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         else:
              metrics['cf_quality'] = None
 
-        # 5. R&D比率
-        # yfinanceではR&D取得が不安定なため、バックテストでは省略(0)
-        metrics['rd_ratio'] = 0 
+        # 5. R&D比率 (DF-002: バックテスト時のみ省略、ライブ分析では取得試行)
+        # CRIT-005注記: バックテスト時(as_of_date指定時)は yfinance の R&D データが
+        # 過去断面では信頼性が低いため意図的にゼロ固定としている。
+        # ライブ分析時は fin_latest / info から取得を試行する。
+        if as_of_date:
+            metrics['rd_ratio'] = 0  # バックテスト時: 過去R&Dデータ不安定のため省略
+        else:
+            rd_exp = get_val(fin_latest, ['Research And Development', 'Research Development'])
+            if rd_exp and revenue and revenue != 0:
+                metrics['rd_ratio'] = round((rd_exp / revenue) * 100, 2)
+            else:
+                 metrics['rd_ratio'] = info.get('researchAndDevelopmentRatio', 0) or 0
         
         # 6. PER, PBR
+        # B-1b 注意: yfinance は分割調整済み株価を返すため、過去のバックテスト時点のPER/PBRは
+        # 當時の実際の核価と乖離する可能性がある（例: Nvidia 2024年10分割前の株価が1/10に修正済み）。
+        # これは yfinance 固有の制限事項。
         if as_of_date:
             shares = get_val(bs_latest, ['Share Issued', 'Ordinary Shares Number'])
-            eps = (net_income * 4) / shares if net_income and shares else None
+            
+            # B-1a: TTM (Trailing Twelve Months) EPS — 過去4四半期合計を使用
+            # 季節性のある業種（小売・観光等）で単四半期×4の歪みを防ぐ
+            ttm_net_income = None
+            if fin_valid_cols and stock.quarterly_financials is not None:
+                qf = stock.quarterly_financials
+                ttm_cols = fin_valid_cols[:4]  # 最新4四半期（PITフィルタ済み）
+                ni_keys = ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests']
+                ttm_values = []
+                for col in ttm_cols:
+                    val = get_val(qf[col] if col in qf.columns else pd.Series(), ni_keys)
+                    if val is not None:
+                        ttm_values.append(val)
+                if ttm_values:
+                    if len(ttm_values) >= 4:
+                        ttm_net_income = sum(ttm_values)  # 完全なTTM
+                    elif len(ttm_values) >= 2:
+                        # 不完全な四半期→平均×4で推定
+                        ttm_net_income = sum(ttm_values) / len(ttm_values) * 4
+                    else:
+                        ttm_net_income = ttm_values[0] * 4  # フォールバック: 単四半期×4
+            
+            # TTM が取れなければ従来の単四半期×4にフォールバック
+            if ttm_net_income is None:
+                ttm_net_income = (net_income * 4) if net_income else None
+            
+            eps = ttm_net_income / shares if ttm_net_income and shares else None
             
             if current_price and eps and eps > 0:
                 metrics['per'] = round(current_price / eps, 2)
@@ -630,6 +677,25 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         name = info.get('longName', ticker) if not as_of_date else ticker
         sector = info.get('sector', "Unknown") if not as_of_date else "Unknown"
         currency = info.get('currency', 'USD') if not as_of_date else 'USD'
+
+        # --- バリデーション (Invalid Data Check) ---
+        # 必須指標のNaNチェックや極端な変化を検出する
+        def validate_number(val, name, allow_nan=True):
+            if val is None or pd.isna(val) or math.isinf(val):
+                return None if allow_nan else 0.0
+            return val
+            
+        metrics['roe'] = validate_number(metrics.get('roe'), 'roe', allow_nan=False) # ROEは必須として扱う(無い場合は0)
+        technical['current_price'] = validate_number(technical.get('current_price'), 'current_price', allow_nan=False)
+        
+        # 前日比変化率のバリデーション (±50%超は異常値として警告)
+        if len(closes) >= 2:
+            prev_close = closes.iloc[-2]
+            if prev_close > 0:
+                pct_change = (current_price - prev_close) / prev_close
+                if abs(pct_change) > 0.5:
+                    print(f"  🚨 {ticker} 警告: 株価が前日から極端に変動しています ({pct_change*100:.1f}%)。株式分割等の補正漏れの可能性があります。")
+                    technical['price_warning'] = True
 
         result_data = {
             "ticker": ticker,

@@ -22,7 +22,7 @@ def _fetch_macro_data() -> dict:
 
     tickers = {
         'us10y':  '^TNX',       # 米10年債利回り
-        'us2y':   '^IRX',       # 米2年債利回り (逆イールド判定用)
+        'us3m':   '^IRX',       # 米3ヶ月物T-Bill (逆イールド判定用)
         'vix':    '^VIX',       # 恐怖指数
         'usdjpy': 'JPY=X',      # ドル円
         'oil':    'CL=F',       # WTI原油先物
@@ -37,20 +37,25 @@ def _fetch_macro_data() -> dict:
                 current = hist['Close'].iloc[-1]
                 ma20 = hist['Close'].rolling(20).mean().iloc[-1]
                 
-                # 1ヶ月前との変化率
+                # 1ヶ月前との変化
                 change_1m = 0
                 if len(hist) >= 20:
                     prev = hist['Close'].iloc[-20]
-                    change_1m = (current - prev) / prev * 100
+                    if key in ['us10y', 'us3m']:
+                        # A-4: 金利の場合は相対変化率ではなく、絶対差分（bp相当）を使用する
+                        # 例) 4.0% -> 4.2% の場合、0.2ポイント差 (+20bps)となる
+                        change_1m = current - prev
+                    else:
+                        change_1m = (current - prev) / prev * 100
 
                 indicators[key] = {
                     'current': round(current, 2),
                     'ma20': round(ma20, 2),
-                    'change_1m': round(change_1m, 1),
+                    'change_1m': round(change_1m, 2),  # 金利はポイント差、他は%
                 }
-        except Exception as e:
-            # print(f"  ⚠️ {key} 取得失敗: {e}")
-            indicators[key] = {'current': 0, 'ma20': 0, 'change_1m': 0}
+        except Exception:
+             # print(f"  ⚠️ {key} 取得失敗: {e}")
+             indicators[key] = {'current': 0, 'ma20': 0, 'change_1m': 0}
 
     return indicators
 
@@ -66,17 +71,17 @@ def _determine_regime(indicators: dict) -> tuple[str, str]:
 
     vix = indicators.get('vix', {}).get('current', 20)
     us10y = indicators.get('us10y', {}).get('current', 4.0)
-    us2y = indicators.get('us2y', {}).get('current', 4.0)
+    us3m = indicators.get('us3m', {}).get('current', 4.0)
     hyg_curr = indicators.get('hyg', {}).get('current', 0)
     hyg_ma20 = indicators.get('hyg', {}).get('ma20', 0)
     
     rate_change = indicators.get('us10y', {}).get('change_1m', 0)
 
-    # 1. 逆イールド判定 (10Y - 2Y < -0.1%)
+    # 1. 逆イールド判定 (10Y - 3M < -0.1%)
     # ^TNX, ^IRX は "4.2" (=4.2%) のように返ってくるためそのまま差分計算
-    yield_spread = us10y - us2y
+    yield_spread = us10y - us3m
     if yield_spread <= -0.1:
-        return "YIELD_INVERSION", f"逆イールド発生 (10Y-2Y: {yield_spread:.2f}%) — 景気後退シグナル"
+        return "YIELD_INVERSION", f"逆イールド発生 (10Y-3M: {yield_spread:.2f}%) — 景気後退シグナル"
 
     # 2. 信用リスク判定 (HYGが20日移動平均から -3% 以上乖離)
     if hyg_ma20 > 0:
@@ -84,15 +89,19 @@ def _determine_regime(indicators: dict) -> tuple[str, str]:
         if hyg_drop <= -3.0:
             return "RISK_OFF", f"信用スプレッド拡大 (HYG急落: {hyg_drop:.1f}%) — 資金収縮警戒"
 
-    # 3. VIX判定
+    # 3. VIX判定 (優先度高)
     if vix >= 25:
+        # A-4: VIX高騰と金利急騰が同時発生した場合、スタグフレーション的 RISK_OFF として扱う
+        if rate_change > 0.5:
+             return "RISK_OFF", f"スタグフレーション警戒 (VIX: {vix:.0f}, 10Y上昇 +{rate_change:.2f}pt) — 金利・恐怖の同時高騰"
         return "RISK_OFF", f"VIX高騰 ({vix:.0f}) — 恐怖指数上昇"
 
     # 4. 金利トレンド判定
-    if rate_change > 5.0: # 1ヶ月で5%以上上昇 (例 4.0% -> 4.2%)
-        return "RATE_HIKE", f"金利上昇基調 (10Y: {us10y}%, 1M: +{rate_change}%)"
-    elif rate_change < -5.0:
-        return "RATE_CUT", f"金利低下基調 (10Y: {us10y}%, 1M: {rate_change}%)"
+    # A-4: 変化率はポイント差 (0.5pt = 50bps) で判定する
+    if rate_change > 0.50: # 1ヶ月で0.5% (50bps) 以上上昇 (例 4.0% -> 4.5%)
+        return "RATE_HIKE", f"金利上昇基調 (10Y: {us10y}%, 1M: +{rate_change:.2f}pt)"
+    elif rate_change < -0.50:
+        return "RATE_CUT", f"金利低下基調 (10Y: {us10y}%, 1M: {rate_change:.2f}pt)"
 
     # 5. 平時
     if vix < 18:
@@ -176,7 +185,7 @@ def detect_regime() -> dict:
     # サマリー作成
     summary_parts = []
     # 主な指標だけ抜粋
-    for k in ['us10y', 'us2y', 'vix', 'hyg']:
+    for k in ['us10y', 'us3m', 'vix', 'hyg']:
         if k in indicators:
             val = indicators[k]['current']
             summary_parts.append(f"{k.upper()}: {val}")
@@ -197,32 +206,71 @@ if __name__ == "__main__":
 
 # ---------------------------------------------------------
 # v1.3: Historical Regime Detection (For Backtest)
+# A-2: キャッシュのクラス化（TTL + clear() + Mock汚染防止）
 # ---------------------------------------------------------
 
-_MACRO_HISTORY_CACHE = {}
+class MacroHistoryCache:
+    """マクロ指標の履歴キャッシュ。TTL付きで再取得をサポート。"""
+    def __init__(self):
+        self._cache: dict = {}
+        self._fetched_at: datetime | None = None
+        self._has_mock: bool = False  # Mock データの混入フラグ
+
+    def clear(self):
+        """キャッシュを明示的にクリア"""
+        self._cache = {}
+        self._fetched_at = None
+        self._has_mock = False
+
+    def is_valid(self, ttl_hours: int = 12) -> bool:
+        """キャッシュが有効期限内かどうか"""
+        if not self._fetched_at or not self._cache:
+            return False
+        elapsed = (datetime.now() - self._fetched_at).total_seconds()
+        return elapsed < ttl_hours * 3600
+
+    @property
+    def data(self) -> dict:
+        return self._cache
+
+    @data.setter
+    def data(self, value: dict):
+        self._cache = value
+        self._fetched_at = datetime.now()
+
+    def set_mock(self, key: str, df):
+        """Mock データを注入（フラグ付き）"""
+        self._cache[key] = df
+        self._has_mock = True
+
+
+_macro_cache = MacroHistoryCache()
 
 def get_macro_regime(current_date, config: dict = None) -> str:
     """
     指定日のマクロレジームを判定して返す（バックテスト要）。
     全期間のデータを一度だけ取得し、メモリにキャッシュして高速化。
+    A-2: グローバル dict → クラスベースのキャッシュに変更。
     """
     from datetime import timedelta
     
-    global _MACRO_HISTORY_CACHE
+    global _macro_cache
     
     tickers = {
         'us10y':  '^TNX',
-        'us2y':   '^IRX',
+        'us3m':   '^IRX',
         'vix':    '^VIX',
         'hyg':    'HYG',
     }
 
-    # キャッシュがなければ一括取得 (過去10年分取得しておけば安全)
-    if not _MACRO_HISTORY_CACHE:
+    # キャッシュが無効なら一括取得 (過去10年分)
+    if not _macro_cache.is_valid():
+        _macro_cache.clear()  # 古い Mock データも含めてクリア
         print("  📥 Fetching Macro Data for Backtest (Once)...")
         start_cache = (current_date - timedelta(days=365*10)).strftime('%Y-%m-%d')
         end_cache = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
         
+        cache_data = {}
         for key, symbol in tickers.items():
             try:
                 df = yf.download(symbol, start=start_cache, end=end_cache, progress=False)
@@ -238,7 +286,7 @@ def get_macro_regime(current_date, config: dict = None) -> str:
                     df.index = df.index.tz_localize(None)
                 
                 if df.empty: raise Exception("Empty Data")
-                _MACRO_HISTORY_CACHE[key] = df
+                cache_data[key] = df
             except Exception as e:
                 print(f"  ⚠️ Macro Fetch Error ({symbol}): {e} -> Using Mock Data")
                 # Mock Data Generation
@@ -246,15 +294,18 @@ def get_macro_regime(current_date, config: dict = None) -> str:
                 mock_vals = {
                     'us10y': 4.0, 'us2y': 4.0, 'vix': 20.0, 'hyg': 75.0
                 }
-                _MACRO_HISTORY_CACHE[key] = pd.DataFrame(
+                cache_data[key] = pd.DataFrame(
                     {'Close': [mock_vals.get(key, 0.0)] * len(dates)},
                     index=dates
                 )
+                _macro_cache._has_mock = True
+        
+        _macro_cache.data = cache_data
 
     indicators = {}
     
     # メモリから検索
-    for key, df in _MACRO_HISTORY_CACHE.items():
+    for key, df in _macro_cache.data.items():
         if df.empty:
             indicators[key] = {'current': 0, 'ma20': 0, 'change_1m': 0}
             continue
@@ -277,14 +328,17 @@ def get_macro_regime(current_date, config: dict = None) -> str:
             if len(closes) >= 20:
                 prev = float(closes.iloc[-20])
                 if prev != 0:
-                    change_1m = (current_val - prev) / prev * 100
+                    if key in ['us10y', 'us3m']:
+                        change_1m = current_val - prev
+                    else:
+                        change_1m = (current_val - prev) / prev * 100
                     
             indicators[key] = {
                 'current': current_val,
                 'ma20': ma20,
                 'change_1m': change_1m
             }
-        except:
+        except Exception:
              indicators[key] = {'current': 0, 'ma20': 0, 'change_1m': 0}
             
     regime, _ = _determine_regime(indicators)

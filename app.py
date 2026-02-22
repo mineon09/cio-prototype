@@ -12,7 +12,6 @@ import sys
 import json
 import re
 import time
-import threading
 import streamlit as st
 from datetime import datetime
 
@@ -103,18 +102,14 @@ def load_results():
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, Exception) as e:
-            # st がインポートされている前提（app.py なので）
-            try:
-                import streamlit as st
-                st.error(f"⚠️ 分析結果データが破損しています: {e}")
-            except ImportError:
-                print(f"⚠️ 分析結果データが破損しています: {e}")
+            st.error(f"⚠️ 分析結果データが破損しています: {e}")
             return {}
     return {}
 
 def get_latest(ticker_data):
     if ticker_data.get("history"):
-        latest = ticker_data["history"][-1]
+        # APP-002: 元のデータを壊さないようコピーを使用
+        latest = dict(ticker_data["history"][-1])
         latest["name"] = ticker_data.get("name", "")
         latest["sector"] = ticker_data.get("sector", "")
         latest["currency"] = ticker_data.get("currency", "USD")
@@ -284,8 +279,7 @@ if run_analysis and ticker_input:
         
         # Step 6.5: Run Strategy Analysis (Shared Logic)
         st.write(f"🔬 戦略分析実行中 ({strategy})...")
-        from src.utils import load_config_with_overrides
-        config = load_config_with_overrides(ticker)
+        # APP-007: config読み込みを統合（Step 0で実施済みだが、念のためこの文脈で使用する変数として保持）
         scorecard = run_strategy_analysis(ticker, strategy, base_scorecard, macro_data, config)
         
         # 保存用に戦略名を記録
@@ -301,8 +295,9 @@ if run_analysis and ticker_input:
         )
 
         # Save
+        # APP-003: model_name を渡すよう修正
         save_to_dashboard_json(ticker, target_data, scorecard, report,
-                               dcf_data=dcf_data, macro_data=macro_data)
+                               dcf_data=dcf_data, macro_data=macro_data, model_name=model_name)
 
         status.update(label=f"✅ {ticker} 分析完了!", state="complete")
 
@@ -313,6 +308,11 @@ if run_analysis and ticker_input:
 # Run Backtest
 # ============================================================
 if run_backtest_btn and ticker_input:
+    # APP-001: バックテスト実行時もティッカーをバリデーション
+    if not re.match(r'^[A-Za-z0-9\.\-\s]+$', ticker_input):
+        st.error("⚠️ 無効な文字が含まれています。英数字、ドット(.)、ハイフン(-) のみ使用可能です。")
+        st.stop()
+        
     ticker = ticker_input.strip().upper()
     st.session_state["view_ticker"] = ticker # Switch view to this ticker if needed, or just show result
 
@@ -371,7 +371,8 @@ if st.session_state.get("backtest_result") and st.session_state.get("backtest_ti
     c4.metric("Sharpe Ratio", res.get('sharpe_ratio'))
     
     # Chart
-    st.subheader("资产推移 (Equity Curve)")
+    # APP-004: 中国語 typo 修正 (资产 -> 資産)
+    st.subheader("資産推移 (Equity Curve)")
     if "history" in res:
         import pandas as pd
         hist_df = pd.DataFrame(res["history"])

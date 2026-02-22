@@ -6,7 +6,10 @@ import json
 from contextlib import redirect_stdout
 
 # We are running as part of src package
-from .backtester import run_backtest
+try:
+    from .backtester import run_backtest
+except ImportError:
+    from src.backtester import run_backtest
 
 # Extended Tickers to ensure >10 trades
 TICKERS = ["7203.T", "9984.T", "6758.T", "8035.T"]
