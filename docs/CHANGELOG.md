@@ -4,9 +4,9 @@
 
 ---
 
-### [v2.1.0] - 2026-02-22 (External Review Fixes)
+### [v2.1.0] - 2026-02-22 (External Review Fixes + Hotfix)
 - **日付**: 2026-02-22
-- **カテゴリ**: Quant Logic / Architecture / State Management
+- **カテゴリ**: Quant Logic / Architecture / State Management / Bug Fix
 - **変更内容**:
   - **B-1a**: PIT EPS計算を単四半期×4 → TTM (Trailing 12 Months) に変更 (`data_fetcher.py`)
   - **B-1b**: yfinance 分割調整株価の制限事項を明記 (`data_fetcher.py`)
@@ -23,7 +23,9 @@
   - **C-3**: `results.json` に `filelock` 排他ロック追加 (`main.py`)
   - **C-5**: System_Log ワークシート行数 1000→10000 (`sheets_writer.py`)
   - `filelock>=3.12.0` を `requirements.txt` に追加
-- **理由**: 外部AIレビュー (A/B/C パターン) で検出された全16項目の指摘事項へ完全対応。
+  - **Hotfix**: `save_to_dashboard_json()` 内の `new_entry` 未定義 NameError を修正 (`main.py`)
+  - **Hotfix**: `json.dump` に numpy型安全化ハンドラ `_json_safe` を追加 (`main.py`)
+- **理由**: 外部AIレビュー (A/B/C パターン) で検出された全16項目の指摘事項へ完全対応 + 実行時検証で発見した2件のhotfix。
 
 ---
 

@@ -533,8 +533,17 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
                 }
 
             # 一時ファイルに書き込んでから置換（アトミックな書き込み）
+            import numpy as np
+            def _json_safe(obj):
+                """numpy型をPython標準型に変換してJSONシリアライズ可能にする"""
+                if isinstance(obj, (np.integer,)): return int(obj)
+                if isinstance(obj, (np.floating,)): return float(obj)
+                if isinstance(obj, np.ndarray): return obj.tolist()
+                if isinstance(obj, (np.bool_,)): return bool(obj)
+                raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=data_dir, suffix=".tmp") as tf:
-                json.dump(all_results, tf, indent=2, ensure_ascii=False)
+                json.dump(all_results, tf, indent=2, ensure_ascii=False, default=_json_safe)
                 tempname = tf.name
 
             # Windows では os.replace を使用する前にファイルを閉じる必要がある
