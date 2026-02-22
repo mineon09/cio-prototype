@@ -162,9 +162,15 @@ class BounceStrategy(BaseStrategy):
         details.append(f"Volume Spike (x{vol_mult}): {'OK' if vol_ok else 'NG'}")
         
         # 長期トレンドフィルター (MA75より上にあること = 上昇トレンド中の押し目買い)
-        ma75 = daily_data['Close'].rolling(75).mean().iloc[-1]
+        # PIT: バックテスト日以前のデータのみを使用
+        current_date = row.get('date')
+        if current_date is not None:
+            past_data = daily_data[daily_data.index <= pd.Timestamp(current_date)]
+        else:
+            past_data = daily_data
+        ma75 = past_data['Close'].rolling(75).mean().iloc[-1]
         ma75_ok = True
-        price = daily_data['Close'].iloc[-1]
+        price = past_data['Close'].iloc[-1]
         if not pd.isna(ma75):
              ma75_ok = price > ma75
              details.append(f"Trend (Price > MA75): {'OK' if ma75_ok else 'NG'} ({price:.1f} vs {ma75:.1f})")
@@ -279,9 +285,15 @@ class BreakoutStrategy(BaseStrategy):
         details.append(f"Volume Spike (x{vol_mult}): {'OK' if vol_ok else 'NG'}")
         
         # MA75フィルター
-        ma75 = daily_data['Close'].rolling(75).mean().iloc[-1]
+        # PIT: バックテスト日以前のデータのみを使用
+        current_date = row.get('date')
+        if current_date is not None:
+            past_data = daily_data[daily_data.index <= pd.Timestamp(current_date)]
+        else:
+            past_data = daily_data
+        ma75 = past_data['Close'].rolling(75).mean().iloc[-1]
         ma75_ok = True
-        price = daily_data['Close'].iloc[-1]
+        price = past_data['Close'].iloc[-1]
         
         if not pd.isna(ma75):
             ma75_ok = price > ma75
@@ -339,8 +351,14 @@ class BreakoutStrategy(BaseStrategy):
         # 4. Dead Cross Exit (MA5 < MA25)
         # トレンド終了を示唆
         if exit_cfg.get("exit_on_death_cross", True):
-            ma5 = daily_data['Close'].rolling(5).mean().iloc[-1]
-            ma25 = daily_data['Close'].rolling(25).mean().iloc[-1]
+            # PIT: バックテスト日以前のデータのみを使用
+            current_date = row.get('date')
+            if current_date is not None:
+                past_data = daily_data[daily_data.index <= pd.Timestamp(current_date)]
+            else:
+                past_data = daily_data
+            ma5 = past_data['Close'].rolling(5).mean().iloc[-1]
+            ma25 = past_data['Close'].rolling(25).mean().iloc[-1]
             if not pd.isna(ma5) and not pd.isna(ma25) and ma5 < ma25:
                 return True, "Technical Exit (Dead Cross)", price
 

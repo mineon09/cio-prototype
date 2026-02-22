@@ -29,22 +29,32 @@ def get_sheets_client():
     try:
         # 1. raw JSON string からロード
         if GOOGLE_SERVICE_ACCOUNT_JSON:
-            creds = Credentials.from_service_account_info(
-                json.loads(GOOGLE_SERVICE_ACCOUNT_JSON),
-                scopes=['https://www.googleapis.com/auth/spreadsheets',
-                        'https://www.googleapis.com/auth/drive'])
-        # 2. JSON ファイルパスからロード
-        elif GOOGLE_SHEETS_KEY_PATH and os.path.exists(GOOGLE_SHEETS_KEY_PATH):
+            try:
+                sa_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+                if 'private_key' in sa_info:
+                    sa_info['private_key'] = sa_info['private_key'].replace('\\n', '\n')
+                creds = Credentials.from_service_account_info(
+                    sa_info,
+                    scopes=['https://www.googleapis.com/auth/spreadsheets',
+                            'https://www.googleapis.com/auth/drive'])
+                print(f"✅ Google Sheets 認証: JSON文字列を使用 ({sa_info.get('client_email')})")
+            except Exception as e:
+                print(f"⚠️ JSON文字列からの認証失敗: {e}")
+                creds = None
+
+        # 2. JSON ファイルパスからロード (JSON文字列がない場合、または失敗した場合)
+        if not creds and GOOGLE_SHEETS_KEY_PATH and os.path.exists(GOOGLE_SHEETS_KEY_PATH):
             creds = Credentials.from_service_account_file(
                 GOOGLE_SHEETS_KEY_PATH,
                 scopes=['https://www.googleapis.com/auth/spreadsheets',
                         'https://www.googleapis.com/auth/drive'])
+            print(f"✅ Google Sheets 認証: ファイルを使用 ({GOOGLE_SHEETS_KEY_PATH})")
         
         if not creds:
+            print("❌ Google Sheets 認証情報が見つかりません (.env を確認してください)")
             return None
 
         gc = gspread.authorize(creds)
-        print("✅ Google Sheets 認証成功")
         return gc
     except Exception as e:
         print(f"⚠️ Sheets認証失敗（出力なしで続行）: {e}")

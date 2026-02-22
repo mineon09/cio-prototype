@@ -29,7 +29,7 @@
           "min_score": 7.5
         },
         "YIELD_INVERSION": {
-          "min_score": 8.0
+          "min_score": 7.0
         },
         "RATE_HIKE": {
           "min_score": 7.0
@@ -111,7 +111,8 @@
       "enabled_regimes": [
         "RISK_ON",
         "NEUTRAL",
-        "RATE_CUT"
+        "RATE_CUT",
+        "YIELD_INVERSION"
       ],
       "entry": {
         "fundamental_min": 5.0,
@@ -147,7 +148,8 @@
       "enabled_regimes": [
         "RISK_ON",
         "NEUTRAL",
-        "RATE_CUT"
+        "RATE_CUT",
+        "YIELD_INVERSION"
       ],
       "entry": {
         "fundamental_min": 5.0,
