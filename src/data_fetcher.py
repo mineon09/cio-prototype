@@ -177,8 +177,9 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
 
     # モデル名の解決
     MODEL_MAP = {
-        "flash": "gemini-3-flash-preview",
-        "pro":   "gemini-3-pro-preview",
+        "flash": "gemini-2.0-flash",
+        "pro":   "gemini-2.0-pro-exp-0205", # 2.0の実験的プロモデル
+        "flash-3.1": "gemini-3.1-flash",
     }
     target_model = MODEL_MAP.get(model, model)
     
@@ -260,10 +261,38 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
     name = target_data.get('name')
     sector = target_data.get('sector')
     
-    # 既存の config から数を取得
     c_count = CONFIG.get("competitor_selection", {}).get("direct_count", 3)
     s_count = CONFIG.get("competitor_selection", {}).get("substitute_count", 2)
     b_count = CONFIG.get("competitor_selection", {}).get("benchmark_count", 2)
+
+    is_jp = str(ticker).endswith('.T')
+
+    if not macro_data and sector:
+        rule_result = None
+        if "Technology" in sector:
+            if is_jp:
+                rule_result = {"direct": ["6861.T", "8035.T", "9984.T"], "substitute": ["1321.T"], "benchmark": ["9984.T", "1306.T"]}
+            else:
+                rule_result = {"direct": ["MSFT", "AAPL", "GOOGL"], "substitute": ["XLK"], "benchmark": ["^IXIC", "SPY"]}
+        elif "Financial" in sector or "Bank" in sector:
+            if is_jp:
+                rule_result = {"direct": ["8306.T", "8316.T", "8411.T"], "substitute": ["1321.T"], "benchmark": ["8306.T", "1306.T"]}
+            else:
+                rule_result = {"direct": ["JPM", "BAC", "WFC"], "substitute": ["XLF"], "benchmark": ["SPY"]}
+        elif "Health" in sector or "Medical" in sector:
+            if is_jp:
+                rule_result = {"direct": ["4502.T", "4568.T", "4519.T"], "substitute": ["1321.T"], "benchmark": ["1306.T"]}
+            else:
+                rule_result = {"direct": ["JNJ", "UNH", "PFE"], "substitute": ["XLV"], "benchmark": ["SPY"]}
+
+        if rule_result:
+            print(f"🚀 [Rules] 比較対象をルールベースで選定中... ({sector})")
+            for cat in ["direct", "substitute", "benchmark"]:
+                rule_result[cat] = [t for t in rule_result[cat] if t != ticker]
+
+            rule_result["reasoning"] = f"{sector}セクターの代表的な構成（API節約）"
+            rule_result["ai_model"] = "Rule-based"
+            return rule_result
 
     macro_text = ""
     if macro_data and macro_data.get("regime"):
@@ -290,7 +319,7 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
   "reasoning": "解説文"
 }}
 
-※出力は有効なJSONのみ、余計な解説文は不要。米国株はティッカーのみ、日本株は.Tを付けること。
+※出力は有効なJSONのみ、余計な解説文は不要。米国株はティッカーのみ、日本株は.Tを付けること。yfinanceでデータ取得可能な実在するティッカーシンボルのみを使用してください（例: 日経平均は ^N225、TOPIXには必ず 1306.T を使用してください）。
 """
     print(f"🚀 [API] 比較対象を選定中...")
     result, model_name = call_gemini(prompt, parse_json=True)
@@ -298,13 +327,30 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
     # デフォルト値
     default = {"direct": [], "substitute": [], "benchmark": [], "reasoning": "AI選定失敗。", "ai_model": model_name or "Unknown"}
     if not result: return default
-    return {
-        "direct": result.get("direct", []),
-        "substitute": result.get("substitute", []),
-        "benchmark": result.get("benchmark", []),
-        "reasoning": result.get("reasoning", "選定完了。"),
-        "ai_model": model_name
-    }
+
+    # ティッカーの実在確認（バリデーション層）
+    print(f"  🔍 AI選定ティッカーの有効性を検証中...")
+    validated = {"direct": [], "substitute": [], "benchmark": [], "reasoning": result.get("reasoning", "選定完了。"), "ai_model": model_name}
+    for category in ["direct", "substitute", "benchmark"]:
+        for t in result.get(category, []):
+            try:
+                # Bug #3 Fix: Force fallback for ^TOPX to 1306.T since ^TOPX is not valid via yfinance
+                if t == '^TOPX':
+                    print("    🔧 ^TOPX を 1306.T (TOPIX ETF) に自動変換しました")
+                    t = '1306.T'
+                
+                hist = yf.Ticker(t).history(period="5d")
+                if not hist.empty:
+                    validated[category].append(t)
+                else:
+                    print(f"    ⚠️ データ取得不可なティッカーを除外: {t}")
+            except Exception:
+                print(f"    ⚠️ 無効なティッカーを除外: {t}")
+
+    if not any(validated[c] for c in ["direct", "substitute", "benchmark"]):
+        return default
+
+    return validated
 
 
 # ==========================================
@@ -496,14 +542,42 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                     return val
             return default
 
+        # 6. PER, PBR
+        # B-1b 注意: yfinance は分割調整済み株価を返すため、過去のバックテスト時点のPER/PBRは
+        # 當時の実際の核価と乖離する可能性がある（例: Nvidia 2024年10分割前の株価が1/10に修正済み）。
+        # これは yfinance 固有の制限事項。
+        
+        # B-1a / Bug #2: TTM (Trailing Twelve Months) EPS / Net Income — 過去4四半期合計を使用
+        # 季節性のある業種（小売・観光等）で単四半期×4の歪みを防ぐ。またROE計算でも利用するよう共通化。
+        ttm_net_income = None
+        if fin_valid_cols and stock.quarterly_financials is not None:
+            qf = stock.quarterly_financials
+            ttm_cols = fin_valid_cols[:4]  # 最新4四半期（PITフィルタ済み）
+            ni_keys = ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests']
+            ttm_values = []
+            for col in ttm_cols:
+                val = get_val(qf[col] if col in qf.columns else pd.Series(), ni_keys)
+                if val is not None:
+                    ttm_values.append(val)
+            if ttm_values:
+                if len(ttm_values) >= 4:
+                    ttm_net_income = sum(ttm_values)  # 完全なTTM
+                elif len(ttm_values) >= 2:
+                    # 不完全な四半期→平均×4で推定
+                    ttm_net_income = sum(ttm_values) / len(ttm_values) * 4
+                else:
+                    ttm_net_income = ttm_values[0] * 4  # フォールバック: 単四半期×4
+        
+        # TTM が取れなければ従来の単四半期×4にフォールバック
+        if ttm_net_income is None:
+            ttm_net_income = (net_income * 4) if net_income else None
+
         # --- Metrics 構築 ---
         metrics = {}
         
-        # 1. ROE
-        net_income = get_val(fin_latest, ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests'])
-        equity     = get_val(bs_latest, ['Total Stockholder Equity', 'Stockholders Equity', 'Total Equity Gross Minority Interest', 'Total Equity'])
-        if net_income and equity and equity != 0:
-            metrics['roe'] = round((net_income / equity) * 100, 2)
+        # 1. ROE (Bug #2 Fixed: ROE uses consolidated TTM net income instead of single quarter)
+        if ttm_net_income and equity and equity != 0:
+            metrics['roe'] = round((ttm_net_income / equity) * 100, 2)
         else:
             # Fallback for some Japanese tickers
             metrics['roe'] = info.get('returnOnEquity', 0) * 100 if info.get('returnOnEquity') else None
@@ -551,37 +625,8 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
             else:
                  metrics['rd_ratio'] = info.get('researchAndDevelopmentRatio', 0) or 0
         
-        # 6. PER, PBR
-        # B-1b 注意: yfinance は分割調整済み株価を返すため、過去のバックテスト時点のPER/PBRは
-        # 當時の実際の核価と乖離する可能性がある（例: Nvidia 2024年10分割前の株価が1/10に修正済み）。
-        # これは yfinance 固有の制限事項。
         if as_of_date:
             shares = get_val(bs_latest, ['Share Issued', 'Ordinary Shares Number'])
-            
-            # B-1a: TTM (Trailing Twelve Months) EPS — 過去4四半期合計を使用
-            # 季節性のある業種（小売・観光等）で単四半期×4の歪みを防ぐ
-            ttm_net_income = None
-            if fin_valid_cols and stock.quarterly_financials is not None:
-                qf = stock.quarterly_financials
-                ttm_cols = fin_valid_cols[:4]  # 最新4四半期（PITフィルタ済み）
-                ni_keys = ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests']
-                ttm_values = []
-                for col in ttm_cols:
-                    val = get_val(qf[col] if col in qf.columns else pd.Series(), ni_keys)
-                    if val is not None:
-                        ttm_values.append(val)
-                if ttm_values:
-                    if len(ttm_values) >= 4:
-                        ttm_net_income = sum(ttm_values)  # 完全なTTM
-                    elif len(ttm_values) >= 2:
-                        # 不完全な四半期→平均×4で推定
-                        ttm_net_income = sum(ttm_values) / len(ttm_values) * 4
-                    else:
-                        ttm_net_income = ttm_values[0] * 4  # フォールバック: 単四半期×4
-            
-            # TTM が取れなければ従来の単四半期×4にフォールバック
-            if ttm_net_income is None:
-                ttm_net_income = (net_income * 4) if net_income else None
             
             eps = ttm_net_income / shares if ttm_net_income and shares else None
             
@@ -601,7 +646,16 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         else:
             metrics['per'] = info.get('trailingPE')
             metrics['pbr'] = info.get('priceToBook')
-            metrics['dividend_yield'] = (info.get('dividendYield') or 0) * 100
+            # Bug #1 Fix: Prevent double conversion of dividend yield
+            dy_raw = info.get('dividendYield') or 0
+            if dy_raw > 0:
+                # If dividend yield is unexpectedly high (e.g. >= 1.0 = 100%), it's already a percentage
+                if dy_raw >= 1.0:
+                    metrics['dividend_yield'] = dy_raw
+                else: # Normal small decimal (e.g. 0.0215 -> 2.15)
+                    metrics['dividend_yield'] = dy_raw * 100
+            else:
+                metrics['dividend_yield'] = 0
 
         # --- Technical 構築 ---
         technical = {}

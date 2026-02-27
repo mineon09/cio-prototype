@@ -45,9 +45,10 @@ from src.data_fetcher import (
     fetch_stock_data, select_competitors, call_gemini,
     short_name, clean_val, pad_east_asian, get_east_asian_width_count,
 )
-from src.sheets_writer import get_sheets_client, write_to_sheets, write_system_log
+from src.md_writer import write_to_md
+from src.notion_writer import write_to_notion
 from src.edinet_client import extract_yuho_data, is_japanese_stock
-from src.analyzers import generate_scorecard, format_yuho_for_prompt
+from src.analyzers import generate_scorecard, format_yuho_for_prompt, resolve_sector_profile
 from src.portfolio import calculate_position_sizing
 
 # SEC EDGAR（利用可能な場合のみ）
@@ -85,6 +86,50 @@ except Exception:
         "competitor_selection": {"direct_count": 3, "substitute_count": 2, "benchmark_count": 2},
         "sheets": {"output": "分析結果"}
     }
+
+
+# ==========================================
+# AI出力 事後矛盾チェック (Bug #3 対策)
+# ==========================================
+
+def _validate_market_bug_logic(metrics: dict, all_data: dict, target_ticker: str, report: str) -> str:
+    """
+    AIが出力した「市場のバグ」セクションについて、
+    財務指標と結論の矛盾を検出して警告を追記する。
+    """
+    roe = metrics.get('roe') or 0
+    per = metrics.get('per') or 0
+
+    # 同業他社の平均PERを算出
+    peer_pers = []
+    for t, data in all_data.items():
+        if t == target_ticker:
+            continue
+        peer_per = (data.get('metrics') or {}).get('per')
+        if peer_per and peer_per > 0:
+            peer_pers.append(peer_per)
+    avg_per = sum(peer_pers) / len(peer_pers) if peer_pers else 0
+
+    warnings = []
+
+    # ROE低 + PER高 なのに「過小評価」と書いている場合
+    if roe < 5 and per > 0 and avg_per > 0 and per > avg_per and "過小評価" in report:
+        warnings.append(
+            f"⚠️ [自動検証] ROE({roe}%)が低く、PER({per:.1f}倍)が同業平均({avg_per:.1f}倍)より高いにもかかわらず"
+            f"「過小評価」と判定されています。指標と結論が矛盾している可能性があります。要確認。"
+        )
+
+    # ROE高 + PER低 なのに「過大評価」と書いている場合
+    if roe > 15 and per > 0 and avg_per > 0 and per < avg_per * 0.7 and "過大評価" in report:
+        warnings.append(
+            f"⚠️ [自動検証] ROE({roe}%)が高く、PER({per:.1f}倍)が同業平均({avg_per:.1f}倍)より低いにもかかわらず"
+            f"「過大評価」と判定されています。指標と結論が矛盾している可能性があります。要確認。"
+        )
+
+    if warnings:
+        report += "\n\n" + "\n".join(warnings)
+
+    return report
 
 
 # ==========================================
@@ -132,6 +177,21 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
     target    = all_data[target_ticker]
     tech      = target.get('technical', {})
     sector    = target.get('sector', '不明')
+    metrics   = target.get('metrics', {})
+
+    # セクター別閾値をプロンプト用に解決
+    profile_name, fund_cfg, valu_cfg, tech_cfg, weights = resolve_sector_profile(sector)
+    sector_context = ""
+    if profile_name != "default":
+        sector_context = f"""【セクター別評価基準 ({sector} → {profile_name})】
+このセクターでは以下の閾値を「良好」とみなす:
+- ROE: {fund_cfg.get('roe_good', 10)}%以上が良好
+- 営業利益率: {fund_cfg.get('op_margin_good', 15)}%以上が良好
+- 自己資本比率: {fund_cfg.get('equity_ratio_good', 40)}%以上が良好
+- PER: {valu_cfg.get('per_cheap', 15)}倍以下が割安
+- PBR: {valu_cfg.get('pbr_cheap', 1.0)}倍以下が割安
+これらの閾値はセクター特性に基づいて調整されている。一般的な閾値ではなく、上記の値に基づいて判断せよ。
+"""
     
     # ポジションサイズの計算
     rec_pct, port_warning = calculate_position_sizing(target_ticker, sector, CONFIG)
@@ -194,18 +254,26 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 【ニュース（7日）】
 {news_text}
 
+{sector_context}
 【注意】"-"はデータ未取得を意味する。銀行・金融業はcf_qualityが異常値になりやすいため、ROE・PBR・純利益率を重視して判断せよ。
 有報/10-Kデータがある場合は、数値指標とテキストを照合し、数字の「裏側」にある経営意図を読み解くこと。
 4軸スコアカード（Layer3末尾の数値）は、あなたの論理的思考の「検算」として機能させること。
 最終的な「🔢 総合スコア」は、提出された4軸スコアの加重平均と完全に一致させる必要はないが、乖離が大きい場合はレポート内でその論理性（マクロ環境要因など）を明確に説明せよ。
 同じ銘柄を再度分析する場合、以前の評価と著しく乖離しないよう、事実（Fact）に基づく公平な評価を徹底すること。
 
+【指標の方向性（厳守）】
+ROE: 高いほど良い（資本効率が高い）。低ROEは投資効率に懸念あり。
+PER: 低いほど割安。高PERは成長期待が織り込まれている可能性あり。
+PBR: 低いほど割安。1倍割れは資産価値以下。
+配当利回り: 高いほど株主還元が厚い。
+重要: ROEが低く(5%以下)かつPERが同業比で高い場合、それは「過小評価」ではなく「過大評価」の兆候である。逆にROEが高くPERが低い場合が「過小評価」の可能性を示す。この方向性を絶対に間違えないこと。
+
 【出力形式（厳守）】
 
 ━━━ ⚔️ Layer1: 地力分析 ━━━
 💪 競争優位性: [数値根拠付き3項目]
 ⚠️ 競争劣位性: [2項目]
-🐛 市場のバグ: [「PER〇倍はXXと比べ〇倍過小評価」など数値で]
+🐛 市場のバグ: [過小評価 or 過大評価のいずれかを、数値根拠を付けて公平に判定。ROEが低くPERが高い場合に「過小評価」と断定しないこと。]
 📊 本質的価値スコア: X/10 [根拠2行]
 
 ━━━ ⏱️ Layer2: タイミング分析 ━━━
@@ -233,6 +301,10 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 【監視ポイント】1. 2.
 """
     report, model_name = call_gemini(prompt)
+
+    # Bug #3: AI出力の事後矛盾チェック
+    if report and report != "分析失敗":
+        report = _validate_market_bug_logic(metrics, all_data, target_ticker, report)
 
     if not report or report == "分析失敗":
         print(f"  ⚠️ Gemini/Groq ともに失敗。ローカルでの簡易要約に切り替えます...")
@@ -264,7 +336,7 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 # メインフロー
 # ==========================================
 
-def run(ticker: str, gc=None, strategy: str = "long"):
+def run(ticker: str, strategy: str = "long"):
     print(f"\n{'='*60}\n🚀 {ticker} の司令塔分析を開始 (Professional CIO Edition)\n{'='*60}")
 
     target_data = fetch_stock_data(ticker)
@@ -272,8 +344,6 @@ def run(ticker: str, gc=None, strategy: str = "long"):
     if "price_warning" in target_data.get("technical", {}) or not target_data.get("metrics"):
         warning_msg = f"{ticker}: データ品質が基準を満たさないため分析をスキップします (NaN超過 または 株価異常変動)"
         print(f"  ⚠️ {warning_msg}")
-        if gc:
-            write_system_log(gc, "SKIPPED", warning_msg, ticker)
         return "分析スキップ (データ品質)"
 
     # ── マクロ環境判定（競合選定の前に実行） ──
@@ -360,12 +430,12 @@ def run(ticker: str, gc=None, strategy: str = "long"):
         yuho_data=yuho_data, scorecard=scorecard,
     )
 
-    if gc:
-        write_to_sheets(
-            gc, ticker, target_data, competitors,
-            report, table_str,
-            yuho_data=yuho_data, scorecard=scorecard,
-        )
+    # ── 新規出力 (MDとNotion) ──
+    try:
+        md_file_path = write_to_md(ticker, target_data, report, scorecard)
+        write_to_notion(ticker, target_data, report, scorecard, md_file_path)
+    except Exception as e:
+        print(f"⚠️ MD/Notion保存エラー: {e}")
 
     # ── ダッシュボード用JSON出力（履歴蓄積型） ──
     save_to_dashboard_json(ticker, target_data, scorecard, report,
@@ -562,8 +632,6 @@ def main():
         print("❌ GEMINI_API_KEY が未設定")
         sys.exit(1)
 
-    gc = get_sheets_client()
-
     args = sys.argv[1:]
     tickers = []
     strategy = "long" # Default
@@ -592,23 +660,16 @@ def main():
     for i, ticker in enumerate(tickers):
         print(f"\n[{i+1}/{len(tickers)}] {ticker}")
         try:
-            run(ticker, gc, strategy=strategy)
-            if gc:
-                write_system_log(gc, "SUCCESS", f"{ticker} の分析が正常に完了しました。", ticker)
+            run(ticker, strategy=strategy)
         except Exception as e:
             err_msg = str(e)
             print(f"❌ {ticker} 失敗: {err_msg}")
             import traceback
             tb = traceback.format_exc()
-            if gc:
-                write_system_log(gc, "ERROR", f"{err_msg}\n{tb}", ticker)
+            print(f"{err_msg}\n{tb}")
         if i < len(tickers) - 1:
             print("⏳ 5秒待機...")
             time.sleep(5)
-
-    if gc:
-        sid = os.environ.get('SPREADSHEET_ID', '')
-        print(f"\n📊 結果: https://docs.google.com/spreadsheets/d/{sid}")
 
 
 if __name__ == "__main__":

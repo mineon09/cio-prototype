@@ -293,7 +293,7 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
     except:
         bm_data = pd.DataFrame()
 
-    perf = calculate_performance(results, strategy_name=strategy, benchmark_data=bm_data, daily_data=hist, config=config)
+    perf = calculate_performance(results, strategy_name=strategy, benchmark_data=bm_data, daily_data=full_hist, config=config)
     perf.update({'strategy': strategy, 'ticker': ticker, 'benchmark_ticker': default_bm})
     return perf
 
@@ -314,10 +314,17 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
 
     for i, row in df.iterrows():
         price, date = row['price'], row['date']
-        ta = TechnicalAnalyzer(daily_data.loc[:date].tail(100)) if daily_data is not None else None
+        
+        if daily_data is not None:
+             date_loc = daily_data.index.searchsorted(pd.Timestamp(date), side='right')
+             past_slice = daily_data.iloc[max(0, date_loc-150):date_loc]
+             ta = TechnicalAnalyzer(past_slice)
+        else:
+             past_slice = None
+             ta = None
 
         if holdings == 0:
-            if strategy.should_buy(row, daily_data, ta):
+            if strategy.should_buy(row, past_slice, ta):
                 cd_days = 0
                 if last_sell_date:
                     delta = (date - last_sell_date).days
@@ -332,6 +339,9 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
                     cash = 0
                     buy_price = price
                     entry_atr = get_atr_at_entry(daily_data, date, config, strategy_name) if strategy_name != "long" else row.get('atr', 0)
+                    if entry_atr is None or entry_atr <= 0:
+                        entry_atr = price * 0.02  # フォールバック: 価格の2%
+                        logger.debug(f"  ⚠️ ATR unavailable, using fallback: {entry_atr:.1f}")
                     if strategy_name != "long":
                          stop_loss, take_profit, mode = execute_short_entry(price, date, daily_data, config, strategy_name)
                     

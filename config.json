@@ -131,7 +131,7 @@
       "exit": {
         "hard_stop_pct": -2.5,
         "take_profit_pct": 5.0,
-        "time_stop_bars": 7,
+        "time_stop_bars": 20,
         "time_stop_condition": "loss_only",
         "atr_trailing_multiplier": 1.2,
         "atr_trailing_activation_pct": 2.0,
@@ -160,7 +160,7 @@
         "NIKKEI_BULL"
       ],
       "entry": {
-        "fundamental_min": 5.0,
+        "fundamental_min": 4.0,
         "price_above_ma": 75,
         "gc_lookback_days": 5,
         "volume_multiplier": 1.2,
@@ -169,7 +169,7 @@
       "exit": {
         "hard_stop_pct": -3.0,
         "take_profit_pct": 8.0,
-        "time_stop_bars": 15,
+        "time_stop_bars": 40,
         "time_stop_condition": "loss_only",
         "atr_trailing_multiplier": 1.5,
         "atr_trailing_activation_pct": 3.0,

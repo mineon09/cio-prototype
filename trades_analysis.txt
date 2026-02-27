@@ -1,0 +1,21 @@
+
+=== 7203.T Trades ===
+        date type        price             reason    return
+0 2023-03-09  BUY  1754.836182    ATR Stop (x2.0) -2.204890
+1 2023-04-03  BUY  1767.672729    ATR Stop (x2.0) -3.288055
+2 2023-05-09  BUY  1785.843262    ATR Stop (x2.0) -2.978814
+3 2023-06-02  BUY  1872.502930  ATR Profit (x3.0)  7.148965
+4 2023-07-25  BUY  2184.664307    ATR Stop (x2.0) -3.326415
+5 2023-08-31  BUY  2343.541016  ATR Profit (x3.0)  5.166317
+6 2023-09-13  BUY  2522.916992  ATR Profit (x3.0)  5.692548
+7 2023-11-02  BUY  2600.224609       ATR Trailing  0.335921
+=== 1605.T Trades ===
+        date type        price             reason    return
+0 2023-01-23  BUY  1285.583008    ATR Stop (x2.0) -3.786250
+1 2023-03-01  BUY  1304.150757       ATR Trailing  1.359165
+2 2023-05-19  BUY  1326.255005       ATR Trailing  1.258448
+3 2023-06-06  BUY  1414.229736       ATR Trailing -0.322062
+4 2023-07-12  BUY  1509.244629  ATR Profit (x3.0)  4.961017
+5 2023-07-24  BUY  1618.728271       ATR Trailing  1.394097
+6 2023-08-10  BUY  1914.605103    ATR Stop (x2.0) -7.979470
+7 2023-09-13  BUY  2028.160522       ATR Trailing  2.011299

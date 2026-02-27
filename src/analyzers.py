@@ -149,6 +149,9 @@ def score_fundamental(metrics: dict, sector: str = "") -> dict:
 
     # 営業利益率
     op = _safe(metrics.get('op_margin'))
+    if profile_name == "financial":
+        op = None  # 銀行などの金融業では営業利益率を評価から除外
+        
     if op is not None:
         op_good = cfg.get("op_margin_good", 15)
         if op >= op_good:
@@ -348,6 +351,12 @@ def score_valuation(metrics: dict, technical: dict = None, sector: str = "",
         else:
             s = 1
             parts.append(f"DCF乖離 {upside:.0f}% (理論: ${fv:,.0f}) — 割高")
+
+        # 極端な乖離率（±60%超）はDCFモデルの信頼性低下を示唆 → スコア寄与を50%に減衰
+        if abs(upside) > 60:
+            s = s * 0.5 + 5 * 0.5  # 中立値5に50%引き寄せる
+            parts.append(f"  ⚠️ DCF乖離率が極端 ({upside:+.0f}%) — スコア寄与を減衰（信頼性低）")
+
         total += _clamp(s)
         count += 1
 
@@ -574,6 +583,41 @@ class TechnicalAnalyzer:
                ma_fast.iloc[idx] > ma_slow.iloc[idx]:
                 return True
         return False
+        
+    def check_adx_strength(self, period: int = 14, threshold: float = 25) -> tuple[bool, float]:
+        """トレンド強度確認 (ADX > threshold = 有意なトレンドあり)"""
+        high = self.df['High']
+        low = self.df['Low']
+        close = self.df['Close']
+        
+        # True Range
+        prev_close = close.shift()
+        tr = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs()
+        ], axis=1).max(axis=1)
+        
+        # Directional Movement (中間変数で FutureWarning 回避)
+        high_diff = high.diff()
+        low_diff = low.diff()
+        dm_plus = high_diff.where((high_diff > -low_diff) & (high_diff > 0), 0.0)
+        dm_minus = (-low_diff).where((-low_diff > high_diff) & (-low_diff > 0), 0.0)
+        
+        atr = tr.ewm(span=period, adjust=False, min_periods=period).mean()
+        atr = atr.clip(lower=1e-9)  # ゼロ除算回避 (replace+ffill の FutureWarning 排除)
+        
+        di_plus = 100 * dm_plus.ewm(span=period, adjust=False).mean() / atr
+        di_minus = 100 * dm_minus.ewm(span=period, adjust=False).mean() / atr
+        
+        dx_denom = (di_plus + di_minus).abs().clip(lower=1e-9)
+        dx = 100 * (di_plus - di_minus).abs() / dx_denom
+        adx = dx.ewm(span=period, adjust=False).mean()
+        
+        if pd.isna(adx.iloc[-1]):
+            return False, 0.0
+            
+        return adx.iloc[-1] > threshold, float(adx.iloc[-1])
     
     def check_ma_alignment(self) -> bool:
         """
@@ -615,6 +659,44 @@ class TechnicalAnalyzer:
         
         current_vol = vol.iloc[-1]
         return current_vol >= (ma_vol.iloc[-1] * multiplier)
+
+    def check_cmf(self, period: int = 20) -> tuple[bool, float]:
+        """Chaikin Money Flow: 機関投資家の資金流入を先行検出
+        
+        CMF > 0.05 は買い集め圧力を示す。
+        ADXの構造的ラグ（EWM×2回）を補完するリーディング指標。
+        """
+        df = self.df
+        high_low_range = (df['High'] - df['Low']).replace(0, 1e-9)
+        mf_multiplier = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / high_low_range
+        mfv = mf_multiplier * df['Volume']
+        vol_sum = df['Volume'].rolling(period, min_periods=10).sum()
+        vol_sum = vol_sum.replace(0, 1e-9)
+        cmf = mfv.rolling(period, min_periods=10).sum() / vol_sum
+        latest = cmf.iloc[-1]
+        if pd.isna(latest):
+            return False, 0.0
+        return latest > 0.05, float(latest)
+
+    def check_atr_pct(self, period: int = 14, min_pct: float = 1.5) -> tuple[bool, float]:
+        """ATR%によるレンジ相場フィルター
+        
+        ATR/Price比が min_pct 未満 → レンジ相場とみなしブレイクアウトを抑制。
+        典型的な日本大型株の強トレンド時は 2-3% 程度。
+        """
+        close = self.df['Close']
+        high = self.df['High']
+        low = self.df['Low']
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs()
+        ], axis=1).max(axis=1)
+        atr = tr.ewm(span=period, adjust=False, min_periods=period).mean()
+        atr_pct = (atr / close * 100).iloc[-1]
+        if pd.isna(atr_pct):
+            return False, 0.0
+        return atr_pct >= min_pct, float(atr_pct)
 
     def check_high_breakout(self, period: int = 20) -> bool:
         """直近高値ブレイク判定"""
@@ -829,13 +911,25 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
     else:
         signal = "WATCH"
 
+    # Gatekeeper: シグナルを上書きするのではなくフラグで通知し、必要に応じてWATCHへ格下げ
+    gatekeeper_note = None
+    if fund['score'] < 3.0:
+        # SELL/BUY に関わらず、このスコアでは新規エントリー禁止
+        gatekeeper_note = f"FUND_BLOCKED (fund={fund['score']:.1f} < 3.0)"
+        if signal == "BUY":
+            signal = "WATCH"  # BUY → WATCH に格下げのみ。SELL には変えない。
+    elif tech['score'] < 2.0 and signal == "BUY":
+        signal = "WATCH"
+        gatekeeper_note = f"TECH_BLOCKED (tech={tech['score']:.1f} < 2.0)"
+
     # サマリーテキスト生成
     lines = [
         f"━━━ 📋 4軸スコアカード ━━━",
         f"📊 Fundamental (地力):     {fund['score']}/10  [データ{fund['data_points']}件]",
         f"💰 Valuation (割安度):     {valu['score']}/10  [データ{valu['data_points']}件]",
         f"⏱️  Technical (タイミング): {tech['score']}/10  [データ{tech['data_points']}件]",
-        f"📋 Qualitative (定性):     {qual['score']}/10  [データ{qual['data_points']}件]",
+        f"📋 Qualitative (定性):     {'N/A':>4}      [データなし]" if qual['data_points'] == 0
+            else f"📋 Qualitative (定性):     {qual['score']}/10  [データ{qual['data_points']}件]",
         f"",
         f"🔢 総合スコア: {total}/10 → 🎯 {signal}",
     ]
@@ -855,6 +949,7 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
         "qualitative":  qual,
         "total_score":  total,
         "signal":       signal,
+        "gatekeeper_note": gatekeeper_note,
         "summary_text": "\n".join(lines),
         "weights":      weights,
     }

@@ -164,14 +164,9 @@ class BounceStrategy(BaseStrategy):
         
         # 長期トレンドフィルター (MA75より上にあること = 上昇トレンド中の押し目買い)
         # PIT: バックテスト日以前のデータのみを使用
-        current_date = row.get('date')
-        if current_date is not None:
-            past_data = daily_data[daily_data.index <= pd.Timestamp(current_date)]
-        else:
-            past_data = daily_data
-        
-        ma75 = past_data['Close'].rolling(75).mean().iloc[-1]
-        price = past_data['Close'].iloc[-1]
+        # PIT: バックテスト日以前のデータのみを使用 (daily_dataは既にスライス済みのpast_slice)
+        ma75 = daily_data['Close'].rolling(75).mean().iloc[-1]
+        price = daily_data['Close'].iloc[-1]
         if not pd.isna(ma75):
              ma75_ok = price > ma75
              details.append(f"Trend (Price > MA75): {'OK' if ma75_ok else 'NG'} ({price:.1f} vs {ma75:.1f})")
@@ -288,14 +283,9 @@ class BreakoutStrategy(BaseStrategy):
         
         # MA75フィルター
         # PIT: バックテスト日以前のデータのみを使用
-        current_date = row.get('date')
-        if current_date is not None:
-            past_data = daily_data[daily_data.index <= pd.Timestamp(current_date)]
-        else:
-            past_data = daily_data
-            
-        ma75 = past_data['Close'].rolling(75).mean().iloc[-1]
-        price = past_data['Close'].iloc[-1]
+        # PIT: バックテスト日以前のデータのみを使用 (daily_dataは既にスライス済みのpast_slice)
+        ma75 = daily_data['Close'].rolling(75).mean().iloc[-1]
+        price = daily_data['Close'].iloc[-1]
         
         if not pd.isna(ma75):
             ma75_ok = price > ma75
@@ -304,20 +294,42 @@ class BreakoutStrategy(BaseStrategy):
             ma75_ok = False # Data missing -> Safety first
             details.append("Trend: Data Missing -> NG (Safety default)")
         
-        is_entry = gc_ok and break_ok and vol_ok and ma75_ok
+        # ADX強度確認 (有意なトレンド)
+        adx_ok, adx_val = ta.check_adx_strength(threshold=25)
+        details.append(f"ADX Trend (>25): {'OK' if adx_ok else 'NG'} (Val: {adx_val:.1f})")
+        
+        # CMF資金フロー確認 (ADXラグの補完)
+        cmf_ok, cmf_val = ta.check_cmf(period=20)
+        details.append(f"CMF (>0.05): {'OK' if cmf_ok else 'NG'} (Val: {cmf_val:.3f})")
+        
+        # ATR%レンジ相場フィルター
+        atr_pct_ok, atr_pct_val = ta.check_atr_pct(period=14, min_pct=1.5)
+        details.append(f"ATR% (>1.5%): {'OK' if atr_pct_ok else 'NG'} (Val: {atr_pct_val:.2f}%)")
+        
+        # エントリー条件の再構築
+        # 必須: 20日高値更新 + MA75より上 + ボラ十分(ATR%) + トレンド確認(ADX or CMF)
+        # 加点(いずれか必須): 出来高スパイク もしくは 最近のGC
+        is_entry = break_ok and ma75_ok and atr_pct_ok and (adx_ok or cmf_ok) and (vol_ok or gc_ok)
+        
         return {"is_entry": is_entry, "details": details, "metrics": metrics}
 
     def should_sell(self, row, daily_data, ta, ctx) -> tuple[bool, str, float]:
         exit_cfg = self.s_cfg.get("exit", {})
         price = row['price']
         buy_price = ctx['buy_price']
-        entry_atr = ctx.get('entry_atr', 0)
+        entry_atr = ctx.get('entry_atr', price * 0.02)  # Step 1 fallback
+        trailing_high = ctx.get('trailing_high', price)
+        gain_pct = (trailing_high - buy_price) / buy_price * 100
         
-        # 1. Hard Stop - ATR優先
-        stop_price = 0.0
-        atr_sl_mult = exit_cfg.get("stop_loss_atr_multiplier", 0.0)
+        # 保有日数計算
+        start_ts = pd.Timestamp(ctx['entry_date'])
+        end_ts = pd.Timestamp(row['date'])
+        mask = (daily_data.index >= start_ts) & (daily_data.index <= end_ts)
+        bars_held = max(0, mask.sum() - 1)
         
-        if entry_atr and entry_atr > 0 and atr_sl_mult > 0:
+        # --- 1. Hard Stop (損切り) - ATR優先 ---
+        atr_sl_mult = exit_cfg.get("stop_loss_atr_multiplier", 2.0)
+        if entry_atr > 0 and atr_sl_mult > 0:
             stop_price = buy_price - (entry_atr * atr_sl_mult)
             if row.get('low', price) <= stop_price:
                 return True, f"ATR Stop (x{atr_sl_mult})", stop_price
@@ -326,21 +338,25 @@ class BreakoutStrategy(BaseStrategy):
             stop_price = buy_price * (1 + stop_pct/100)
             if row.get('low', price) <= stop_price:
                 return True, f"Hard Stop ({stop_pct}%)", stop_price
-            
-        # 2. Time Stop
-        start_ts = pd.Timestamp(ctx['entry_date'])
-        end_ts = pd.Timestamp(row['date'])
-        mask = (daily_data.index >= start_ts) & (daily_data.index <= end_ts)
-        bars_held = max(0, mask.sum() - 1)
-        if bars_held >= exit_cfg.get("time_stop_bars", 15):
-            if price < buy_price:
-                return True, f"Time Stop ({bars_held} days)", price
-                
-        # 3. Take Profit - ATR優先
-        tp_price = 0.0
-        atr_tp_mult = exit_cfg.get("take_profit_atr_multiplier", 0.0)
         
-        if entry_atr and entry_atr > 0 and atr_tp_mult > 0:
+        # --- 2. 段階的Trailing Stop (Tiered) ---
+        activation = exit_cfg.get("atr_trailing_activation_pct", 3.0)
+        if gain_pct >= activation and entry_atr > 0:
+            # 利益フェーズに応じてTrailing幅を縮小
+            if gain_pct >= 10.0:
+                trail_mult = 1.0   # タイト追随
+            elif gain_pct >= 6.0:
+                trail_mult = 1.5   # 標準
+            else:
+                trail_mult = exit_cfg.get("atr_trailing_multiplier", 2.0)  # 緩め
+            
+            trail_stop = trailing_high - (entry_atr * trail_mult)
+            if row.get('low', price) <= trail_stop:
+                return True, f"ATR Trailing (gain={gain_pct:.1f}%, x{trail_mult})", trail_stop
+        
+        # --- 3. Take Profit (利確) - ATR優先 ---
+        atr_tp_mult = exit_cfg.get("take_profit_atr_multiplier", 0.0)
+        if entry_atr > 0 and atr_tp_mult > 0:
             tp_price = buy_price + (entry_atr * atr_tp_mult)
             if row.get('high', price) >= tp_price:
                 return True, f"ATR Profit (x{atr_tp_mult})", tp_price
@@ -349,30 +365,24 @@ class BreakoutStrategy(BaseStrategy):
             tp_price = buy_price * (1 + tp_pct/100)
             if row.get('high', price) >= tp_price:
                 return True, f"Take Profit ({tp_pct}%)", tp_price
-            
-        # 4. Dead Cross Exit (MA5 < MA25)
-        # トレンド終了を示唆
+
+        # --- 4. 条件付きDead Cross (MA5 < MA25) ---
         if exit_cfg.get("exit_on_death_cross", True):
-            # PIT: バックテスト日以前のデータのみを使用
             current_date = row.get('date')
-            if current_date is not None:
-                past_data = daily_data[daily_data.index <= pd.Timestamp(current_date)]
-            else:
-                past_data = daily_data
+            past_data = daily_data[daily_data.index <= pd.Timestamp(current_date)] if current_date else daily_data
             ma5 = past_data['Close'].rolling(5).mean().iloc[-1]
             ma25 = past_data['Close'].rolling(25).mean().iloc[-1]
             if not pd.isna(ma5) and not pd.isna(ma25) and ma5 < ma25:
-                return True, "Technical Exit (Dead Cross)", price
-
-        # ATR Trailing Stop (Added per review)
-        activation = exit_cfg.get("atr_trailing_activation_pct", 3.0)
-        max_profit_pct = (ctx['trailing_high'] - buy_price) / buy_price * 100
+                current_pnl = (price - buy_price) / buy_price * 100
+                if current_pnl > 0:
+                    return True, f"Death Cross (profit={current_pnl:.1f}%)", price
+                elif bars_held > 10:
+                    return True, f"Death Cross (held {bars_held}d)", price
         
-        if max_profit_pct >= activation:
-            atr = ctx.get('entry_atr', 0)
-            if atr and atr > 0:
-                stop = ctx['trailing_high'] - (atr * exit_cfg.get("atr_trailing_multiplier", 1.5))
-                if row.get('low', price) <= stop:
-                    return True, "ATR Trailing", stop
+        # --- 5. Time Stop (損失時のみ) ---
+        if bars_held >= exit_cfg.get("time_stop_bars", 40):
+            if price < buy_price:
+                return True, f"Time Stop ({bars_held}d)", price
 
         return False, "", 0.0
+
