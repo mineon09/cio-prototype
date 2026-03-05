@@ -164,7 +164,7 @@ class NumpyEncoder(json.JSONEncoder):
 # ==========================================
 
 def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
-                model: str = "flash") -> tuple:
+                model: str = "flash", use_search: bool = False) -> tuple:
     """
     Gemini API を呼び出す。
     Returns: (result, model_name)
@@ -175,9 +175,9 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
 
     client = genai.Client(api_key=_get_gemini_key())
 
-    # モデル名の解決
+    # モデル名の解決（quota効率化のため 2.5-flash をデフォルトに）
     MODEL_MAP = {
-        "flash": "gemini-2.0-flash",
+        "flash": "gemini-2.5-flash",
         "pro":   "gemini-2.0-pro-exp-0205", # 2.0の実験的プロモデル
         "flash-3.1": "gemini-3.1-flash",
     }
@@ -190,10 +190,17 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
     
     for attempt in range(max_retries):
         try:
-            response = client.models.generate_content(
-                model=current_model,
-                contents=prompt
-            )
+            # google_search ツール有効化（日本株ニュース取得等）
+            gen_kwargs = {
+                "model": current_model,
+                "contents": prompt,
+            }
+            if use_search:
+                from google.genai import types
+                gen_kwargs["config"] = types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                )
+            response = client.models.generate_content(**gen_kwargs)
             
             text = response.text
             if not text:
@@ -569,8 +576,13 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                     ttm_net_income = ttm_values[0] * 4  # フォールバック: 単四半期×4
         
         # TTM が取れなければ従来の単四半期×4にフォールバック
+        # net_income: 直近四半期の純利益（フォールバック用）
+        net_income = get_val(fin_latest, ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests'])
         if ttm_net_income is None:
             ttm_net_income = (net_income * 4) if net_income else None
+
+        # equity: 自己資本（自己資本比率・ROE・BPS計算用）
+        equity = get_val(bs_latest, ['Stockholders Equity', 'Total Equity Gross Minority Interest', 'Stockholders Equity Including Minority Interest', 'Common Stock Equity'])
 
         # --- Metrics 構築 ---
         metrics = {}
@@ -751,6 +763,25 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                     print(f"  🚨 {ticker} 警告: 株価が前日から極端に変動しています ({pct_change*100:.1f}%)。株式分割等の補正漏れの可能性があります。")
                     technical['price_warning'] = True
 
+        # ニュース取得（yfinance）7日以内の記事
+        news_items = []
+        try:
+            raw_news = stock.news or []
+            for item in raw_news[:10]:
+                title = item.get('title', '')
+                source = item.get('publisher', item.get('providerDisplayName', ''))
+                published = item.get('providerPublishTime', 0)
+                if published and title:
+                    from datetime import timezone
+                    dt = datetime.fromtimestamp(published, tz=timezone.utc)
+                    age_days = (datetime.now(tz=timezone.utc) - dt).days
+                    if age_days <= 7:
+                        news_items.append(f"[{dt.strftime('%m/%d')}] {title} ({source})")
+                elif title:  # タイムスタンプなしの場合はそのまま追加
+                    news_items.append(f"{title} ({source})")
+        except Exception:
+            pass  # ニュース取得失敗はサイレントで続行
+
         result_data = {
             "ticker": ticker,
             "name": name,
@@ -759,7 +790,7 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
             "metrics": metrics,
             "technical": technical,
             "macro": macro_info,
-            "news": [],
+            "news": news_items,
             "description": ""
         }
         

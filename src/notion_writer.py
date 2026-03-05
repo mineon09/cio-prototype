@@ -34,8 +34,7 @@ def ensure_database_properties(notion, db_id):
                 }
             },
             "Score": {"number": {}},
-            "Price": {"rich_text": {}},
-            "MD Link": {"url": {}}
+            "Price": {"rich_text": {}}
         }
         
         print(f"📦 書き込みエラー発生。不足しているプロパティの補完を試みます...")
@@ -113,8 +112,9 @@ def write_to_notion(ticker: str, target_data: dict, report: str, scorecard: dict
             "Price": {"rich_text": [{"text": {"content": price_text}}]}
         }
         
-        if md_path:
-            properties["MD Link"] = {"url": f"file://{os.path.abspath(md_path)}"}
+        # MD Link は Notion API が file:// URL を拒否するため送信しない
+        # if md_path:
+        #     properties["MD Link"] = {"url": f"file://{os.path.abspath(md_path)}"}
 
         has_ensured_props = False
         

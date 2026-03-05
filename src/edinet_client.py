@@ -454,8 +454,32 @@ def extract_yuho_data(ticker: str) -> dict:
 
     print(f"  📋 EDINET 有報検索中 (secCode: {sec_code})...")
 
-    # Step 1: 最新有報を検索
-    doc_info = find_latest_yuho(sec_code)
+    # found_doc キャッシュ: 以前発見した有報を記憶して150日フルスキャンを回避
+    _FOUND_DOC_CACHE = _CACHE_DIR / "found_docs"
+    _FOUND_DOC_CACHE.mkdir(parents=True, exist_ok=True)
+    found_cache_path = _FOUND_DOC_CACHE / f"{sec_code}.json"
+    
+    doc_info = None
+    if found_cache_path.exists():
+        try:
+            age = time.time() - found_cache_path.stat().st_mtime
+            if age < 30 * 24 * 3600:  # 30日以内なら再利用
+                cached = json.loads(found_cache_path.read_text(encoding="utf-8"))
+                print(f"  ⚡ found_doc キャッシュヒット: {cached.get('filer_name', '不明')} [{cached.get('submit_date', '?')}]")
+                doc_info = cached
+        except Exception:
+            pass
+
+    # キャッシュがなければフルスキャン
+    if not doc_info:
+        doc_info = find_latest_yuho(sec_code)
+        # 結果をキャッシュ保存
+        if doc_info:
+            try:
+                found_cache_path.write_text(json.dumps(doc_info, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+
     if not doc_info:
         return {"available": False, "reason": "有報が見つからない"}
 

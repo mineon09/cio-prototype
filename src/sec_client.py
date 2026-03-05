@@ -178,10 +178,11 @@ def _download_filing_text(filing: dict, max_chars: int = 80000) -> str | None:
         if mda_match:
             sections.append("【MD&A】\n" + mda_match.group(1)[:30000])
 
-        if sections:
-            return "\n\n".join(sections)[:max_chars]
+        full_sections_text = "\n\n".join(sections)
+        if len(full_sections_text) > 5000:
+            return full_sections_text[:max_chars]
 
-        # セクション抽出に失敗した場合、先頭から取得
+        # セクション抽出に失敗、または短すぎる（TOC等の可能性）場合、先頭から取得
         # HTML tag stripping was so destructive that 5MB files became 166 bytes.
         # Now we safely extract and return it.
         # If text is still extremely short, it's likely a parsing failure or blank wrapper.

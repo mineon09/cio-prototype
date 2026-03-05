@@ -137,7 +137,8 @@ def _validate_market_bug_logic(metrics: dict, all_data: dict, target_ticker: str
 # ==========================================
 
 def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
-                yuho_data: dict = None, scorecard: dict = None) -> tuple[str, str, str]:
+                yuho_data: dict = None, scorecard: dict = None,
+                macro_data: dict = None, dcf_data: dict = None) -> tuple[str, str, str]:
     labels = {
         'op_margin':     '営業利益率(%)',
         'net_margin':    '純利益率(%)',
@@ -208,7 +209,42 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
     news_text = "\n".join(news_list[:10]) or "ニュースなし"
     if len(news_text) > 2000:
         news_text = news_text[:2000] + "\n...(以下略)"
+
+    # マクロ文脈テキストの生成（LLMがregimeを「解釈」できるよう指示）
+    regime = ''
+    vix_val = ''
+    us10y_val = ''
+    usdjpy_val = ''
+    if macro_data:
+        regime = macro_data.get('regime', 'NEUTRAL')
+        vix_val = macro_data.get('vix', {}).get('current', '') if isinstance(macro_data.get('vix'), dict) else macro_data.get('vix', '')
+        us10y_val = macro_data.get('us10y', '')
+        usdjpy_val = macro_data.get('usdjpy', {}).get('current', '') if isinstance(macro_data.get('usdjpy'), dict) else macro_data.get('usdjpy', '')
     
+    macro_context_text = f"""【マクロ環境と判断指針】
+レジーム: {regime or 'NEUTRAL'}"""
+    if vix_val:
+        vix_note = "リスクオフ局面、新規エントリーは慎重に" if isinstance(vix_val, (int, float)) and vix_val > 20 else "リスク環境は落ち着いている"
+        macro_context_text += f"\nVIX: {vix_val} — {vix_note}"
+    if us10y_val:
+        rate_note = "高金利継続、グロース株のバリュエーション圧迫" if isinstance(us10y_val, (int, float)) and us10y_val > 4.0 else "金利低下局面"
+        macro_context_text += f"\n米10年金利: {us10y_val}% — {rate_note}"
+    if usdjpy_val:
+        macro_context_text += f"\nドル円: {usdjpy_val}円"
+    macro_context_text += "\n上記マクロ環境を踏まえ、このセクター・銘柄への影響を分析に明示的に反映すること。"
+    macro_context_text += "\nニュースが空の場合でも、マクロ指標とレジームから合理的に推論し、センチメント分析に反映すること。"
+    
+    # DCF 信頼度テキスト（FCF変動が大きい銘柄への対策）
+    dcf_section = ""
+    if dcf_data and dcf_data.get('available'):
+        rel = dcf_data.get('reliability', 'low')
+        fv = dcf_data.get('fair_value', 0)
+        upside_dcf = dcf_data.get('upside', 0)
+        if rel == 'low':
+            dcf_section = f"\n【DCF理論株価】{fv:,.0f} {target.get('currency', 'USD')}（⚠️ FCF変動大のため低信頼度。参考値として扱え）"
+        else:
+            dcf_section = f"\n【DCF理論株価】{fv:,.0f} {target.get('currency', 'USD')}（上昇余地: {upside_dcf:+.1f}%）"
+
     cur       = tech.get('current_price', 'N/A')
     currency  = target.get('currency', 'USD')
 
@@ -254,12 +290,22 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 【ニュース（7日）】
 {news_text}
 
+{macro_context_text}
+{dcf_section}
+
 {sector_context}
 【注意】"-"はデータ未取得を意味する。銀行・金融業はcf_qualityが異常値になりやすいため、ROE・PBR・純利益率を重視して判断せよ。
 有報/10-Kデータがある場合は、数値指標とテキストを照合し、数字の「裏側」にある経営意図を読み解くこと。
 4軸スコアカード（Layer3末尾の数値）は、あなたの論理的思考の「検算」として機能させること。
-最終的な「🔢 総合スコア」は、提出された4軸スコアの加重平均と完全に一致させる必要はないが、乖離が大きい場合はレポート内でその論理性（マクロ環境要因など）を明確に説明せよ。
 同じ銘柄を再度分析する場合、以前の評価と著しく乖離しないよう、事実（Fact）に基づく公平な評価を徹底すること。
+
+【スコア制約（厳守）】
+4軸のスコアは提供されたスコアカードの数値から ±1.0 以内に収めること。
+スコアを変更する場合は、必ず以下の形式で明記すること:
+「(提供スコア X.X に対し、[具体的理由] により Y.Y に修正)」
+修正なしの場合は提供スコアをそのまま使用すること。
+上方修正は特に慎重に行い、数値根拠を必須とする。
+「🔢 総合スコア」は4軸の加重平均と大きく乖離しないこと。
 
 【指標の方向性（厳守）】
 ROE: 高いほど良い（資本効率が高い）。低ROEは投資効率に懸念あり。
@@ -300,7 +346,9 @@ PBR: 低いほど割安。1倍割れは資産価値以下。
 - 損切り条件: [価格 AND ファンダメンタル変化]
 【監視ポイント】1. 2.
 """
-    report, model_name = call_gemini(prompt)
+    # 日本株の場合は google_search ツールを有効化（yfinanceニュースが日本株ではほぼ空のため）
+    is_jp = target_ticker.endswith('.T')
+    report, model_name = call_gemini(prompt, use_search=is_jp)
 
     # Bug #3: AI出力の事後矛盾チェック
     if report and report != "分析失敗":
@@ -428,6 +476,7 @@ def run(ticker: str, strategy: str = "long"):
     report, table_str, model_name = analyze_all(
         ticker, all_data, competitors,
         yuho_data=yuho_data, scorecard=scorecard,
+        macro_data=macro_data, dcf_data=dcf_data,
     )
 
     # ── 新規出力 (MDとNotion) ──
@@ -648,9 +697,17 @@ def main():
         elif not arg.startswith('--'):
             tickers.append(arg.upper())
 
+    # ティッカーバリデーション: パスやコマンドの誤混入を防止
+    valid_tickers = [t for t in tickers if re.match(r'^[A-Z0-9\.\^\-]{1,15}$', t)]
+    invalid = set(tickers) - set(valid_tickers)
+    if invalid:
+        print(f"⚠️ 無効なティッカーをスキップ: {invalid}")
+    tickers = valid_tickers
+
     if not tickers:
         raw = input("銘柄コードを入力（例: 7203.T AAPL）> ").strip()
         tickers = [t.upper() for t in raw.replace(',', ' ').split() if t]
+        tickers = [t for t in tickers if re.match(r'^[A-Z0-9\.\^\-]{1,15}$', t)]
 
     if not tickers:
         print("❌ 銘柄コードが入力されていません")

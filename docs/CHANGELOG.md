@@ -4,7 +4,53 @@
 
 ---
 
+## [v2.2.2] - 2026-03-05 (パフォーマンス改善・ニュース対応)
+
+- **EDINET found_doc キャッシュ**: 銘柄ごとに有報検索結果をキャッシュし150日フルスキャン回避（30日有効）
+- **Notion MD Link 除外**: `file://` URL を Notion API が拒否するため送信データから除外
+- **Gemini デフォルト 2.5-flash**: quota 枯渇フォールバック遅延を回避
+- **yfinance ニュース取得**: ハードコード空配列 → 7日以内のニュースを動的取得（米国株対応）
+- **日本株 google_search 有効化**: yfinance ニュースが日本株で空のため、Gemini に `google_search` ツールを有効化
+- **スコア制約プロンプト強化**: 変更時に `(提供スコア X に対し、[理由] により Y に修正)` 形式を強制、上方修正は数値根拠必須
+
+---
+
+### [v2.2.1] - 2026-03-04 (ログ精査4件修正)
+
+- **日付**: 2026-03-04
+- **カテゴリ**: Bug Fix / Prompt Engineering / DCF Model
+- **変更内容**:
+  - 🔴 **ティッカー誤パース防止**: `main.py` の argparse にティッカー正規表現バリデーション追加（パスやコマンドの誤混入を防止）
+  - 🔴 **DCF信頼度フラグ**: `dcf_model.py` に `reliability` フィールド追加（FCF 4期以上＆全正: high、それ以外: low）。成長率クランプ（-5%〜25%）も追加
+  - 🟡 **マクロ文脈注入**: `analyze_all` プロンプトに `【マクロ環境と判断指針】` セクション追加（VIX/金利/ドル円の解釈指示）。ニュース空でもマクロから推論させる指示付き
+  - 🟡 **スコア乖離制約強化**: プロンプトの `【スコア制約（厳守）】` で4軸スコアを ±1.0 以内に制限、旧「一致不要」文言を削除
+  - `analyze_all` シグネチャに `macro_data`, `dcf_data` 引数を追加
+- **理由**: ログ精査で発見された4件の問題（ティッカー誤検知、AMAT DCF $63、ニュース空でセンチメント形骸化、スコア乖離）への対応。
+
+---
+
+### [v2.2.0] - 2026-03-04 (Breakout Strategy Alpha改善)
+
+- **日付**: 2026-03-04
+- **カテゴリ**: Strategy / Quant Logic / Code Quality
+- **変更内容**:
+  - **Exit戦略改善**: `BreakoutStrategy.should_sell` を全面刷新
+    - Chandelier Exit 導入（最新ATRベースの段階的Trailing Stop: tight/mid/loose 3段階）
+    - Death Cross 条件厳格化（MA5/MA25 → MA10/MA20 + 終値がMA長期を下回る条件追加）
+    - ATR Stop を 2.0 → 3.0 に拡大（初動ボラティリティ対応）
+    - Take Profit 上限を 8.0% → 10.0% に引き上げ
+  - **Entry精度向上**: `BreakoutStrategy.analyze_entry` に偽ブレイクフィルター追加
+    - 陽線確認（Close > Open）で上ヒゲ・陰線スパイクを排除
+    - 終値ベース20日高値更新チェック（ヒゲ先ブレイクの排除）
+  - **コード品質**: `should_sell` の引数 `daily_data` → `past_slice` に統一（全戦略クラス + backtester.py 呼び出し元）
+  - **FutureWarning対応**: `macro_regime.py` の `yf.download` から `auto_adjust=True` を除去
+  - `config.json`: `chandelier_tight_mult`, `chandelier_mid_mult`, `chandelier_loose_mult`, `ma_short`, `ma_long`, `require_bullish_close` を追加
+- **理由**: Payoff Ratio ≒ 1.0、WinRate 50% のベースライン改善。Chandelier Exit でトレンド追随力を強化し、偽ブレイク排除でエントリー精度を向上させ、インデックス対比Alpha改善を図る。
+
+---
+
 ### [v2.1.1] - 2026-02-22 (8306.T Strategy Fix)
+
 - **日付**: 2026-02-22
 - **カテゴリ**: Config Fix / Backtest Accuracy
 - **変更内容**:
@@ -16,6 +62,7 @@
 ---
 
 ### [v2.1.0] - 2026-02-22 (External Review Fixes + Hotfix)
+
 - **日付**: 2026-02-22
 - **カテゴリ**: Quant Logic / Architecture / State Management / Bug Fix
 - **変更内容**:
@@ -41,6 +88,7 @@
 ---
 
 ### [v2.0.0] - 2026-02-22 (Cleanup)
+
 - **日付**: 2026-02-22
 - **カテゴリ**: Cleanup / DevOps
 - **変更内容**:
@@ -52,6 +100,7 @@
 ---
 
 ### [v2.0.0] - 2026-02-22
+
 - **日付**: 2026-02-22
 - **カテゴリ**: Bug Fix / Security / Architecture / Quality
 - **変更内容**:
@@ -73,6 +122,7 @@
 ---
 
 ### [Unreleased]
+
 - **日付**: 2026-02-22
 - **カテゴリ**: Documentation / Setup
 - **変更内容**: `docs/architecture.md` の新規作成と次期開発方針の策定。
@@ -81,6 +131,7 @@
 ---
 
 ### [v1.5.1] - 2025-02
+
 - **日付**: 2025-02
 - **カテゴリ**: Bug Fix / Optimization
 - **変更内容**: モンテカルロのブートストラップ化、オーケストレーション修正、型安全性の強化、安全側デフォルトの徹底。

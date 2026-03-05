@@ -164,18 +164,22 @@
         "price_above_ma": 75,
         "gc_lookback_days": 5,
         "volume_multiplier": 1.2,
-        "require_20d_high_break": true
+        "require_20d_high_break": true,
+        "require_bullish_close": true
       },
       "exit": {
         "hard_stop_pct": -3.0,
-        "take_profit_pct": 8.0,
+        "take_profit_pct": 10.0,
         "time_stop_bars": 40,
         "time_stop_condition": "loss_only",
-        "atr_trailing_multiplier": 1.5,
         "atr_trailing_activation_pct": 3.0,
+        "chandelier_tight_mult": 1.5,
+        "chandelier_mid_mult": 2.0,
+        "chandelier_loose_mult": 2.5,
         "exit_on_death_cross": true,
-        "stop_loss_atr_multiplier": 2.0,
-        "take_profit_atr_multiplier": 3.0
+        "ma_short": 10,
+        "ma_long": 20,
+        "stop_loss_atr_multiplier": 3.0
       },
       "risk": {
         "pct_per_trade": 0.1,

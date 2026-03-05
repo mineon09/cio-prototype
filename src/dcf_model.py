@@ -187,6 +187,10 @@ def _get_growth_scenarios(ticker: str, fcf_history: list) -> dict:
             growths.append(round(g, 1))
 
     avg_growth = sum(growths) / len(growths) if growths else 8
+    
+    # FCF変動が激しい銘柄（半導体・バイオ等）では極端な値をクランプ
+    avg_growth = max(min(avg_growth, 25), -5)
+    
     return {
         "bull": round(min(avg_growth * 1.5, 25), 1),
         "base": round(avg_growth, 1),
@@ -199,7 +203,7 @@ def estimate_fair_value(ticker: str, as_of_date=None) -> dict:
     DCF法で理論株価を算出する。
 
     Returns:
-        dict: fair_value, upside, scenarios, wacc, fcf_history
+        dict: fair_value, upside, scenarios, wacc, fcf_history, reliability
     """
     print(f"  💰 DCF理論株価を算出中...")
 
@@ -252,8 +256,12 @@ def estimate_fair_value(ticker: str, as_of_date=None) -> dict:
     upside = round((base_fv - current_price) / current_price * 100, 1) if current_price > 0 and base_fv > 0 else 0
     mos = round(max(0, (base_fv - current_price) / base_fv * 100), 1) if base_fv > 0 else 0
 
+    # 信頼度判定: FCFが4期以上かつ全て正ならhigh、それ以外はlow
+    reliability = "high" if len(fcf_history) >= 4 and all(f > 0 for f in fcf_history) else "low"
+
     if base_fv > 0:
-        print(f"  📊 理論株価: ${base_fv:,.0f} (現在: ${current_price:,.0f}, 上昇余地: {upside:+.1f}%)")
+        rel_icon = "📊" if reliability == "high" else "⚠️"
+        print(f"  {rel_icon} 理論株価: ${base_fv:,.0f} (現在: ${current_price:,.0f}, 上昇余地: {upside:+.1f}%, 信頼度: {reliability})")
     else:
         print(f"  ⚠️ DCF算出失敗 — デフォルト値を使用")
 
@@ -267,6 +275,7 @@ def estimate_fair_value(ticker: str, as_of_date=None) -> dict:
         "wacc": wacc,
         "fcf_latest": fcf_latest,
         "fcf_history": [round(f/1e9, 2) for f in fcf_history],
+        "reliability": reliability,
     }
 
 

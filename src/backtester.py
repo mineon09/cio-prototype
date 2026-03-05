@@ -357,7 +357,7 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
         
         else:
             ctx['trailing_high'] = max(ctx['trailing_high'], row.get('high', price))
-            should_sell, reason, exit_price = strategy.should_sell(row, daily_data, ta, ctx)
+            should_sell, reason, exit_price = strategy.should_sell(row, past_slice, ta, ctx)
             if not should_sell and i == len(df) - 1: should_sell, reason, exit_price = True, "End of Period", price
 
             if should_sell:

@@ -448,7 +448,7 @@ def _ensure_cache_us(current_date, config: dict = None):
         cache_data = {}
         for key, symbol in tickers.items():
             try:
-                df = yf.download(symbol, start=start_cache, end=end_cache, progress=False, auto_adjust=True)
+                df = yf.download(symbol, start=start_cache, end=end_cache, progress=False)
                 if isinstance(df.columns, pd.MultiIndex):
                     try:
                         df = df.xs(symbol, axis=1, level=1)
@@ -493,7 +493,7 @@ def _ensure_cache_jp(current_date, config: dict = None):
         cache_data = {}
         for key, symbol in tickers.items():
             try:
-                df = yf.download(symbol, start=start_cache, end=end_cache, progress=False, auto_adjust=True)
+                df = yf.download(symbol, start=start_cache, end=end_cache, progress=False)
                 if isinstance(df.columns, pd.MultiIndex):
                     try:
                         df = df.xs(symbol, axis=1, level=1)
