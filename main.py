@@ -287,8 +287,11 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 アナリスト目標:{tech.get('analyst_target')}
 {yuho_section}
 {scorecard_section}
-【ニュース（7日）】
+【ニュース・センチメント（直近7日）】
 {news_text}
+※ ニュースがある場合、センチメント分析ではニュースの内容を具体的に引用し、
+  株価への影響を「ポジティブ/中立/ネガティブ」と強度で明示すること。
+  ニュースがない場合は「情報なし」と記載し、マクロ環境から推論すること。
 
 {macro_context_text}
 {dcf_section}
@@ -300,11 +303,9 @@ RSI:{tech.get('rsi')} / BB位置:{tech.get('bb_position')}% / ボラ:{tech.get('
 同じ銘柄を再度分析する場合、以前の評価と著しく乖離しないよう、事実（Fact）に基づく公平な評価を徹底すること。
 
 【スコア制約（厳守）】
-4軸のスコアは提供されたスコアカードの数値から ±1.0 以内に収めること。
-スコアを変更する場合は、必ず以下の形式で明記すること:
-「(提供スコア X.X に対し、[具体的理由] により Y.Y に修正)」
-修正なしの場合は提供スコアをそのまま使用すること。
-上方修正は特に慎重に行い、数値根拠を必須とする。
+本質的価値スコア・タイミングスコア・定性スコアの数値は変更禁止。
+提供されたスコアカードの数値をそのまま使用し、最終判断のスコアと必ず一致させること。
+分析コメントでの評価の深掘りは歓迎するが、数値の上方・下方いずれの修正も行わないこと。
 「🔢 総合スコア」は4軸の加重平均と大きく乖離しないこと。
 
 【指標の方向性（厳守）】
@@ -442,6 +443,51 @@ def run(ticker: str, strategy: str = "long"):
     else:
         print(f"ℹ️ 有価証券報告書の取得をスキップ")
 
+    # ── 日本株ニュース取得（Gemini google_search） ──
+    if is_japanese_stock(ticker) and not target_data.get('news'):
+        print(f"  📰 {ticker} 日本語ニュースを検索中...")
+        _news_cache_dir = os.path.join("data", "cache", "news")
+        os.makedirs(_news_cache_dir, exist_ok=True)
+        _news_cache_file = os.path.join(_news_cache_dir, f"{ticker}_{datetime.now().strftime('%Y%m%d')}.json")
+
+        # 当日キャッシュ確認
+        if os.path.exists(_news_cache_file):
+            try:
+                with open(_news_cache_file, "r", encoding="utf-8") as f:
+                    cached_news = json.load(f)
+                target_data['news'] = cached_news
+                print(f"  ⚡ ニュースキャッシュ使用: {len(cached_news)}件")
+            except Exception:
+                pass
+
+        if not target_data.get('news'):
+            news_prompt = f"""
+{ticker}（{target_data.get('name', '')}）に関する直近7日間のニュースを検索し、
+以下の形式で最大8件返してください。JSONのみ出力。
+
+[
+  {{"date": "MM/DD", "title": "ニュースタイトル", "source": "メディア名", "sentiment": "positive/neutral/negative"}}
+]
+
+投資判断に関連するもの（決算、格付け変更、規制、M&A、経営陣発言等）を優先してください。
+"""
+            news_raw, _ = call_gemini(news_prompt, parse_json=True, use_search=True)
+
+            if news_raw and isinstance(news_raw, list):
+                target_data['news'] = [
+                    f"[{n.get('date','')}] {n.get('title','')} ({n.get('source','')})"
+                    for n in news_raw if n.get('title')
+                ]
+                print(f"  ✅ ニュース取得: {len(target_data['news'])}件")
+                # 当日キャッシュ保存
+                try:
+                    with open(_news_cache_file, "w", encoding="utf-8") as f:
+                        json.dump(target_data['news'], f, ensure_ascii=False)
+                except Exception:
+                    pass
+            else:
+                print(f"  ⚠️ ニュース取得失敗（スキップ）")
+
     # ── DCF理論株価算出 ──
     dcf_data = {}
     if HAS_DCF:
@@ -456,6 +502,16 @@ def run(ticker: str, strategy: str = "long"):
     if sector and sector != '不明':
         print(f"🏭 セクター: {sector}")
         
+    # Regime Overrides に基づく BUY閾値を解決
+    regime = macro_data.get('regime', 'NEUTRAL') if macro_data else 'NEUTRAL'
+    buy_threshold = (
+        CONFIG.get("signals", {})
+        .get("BUY", {})
+        .get("regime_overrides", {})
+        .get(regime, {})
+        .get("min_score")
+    )  # None の場合は generate_scorecard 内のデフォルト 6.5 が使用される
+
     # ベースのスコアカード生成
     base_scorecard = generate_scorecard(
             target_data.get('metrics', {}),
@@ -464,6 +520,7 @@ def run(ticker: str, strategy: str = "long"):
             sector=sector,
             dcf_data=dcf_data,
             macro_data=macro_data,
+            buy_threshold=buy_threshold,
     )
     
     # 戦略分析を実行

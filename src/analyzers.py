@@ -14,14 +14,10 @@ Fundamental / Valuation / Technical / Qualitative の4レイヤーで
 import json, math, logging
 import pandas as pd
 
+from src.logging_utils import get_logger
+
 # ロガー設定
-logger = logging.getLogger("CIO_Analyzers")
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+logger = get_logger(__name__)
 
 try:
     with open("config.json", encoding="utf-8") as f:
@@ -33,6 +29,31 @@ SCORING_CFG = _CFG.get("scoring", {
     "fundamental": {"roe_good": 10, "op_margin_good": 15, "equity_ratio_good": 40},
     "valuation":   {"per_cheap": 15, "pbr_cheap": 1.0},
     "technical":   {"rsi_oversold": 30, "rsi_overbought": 70},
+})
+
+# スコアリング閾値（config.json から読み込み、フォールバック値付き）
+THRESHOLDS = _CFG.get("scoring_thresholds", {
+    "fundamental": {
+        "cf_quality_excellent": 1.5,
+        "cf_quality_good": 1.0,
+        "cf_quality_fair": 0.5,
+        "rd_ratio_excellent": 15,
+        "rd_ratio_good": 8,
+        "rd_ratio_fair": 3,
+    },
+    "valuation": {
+        "dividend_yield_high": 5,
+        "dividend_yield_good": 3,
+        "dividend_yield_fair": 1.5,
+    },
+    "technical": {
+        "bb_position_oversold": 10,
+        "bb_position_weak": 30,
+        "bb_position_neutral": 70,
+        "bb_position_overbought": 90,
+        "volume_ratio_spike": 2.0,
+        "volume_ratio_active": 1.2,
+    },
 })
 
 # セクター別スコアリングプロファイル
@@ -187,13 +208,14 @@ def score_fundamental(metrics: dict, sector: str = "") -> dict:
     # CF品質 (Operating CF / Net Income)
     cf = _safe(metrics.get('cf_quality'))
     if cf is not None and cf > 0:
-        if cf >= 1.5:
+        cf_excellent = THRESHOLDS["fundamental"].get("cf_quality_excellent", 1.5)
+        if cf >= cf_excellent:
             s = 9
             parts.append(f"CF品質 {cf} — キャッシュリッチ")
-        elif cf >= 1.0:
+        elif cf >= THRESHOLDS["fundamental"].get("cf_quality_good", 1.0):
             s = 7
             parts.append(f"CF品質 {cf} — 健全")
-        elif cf >= 0.5:
+        elif cf >= THRESHOLDS["fundamental"].get("cf_quality_fair", 0.5):
             s = 4
             parts.append(f"CF品質 {cf} — やや弱い")
         else:
@@ -205,13 +227,14 @@ def score_fundamental(metrics: dict, sector: str = "") -> dict:
     # R&D 比率（高いほど将来投資、セクター別重み付き）
     rd = _safe(metrics.get('rd_ratio'))
     if rd is not None and rd > 0 and rd_weight > 0:
-        if rd >= 15:
+        rd_excellent = THRESHOLDS["fundamental"].get("rd_ratio_excellent", 15)
+        if rd >= rd_excellent:
             s = 9
             parts.append(f"R&D比率 {rd}% — 積極的な将来投資")
-        elif rd >= 8:
+        elif rd >= THRESHOLDS["fundamental"].get("rd_ratio_good", 8):
             s = 7
             parts.append(f"R&D比率 {rd}% — 標準的な研究開発投資")
-        elif rd >= 3:
+        elif rd >= THRESHOLDS["fundamental"].get("rd_ratio_fair", 3):
             s = 5
             parts.append(f"R&D比率 {rd}% — 控えめ")
         else:
@@ -295,10 +318,11 @@ def score_valuation(metrics: dict, technical: dict = None, sector: str = "",
     # 配当利回り
     div = _safe(metrics.get('dividend_yield'))
     if div is not None and div > 0:
-        if div >= 5:
+        div_high = THRESHOLDS["valuation"].get("dividend_yield_high", 5)
+        if div >= div_high:
             s = 9
             parts.append(f"配当利回り {div}% — 高配当")
-        elif div >= 3:
+        elif div >= THRESHOLDS["valuation"].get("dividend_yield_good", 3):
             s = 7
             parts.append(f"配当利回り {div}% — 魅力的")
         elif div >= 1.5:
@@ -456,16 +480,17 @@ def score_technical(technical: dict, sector: str = "") -> dict:
     # ボリンジャーバンド位置
     bb = _safe(technical.get('bb_position'))
     if bb is not None:
-        if bb <= 10:
+        bb_oversold = THRESHOLDS["technical"].get("bb_position_oversold", 10)
+        if bb <= bb_oversold:
             s = 9
             parts.append(f"BB位置 {bb}% — 下限バンド付近（買い）")
-        elif bb <= 30:
+        elif bb <= THRESHOLDS["technical"].get("bb_position_weak", 30):
             s = 7
             parts.append(f"BB位置 {bb}% — 下方域")
-        elif bb <= 70:
+        elif bb <= THRESHOLDS["technical"].get("bb_position_neutral", 70):
             s = 5
             parts.append(f"BB位置 {bb}% — 中央帯")
-        elif bb <= 90:
+        elif bb <= THRESHOLDS["technical"].get("bb_position_overbought", 90):
             s = 3
             parts.append(f"BB位置 {bb}% — 上方域")
         else:
@@ -477,10 +502,11 @@ def score_technical(technical: dict, sector: str = "") -> dict:
     # 出来高比率
     vr = _safe(technical.get('volume_ratio'))
     if vr is not None and vr > 0:
-        if vr >= 2.0:
+        vr_spike = THRESHOLDS["technical"].get("volume_ratio_spike", 2.0)
+        if vr >= vr_spike:
             s = 8
             parts.append(f"出来高比率 {vr}x — 異常出来高（注目）")
-        elif vr >= 1.2:
+        elif vr >= THRESHOLDS["technical"].get("volume_ratio_active", 1.2):
             s = 6
             parts.append(f"出来高比率 {vr}x — やや活発")
         elif vr >= 0.8:

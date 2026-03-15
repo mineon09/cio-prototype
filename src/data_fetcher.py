@@ -163,6 +163,22 @@ class NumpyEncoder(json.JSONEncoder):
 # Gemini API（429自動リトライ）
 # ==========================================
 
+def _extract_json(text: str):
+    """テキストから最初の有効なJSONオブジェクト/配列を抽出する。
+    JSONDecoder.raw_decode() を使用し、JSON後の余分なテキスト（Extra data）を無視する。
+    """
+    decoder = json.JSONDecoder()
+    # '{' または '[' のすべての出現位置を取得して昇順にソート
+    indices = [m.start() for m in re.finditer(r'[\{\[]', text)]
+    for idx in indices:
+        try:
+            obj, _ = decoder.raw_decode(text, idx)
+            return obj
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 model: str = "flash", use_search: bool = False) -> tuple:
     """
@@ -202,7 +218,17 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 )
             response = client.models.generate_content(**gen_kwargs)
             
-            text = response.text
+            # google_search ツール使用時は response.text が空になる場合がある
+            # その場合は candidates[0].content.parts からテキストを結合して取得
+            text = ""
+            try:
+                text = response.text or ""
+            except Exception:
+                pass
+            if not text and hasattr(response, 'candidates') and response.candidates:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'text') and part.text:
+                        text += part.text
             if not text:
                 raise ValueError("Empty response from Gemini")
 
@@ -210,10 +236,11 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
             if parse_json:
                 cleaned_text = re.sub(r'```json\s*', '', text)
                 cleaned_text = re.sub(r'```\s*$', '', cleaned_text)
-                m = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
-                if m:
-                    return json.loads(m.group(0)), current_model
-                return json.loads(cleaned_text), current_model
+                # raw_decode で最初の有効なJSONを抽出（Extra data エラー回避）
+                result = _extract_json(cleaned_text)
+                if result is not None:
+                    return result, current_model
+                return json.loads(cleaned_text), current_model  # 最後の手段
                 
             return text, current_model
 
@@ -763,24 +790,28 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                     print(f"  🚨 {ticker} 警告: 株価が前日から極端に変動しています ({pct_change*100:.1f}%)。株式分割等の補正漏れの可能性があります。")
                     technical['price_warning'] = True
 
-        # ニュース取得（yfinance）7日以内の記事
+        # ニュース取得: 日本株はスキップ（main.py で Gemini google_search から取得）
         news_items = []
-        try:
-            raw_news = stock.news or []
-            for item in raw_news[:10]:
-                title = item.get('title', '')
-                source = item.get('publisher', item.get('providerDisplayName', ''))
-                published = item.get('providerPublishTime', 0)
-                if published and title:
-                    from datetime import timezone
-                    dt = datetime.fromtimestamp(published, tz=timezone.utc)
-                    age_days = (datetime.now(tz=timezone.utc) - dt).days
-                    if age_days <= 7:
+        is_jp = ticker.endswith('.T')
+        if not is_jp:
+            try:
+                raw_news = stock.news or []
+                from datetime import timezone
+                cutoff = datetime.now(tz=timezone.utc).timestamp() - (7 * 86400)
+                for item in raw_news[:15]:
+                    ts = item.get('providerPublishTime', 0)
+                    title = item.get('title', '').strip()
+                    source = item.get('publisher', item.get('providerDisplayName', ''))
+                    if ts and title:
+                        if ts < cutoff:
+                            continue
+                        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
                         news_items.append(f"[{dt.strftime('%m/%d')}] {title} ({source})")
-                elif title:  # タイムスタンプなしの場合はそのまま追加
-                    news_items.append(f"{title} ({source})")
-        except Exception:
-            pass  # ニュース取得失敗はサイレントで続行
+                    elif title:
+                        news_items.append(f"{title} ({source})")
+                news_items = news_items[:10]
+            except Exception:
+                pass  # ニュース取得失敗はサイレントで続行
 
         result_data = {
             "ticker": ticker,

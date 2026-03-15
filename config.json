@@ -17,6 +17,29 @@
     "rsi_oversold": 30,
     "ma75_overheated": 20
   },
+  "scoring_thresholds": {
+    "fundamental": {
+      "cf_quality_excellent": 1.5,
+      "cf_quality_good": 1.0,
+      "cf_quality_fair": 0.5,
+      "rd_ratio_excellent": 15,
+      "rd_ratio_good": 8,
+      "rd_ratio_fair": 3
+    },
+    "valuation": {
+      "dividend_yield_high": 5,
+      "dividend_yield_good": 3,
+      "dividend_yield_fair": 1.5
+    },
+    "technical": {
+      "bb_position_oversold": 10,
+      "bb_position_weak": 30,
+      "bb_position_neutral": 70,
+      "bb_position_overbought": 90,
+      "volume_ratio_spike": 2.0,
+      "volume_ratio_active": 1.2
+    }
+  },
   "signals": {
     "BUY": {
       "min_score": 6.5,

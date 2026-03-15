@@ -4,6 +4,90 @@
 
 ---
 
+## [v2.4.0] - 2026-03-15 (投資判断エンジン導入)
+
+### 新規機能
+- **投資判断エンジン**: `src/investment_judgment.py` 新設
+  - API ベースエンジン（Gemini/Qwen 対応）
+  - ツールベースエンジン（ルールベース）
+  - デュアルエンジン（比較・統合）
+- **比較レポート機能**: 2 つのエンジンの結果を比較・表示
+- **単体テスト**: `tests/test_investment_judgment.py` (24 テスト)
+
+### 改善
+- **ドキュメント**: `docs/investment_judgment_guide.md` 追加
+  - 使用ガイド・API リファレンス
+  - 統合例・カスタマイズ方法
+
+### テスト結果
+```
+Ran 24 tests in 0.033s
+OK
+```
+
+---
+
+## [v2.3.0] - 2026-03-15 (コード品質改善・単体テスト導入)
+
+### 概要
+外部レビュー指摘事項に基づくコード品質改善。単体テストの導入、設定ファイルの整理、ドキュメントの拡充を実施。
+
+### 新規機能
+- **単体テストフレームワーク導入**: `tests/` ディレクトリ新設
+  - `test_analyzers.py`: 4 軸スコアリングエンジンのテスト（30 テスト）
+  - `test_strategies.py`: 戦略ロジックのテスト（17 テスト）
+  - `test_dcf_model.py`: DCF 理論株価算出のテスト（19 テスト）
+  - 合計 66 テスト、カバレッジ：コアロジックの主要関数を網羅
+
+### 改善
+- **API キー管理の明確化**: `.env.example` を刷新
+  - 各 API キーの取得元 URL を記載
+  - Google Sheets 認証の 2 方法（JSON 文字列 vs ファイルパス）を明記
+  - EDINET_API_KEY を追加
+  - セクション別に見やすく整理
+
+- **スコアリング閾値の外部化**: `config.json` に `scoring_thresholds` セクション追加
+  - CF 品質閾値（excellent/good/fair）
+  - R&D 比率閾値
+  - 配当利回り閾値
+  - BB 位置閾値
+  - 出来高比率閾値
+  - `analyzers.py` は config から読み込み（フォールバック値付き）
+
+- **ロギングシステムの改善**: `src/logging_utils.py` 新設
+  - 統一ログフォーマット
+  - 名前付きロガー
+  - ファイルハンドラー追加機能
+  - `analyzers.py` で使用開始
+
+- **パフォーマンス最適化**: `src/parallel_utils.py` 新設
+  - 複数銘柄データ取得の並列処理（ThreadPoolExecutor）
+  - `main.py` の競合他社データ取得に適用（最大 4 ワーカー）
+  - エラーハンドリング付きフォールバック機構
+
+### ドキュメント
+- **レビュー指摘事項対応レポート**: `docs/issues/review_fixes_v2.3.0.md`
+  - 外部レビューでの指摘事項と対応内容を記録
+  - 各変更の理由とテスト結果を記載
+
+### テスト結果
+```
+Ran 66 tests in 2.856s
+OK
+```
+
+---
+
+## [v2.2.3] - 2026-03-10 (ログ精査バグ修正)
+
+- **google_search レスポンス取得修正**: `call_gemini` で `use_search=True` 時に `response.text` が空になる問題を修正。`response.candidates[0].content.parts` からテキストを結合取得するフォールバック追加 (`data_fetcher.py`)
+- **JSONパースの堅牢化**: GeminiがJSONの後に余分なテキストを返した場合（`Extra data` エラー）に対応するため、`raw_decode` を用いた `_extract_json` ヘルパーを追加 (`data_fetcher.py`)
+- **スコア制約の厳格化**: 分析プロンプトにて「上方修正に限定せず、上下いずれの数値修正も禁止」することを明記し、スコア上書きを完全に抑制 (`main.py`)
+- **RISK_OFF BUY閾値適用**: `main.py` の `generate_scorecard` 呼び出しで `buy_threshold` が渡されず、RISK_OFF の閾値 7.5 が無視されていた問題を修正。regime_overrides から閾値を解決して渡すように変更
+- **定性スコア重み 0% は仕様通り**: 有報/10-Kデータ未取得時に qualitative ウェイトを 0% に再配分するのは設計意図通りの動作（`analyzers.py` L843-848）
+
+---
+
 ## [v2.2.2] - 2026-03-05 (パフォーマンス改善・ニュース対応)
 
 - **EDINET found_doc キャッシュ**: 銘柄ごとに有報検索結果をキャッシュし150日フルスキャン回避（30日有効）
