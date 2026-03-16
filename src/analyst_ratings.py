@@ -106,29 +106,34 @@ def fetch_price_target(ticker: str) -> Dict:
 def fetch_earnings_estimates(ticker: str) -> Dict:
     """
     収益予測（コンセンサス）を取得
-    
+
     Parameters
     ----------
     ticker : 銘柄コード
-    
+
     Returns
     -------
     収益予測データ
     """
     try:
         stock = yf.Ticker(ticker)
-        earnings = stock.earnings_estimates
         
+        # earnings_estimates 属性が存在するか確認
+        if not hasattr(stock, 'earnings_estimates'):
+            return {"available": False, "reason": "earnings_estimates not available"}
+        
+        earnings = stock.earnings_estimates
+
         if earnings is None or earnings.empty:
             return {"available": False}
-        
+
         # 四半期予測
         quarterly = {}
         annual = {}
-        
+
         # カラム名の正規化
         earnings_df = earnings.reset_index()
-        
+
         for _, row in earnings_df.iterrows():
             period = row.get("period", "")
             if period:
@@ -141,18 +146,22 @@ def fetch_earnings_estimates(ticker: str) -> Dict:
                     "num_analysts": row.get("numAnalysts", row.get("# Analysts")),
                     "growth": row.get("growth", row.get("Growth")),
                 }
-                
+
                 # 四半期か年次かを判定
                 if isinstance(period, str) and len(period) == 7:  # "2026Q1" など
                     quarterly[period] = estimate_data
                 else:
                     annual[period] = estimate_data
-        
+
         return {
             "available": True,
             "quarterly": list(quarterly.values())[:4],  # 最大 4 四半期
             "annual": list(annual.values())[:3],  # 最大 3 年
         }
+    except AttributeError as e:
+        # 'Ticker' object has no attribute 'earnings_estimates'
+        print(f"  ℹ️ 収益予測データは利用できません（yfinance 制限）")
+        return {"available": False, "reason": str(e)}
     except Exception as e:
         print(f"  ⚠️ 収益予測取得エラー：{e}")
         return {"available": False, "error": str(e)}
@@ -161,24 +170,29 @@ def fetch_earnings_estimates(ticker: str) -> Dict:
 def fetch_revenue_estimates(ticker: str) -> Dict:
     """
     売上予測（コンセンサス）を取得
-    
+
     Parameters
     ----------
     ticker : 銘柄コード
-    
+
     Returns
     -------
     売上予測データ
     """
     try:
         stock = yf.Ticker(ticker)
-        revenue = stock.revenue_estimates
         
+        # revenue_estimates 属性が存在するか確認
+        if not hasattr(stock, 'revenue_estimates'):
+            return {"available": False, "reason": "revenue_estimates not available"}
+        
+        revenue = stock.revenue_estimates
+
         if revenue is None or revenue.empty:
             return {"available": False}
-        
+
         revenue_df = revenue.reset_index()
-        
+
         estimates = []
         for _, row in revenue_df.iterrows():
             estimates.append({
@@ -190,11 +204,15 @@ def fetch_revenue_estimates(ticker: str) -> Dict:
                 "num_analysts": row.get("numAnalysts", row.get("# Analysts")),
                 "growth": row.get("growth", row.get("Growth")),
             })
-        
+
         return {
             "available": True,
             "estimates": estimates[:4],  # 最大 4 期間
         }
+    except AttributeError as e:
+        # 'Ticker' object has no attribute 'revenue_estimates'
+        print(f"  ℹ️ 売上予測データは利用できません（yfinance 制限）")
+        return {"available": False, "reason": str(e)}
     except Exception as e:
         print(f"  ⚠️ 売上予測取得エラー：{e}")
         return {"available": False, "error": str(e)}

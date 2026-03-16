@@ -302,11 +302,23 @@ def format_news_for_prompt(news_data: Dict, max_items: int = 5) -> str:
                     "neutral": "⚪",
                     "negative": "🔴"
                 }.get(news.get("sentiment", "neutral"), "⚪")
+
+            publisher = news.get("publisher", "") or news.get("source", "")
+            # 日付フォーマット統一 (YYYY-MM-DD または YYYY-MM-DD HH:MM)
+            published_at = news.get("published_at", "")
+            if published_at:
+                if isinstance(published_at, str):
+                    date = published_at[:10] if len(published_at) >= 10 else published_at
+                else:
+                    date = str(published_at)[:10]
+            else:
+                date = ""
             
-            publisher = news.get("publisher", "")
-            date = news.get("published_at", "")[:10] if news.get("published_at") else ""
+            title = news.get("title", "タイトルなし")
+            source_info = f"[{publisher}] " if publisher else ""
+            date_info = f"({date})" if date else ""
             
-            lines.append(f"  {i}. {sentiment_mark} [{publisher}] {news.get('title', '')} ({date})")
+            lines.append(f"  {i}. {sentiment_mark} {source_info}{title} {date_info}")
     
     return "\n".join(lines)
 

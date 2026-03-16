@@ -658,11 +658,25 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         if as_of_date:
             metrics['rd_ratio'] = 0  # バックテスト時: 過去R&Dデータ不安定のため省略
         else:
-            rd_exp = get_val(fin_latest, ['Research And Development', 'Research Development'])
+            # 複数のキーで試行（yfinance のバージョン差異に対応）
+            rd_exp = get_val(fin_latest, [
+                'Research And Development',
+                'Research Development',
+                'R&D Expense',
+                'Research And Development Expense',
+                'ResearchDevelopmentAndEngineering',
+            ])
+            
+            # 財務データから取得できない場合、info から取得
+            if not rd_exp or pd.isna(rd_exp):
+                rd_exp = info.get('researchAndDevelopmentExpense')
+            
             if rd_exp and revenue and revenue != 0:
                 metrics['rd_ratio'] = round((rd_exp / revenue) * 100, 2)
             else:
-                 metrics['rd_ratio'] = info.get('researchAndDevelopmentRatio', 0) or 0
+                 # info から直接取得（既に比率の場合）
+                 rd_ratio_info = info.get('researchAndDevelopmentRatio')
+                 metrics['rd_ratio'] = (rd_ratio_info * 100 if rd_ratio_info and rd_ratio_info < 1 else rd_ratio_info) or 0
         
         if as_of_date:
             shares = get_val(bs_latest, ['Share Issued', 'Ordinary Shares Number'])

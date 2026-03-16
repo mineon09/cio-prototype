@@ -139,31 +139,72 @@ def build_enhanced_prompt_with_data(
     # 4. ニュース・センチメント
     if news_data and news_data.get('available'):
         from src.news_fetcher import format_news_for_prompt
+        sentiment = news_data.get('sentiment', {})
+        sentiment_score = sentiment.get('score', 0)
+        sentiment_overall = sentiment.get('overall', 'neutral')
+        
+        # ニュースベースの分析指示を追加
+        news_section = format_news_for_prompt(news_data)
+        
+        # センチメントスコアを数値化して明示
         sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【ニュース・市場センチメント】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{format_news_for_prompt(news_data)}
+{news_section}
 
+【ニュース分析のヒント】
+- センチメントスコア：{sentiment_score:.2f} （-1〜+1、正=楽観、負=悲観）
+- 総合判断：{sentiment_overall.upper()}
+- 注目点：直近 7 日間のネガティブ/ポジティブニュースの偏りを確認
+- 材料織り込み度：株価が既にニュースを織り込んでいるか否かを判断
 """)
 
     # 5. アナリスト評価
     if analyst_data and analyst_data.get('available'):
         from src.analyst_ratings import format_analyst_for_prompt
+        consensus = analyst_data.get('consensus', {})
+        price_target = analyst_data.get('price_target', {})
+        
+        analyst_section = format_analyst_for_prompt(analyst_data)
+        
+        # アップサイド/ダウンサイドを明示
+        upside = price_target.get('upside_pct', 0) if price_target else 0
+        target_mean = price_target.get('target_mean') if price_target else None
+        
         sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【アナリスト評価・コンセンサス】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{format_analyst_for_prompt(analyst_data)}
+{analyst_section}
 
+【アナリスト評価の分析ヒント】
+- コンセンサス：{consensus.get('signal', 'NEUTRAL')}（スコア：{consensus.get('score', 5):.1f}/10）
+- 目標株価アップサイド：{upside:+.1f}%（平均目標：${target_mean if target_mean else 'N/A'}）
+- 注目点：直近の変更（アップグレード/ダウングレード）の方向性
+- 予想 EPS 成長率：アナリスト予想のコンセンサス成長率を確認
 """)
 
     # 6. 業界動向
     if industry_data and industry_data.get('available'):
         from src.industry_trends import format_industry_for_prompt
+        overview = industry_data.get('overview', {})
+        peer_comp = industry_data.get('peer_comparison', {})
+        
+        industry_section = format_industry_for_prompt(industry_data)
+        
+        # 業界成長率とポジショニングを明示
+        cagr = overview.get('growth_rate_cagr', 'N/A')
+        positioning = peer_comp.get('competitive_positioning', '')
+        
         sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【業界動向・競合比較】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{format_industry_for_prompt(industry_data)}
+{industry_section}
 
+【業界分析のヒント】
+- 業界成長率（CAGR）：{cagr}
+- 競争ポジショニング：{positioning[:50] if positioning else 'N/A'}...
+- 注目点：業界の成長ドライバーと企業の強みの整合性
+- バリュエーション比較：同業他社との PER/PBR 比較で割安・割高を判断
 """)
 
     # 7. 分析タスク
@@ -172,21 +213,31 @@ def build_enhanced_prompt_with_data(
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 以下の 3 点について詳細に分析し、投資判断を導出してください：
 
-1. 総合評価
-   - 定量データ（財務・テクニカル）と定性データ（ニュース・アナリスト評価）の整合性
-   - 業界動向に対する会社のポジショニング
-   - 現在のバリュエーション水準の妥当性
+1. 総合評価（定量×定性のクロスチェック）
+   - 財務指標（ROE, PER, PBR, 営業利益率）の業界平均との比較
+   - テクニカル指標（RSI, 移動平均乖離率）からのエントリータイミング
+   - ニュースセンチメントと株価のモメンタムの整合性
+   - アナリスト評価とコンセンサスの方向性
+   - 業界動向に対する会社の競争ポジショニング
 
-2. 投資判断の根拠
-   - BUY/WATCH/SELL の推奨と、その確信度
-   - 向こう 12 ヶ月の主要カタリストとリスク
-   - エントリー・利確・損切りの具体的な価格水準
+2. 投資判断の根拠（具体的な数値で示す）
+   - BUY/WATCH/SELL の推奨と、その確信度（0-1）
+   - 向こう 12 ヶ月の主要カタリスト（具体的なイベント名と時期）
+   - 主要リスク要因と発生確率、影響度
+   - エントリー・利確・損切りの具体的な価格水準（根拠も記載）
+   - 適正ポジションサイズ（ポートフォリオの何%か）
 
-3. シナリオ分析
-   - ベースケース（確率 50-60%）
-   - ブルケース（確率 20-30%）
-   - ベアケース（確率 20-30%）
-   - 各シナリオでの目標株価と期間
+3. シナリオ分析（確率付きで具体性を持って）
+   - ベースケース（確率 50-60%）：コンセンサス通りの場合
+   - ブルケース（確率 20-30%）：好材料が実現した場合
+   - ベアケース（確率 20-30%）：悪材料が実現した場合
+   - 各シナリオでの目標株価と期間、トリガー
+
+【重要】
+- 個別銘柄のアルファ（固有要因）と、ベータ（市場要因）を区別して分析
+- 直近の株価材料（決算、発表等）を必ず考慮
+- リスク要因は「発生確率」と「影響度」を明記
+- 数値は具体的な根拠（例：「PER 12 倍は業界平均 15 倍より 20% 割安」）を示す
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【出力形式】
