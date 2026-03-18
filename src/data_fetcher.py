@@ -434,12 +434,12 @@ def _fetch_yf_with_retry(ticker: str, as_of_date: datetime = None):
     
     if as_of_date:
         try:
-            hist = yf.download(ticker, period="3y", progress=False)
+            hist = yf.download(ticker, period="3y", progress=False, auto_adjust=True)
             if hist.empty:
                  hist = stock.history(period="3y")
         except Exception:
             try:
-                hist = yf.download(ticker, period="2y", progress=False)
+                hist = yf.download(ticker, period="2y", progress=False, auto_adjust=True)
             except Exception:
                  return None, None
         

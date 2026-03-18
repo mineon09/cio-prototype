@@ -42,6 +42,13 @@ except ImportError:
 # 1 token ≈ 4 chars; プロンプトのオーバーヘッド (~500 tokens) を差し引いた安全値
 _GROQ_MAX_CHARS = 30_000
 
+# セクション抽出モジュール
+try:
+    from .sec_parser import extract_sections as _extract_sections
+    HAS_SEC_PARSER = True
+except ImportError:
+    HAS_SEC_PARSER = False
+
 # SEC キャッシュ・チャンク解析（利用可能な場合のみ）
 try:
     from pathlib import Path as _Path
@@ -51,6 +58,7 @@ try:
         _sys.path.insert(0, _project_root)
     from sec_cache import SecCache as _SecCache
     from sec_analyzer_patch import analyze_10k_with_groq_chunked as _chunked_groq
+    from sec_analyzer_patch import inject_warning_into_prompt  # noqa: F401
     _sec_cache = _SecCache()
     HAS_SEC_CACHE = True
 except ImportError:
@@ -188,6 +196,18 @@ def _download_filing_text(filing: dict, max_chars: int = 80000) -> str | None:
         text = re.sub(r'\s+', ' ', text).strip()
 
         # セクション抽出: Risk Factors + MD&A
+        # 方式1: sec_parser を使用（TOC vs 本文を正しく区別）
+        if HAS_SEC_PARSER:
+            parsed = _extract_sections(text, max_total=60_000, max_1a=30_000, max_7=30_000)
+            if parsed["extraction_success"] and parsed["total_chars"] > 5000:
+                sections = []
+                if parsed["1a"]:
+                    sections.append("【Risk Factors】\n" + parsed["1a"])
+                if parsed["7"]:
+                    sections.append("【MD&A】\n" + parsed["7"])
+                return "\n\n".join(sections)[:max_chars]
+
+        # 方式2: フォールバック（従来の正規表現）
         sections = []
 
         # Risk Factors
@@ -286,6 +306,91 @@ def _analyze_sec_with_gemini(text: str, ticker: str) -> dict:
         return result
 
     return {}
+
+
+# Groq 単発解析用プロンプト（セクション抽出済みテキスト向け）
+_GROQ_SINGLE_ANALYSIS_PROMPT = """\
+You are a securities analyst.
+From the following SEC 10-K (Risk Factors / MD&A sections) for {ticker}, \
+extract key qualitative information for investment analysis.
+
+Output MUST be in JSON format. All text values should be in Japanese.
+
+{{
+  "risk_top3": [
+    {{"risk": "リスク名", "severity": "高/中/低", "detail": "株価影響を含む説明"}},
+    {{"risk": "リスク名", "severity": "高/中/低", "detail": "説明"}},
+    {{"risk": "リスク名", "severity": "高/中/低", "detail": "説明"}}
+  ],
+  "moat": {{
+    "type": "ブランド/スイッチングコスト/ネットワーク効果/コスト優位性/規模の経済/なし",
+    "source": "競争優位性の源泉",
+    "durability": "高/中/低",
+    "description": "詳細説明"
+  }},
+  "management_tone": {{
+    "overall": "強気/中立/慎重/弱気",
+    "key_phrases": ["キーフレーズ1", "キーフレーズ2", "キーフレーズ3"],
+    "detail": "経営陣の自信・懸念の要約"
+  }},
+  "rd_focus": [
+    {{"area": "分野名", "detail": "詳細"}},
+    {{"area": "分野名", "detail": "詳細"}},
+    {{"area": "分野名", "detail": "詳細"}}
+  ],
+  "management_challenges": "経営課題の要約（200文字以内）",
+  "summary": "会社の現状と見通しの総括（200文字以内）"
+}}
+
+Output ONLY the JSON object. No other text.
+If information is not found for a field, use empty string or empty list.
+
+Filing text:
+{text}"""
+
+
+def _analyze_sec_with_groq_single(
+    text: str,
+    ticker: str,
+    verbose: bool = True,
+) -> tuple:
+    """
+    セクション抽出済みテキストを Groq に 1 回で送って解析する。
+    チャンク分割・待機は不要。
+
+    Returns
+    -------
+    (analysis_dict, meta)
+    """
+    clean_text = re.sub(r'\s+', ' ', text).strip()
+
+    if verbose:
+        print(f"  🚀 Groq 単発解析: {len(clean_text):,}文字...")
+
+    prompt = _GROQ_SINGLE_ANALYSIS_PROMPT.format(ticker=ticker, text=clean_text)
+    response, _ = call_groq(prompt, parse_json=True)
+
+    result = None
+    if isinstance(response, dict) and response:
+        result = response
+    elif isinstance(response, tuple) and len(response) >= 1:
+        result = response[0] if isinstance(response[0], dict) else None
+
+    meta = {
+        "chunk_count": 1,
+        "total_chars": len(clean_text),
+        "truncated": False,
+        "method": "section_extraction",
+    }
+
+    if result and isinstance(result, dict):
+        if verbose:
+            print(f"  ✅ Groq 単発解析完了")
+        return result, meta
+
+    if verbose:
+        print(f"  ⚠️ Groq 単発解析: パース失敗、空の結果を返します")
+    return {}, meta
 
 
 def extract_sec_data(ticker: str, no_cache: bool = False) -> dict:
@@ -392,8 +497,20 @@ def extract_sec_data(ticker: str, no_cache: bool = False) -> dict:
         "cik": filing['cik'],
     }
 
-    # AI解析: キャッシュ確認 → Gemini → Groq チャンク分割フォールバック
+    # AI解析: キャッシュ確認 → Gemini → Groq セクション抽出＋単発解析フォールバック
     chunking_meta = None
+
+    # Groq フォールバック用にセクション抽出済みテキストを準備
+    groq_fallback_text = text
+    if HAS_SEC_PARSER:
+        sections = _extract_sections(text)
+        if sections["extraction_success"]:
+            groq_fallback_text = sections["combined"]
+            print(f"  ✂️  セクション抽出成功: {sections['total_chars']:,}文字 "
+                  f"(1A: {len(sections['1a']):,}文字 / 7: {len(sections['7']):,}文字)")
+        else:
+            groq_fallback_text = re.sub(r'\s+', ' ', text)[:20_000]
+            print(f"  ⚠️  セクション抽出失敗: 先頭20,000文字にフォールバック")
 
     if HAS_SEC_CACHE and _sec_cache:
         cached = _sec_cache.get_analysis(ticker, filing_date, no_cache=no_cache)
@@ -404,24 +521,19 @@ def extract_sec_data(ticker: str, no_cache: bool = False) -> dict:
         else:
             analysis_result = _analyze_sec_with_gemini(text, ticker)
             if not analysis_result:
-                print(f"  🔀 Groq チャンク解析にフォールバック（{len(text):,}文字）...")
-                analysis_result, chunking_meta = _chunked_groq(text, ticker, verbose=True)
+                print(f"  🔀 Groq 単発解析にフォールバック（{len(groq_fallback_text):,}文字）...")
+                analysis_result, chunking_meta = _analyze_sec_with_groq_single(
+                    groq_fallback_text, ticker, verbose=True
+                )
             if analysis_result and filing_date:
                 _sec_cache.save_analysis(ticker, filing_date, analysis_result, chunking_meta or {})
     else:
         analysis_result = _analyze_sec_with_gemini(text, ticker)
         if not analysis_result:
-            print(f"  🔄 Groq 用にテキストを削減して再試行中（{_GROQ_MAX_CHARS//1000}k文字）...")
-            groq_text = re.sub(r'\s+', ' ', text)[:_GROQ_MAX_CHARS]
-            groq_prompt = _build_sec_analysis_prompt(groq_text, ticker)
-            groq_response = call_groq(groq_prompt, parse_json=True)
-            groq_result = None
-            if isinstance(groq_response, tuple) and len(groq_response) >= 1:
-                groq_result = groq_response[0]
-            elif groq_response and not isinstance(groq_response, tuple):
-                groq_result = groq_response
-            if isinstance(groq_result, dict) and groq_result:
-                analysis_result = groq_result
+            print(f"  🔀 Groq 単発解析にフォールバック（{len(groq_fallback_text):,}文字）...")
+            analysis_result, chunking_meta = _analyze_sec_with_groq_single(
+                groq_fallback_text, ticker, verbose=True
+            )
 
     return {
         "available": True,
