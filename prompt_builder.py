@@ -33,6 +33,15 @@ except ImportError as e:
     logger.error(f"モジュールインポートエラー: {e}")
     raise
 
+# SEC EDGAR（利用可能な場合のみ）
+try:
+    from src.sec_client import extract_sec_data, is_us_stock
+    HAS_SEC = True
+except ImportError:
+    HAS_SEC = False
+    def is_us_stock(ticker): return not str(ticker).endswith('.T')
+    def extract_sec_data(ticker): return {}
+
 
 # ---------------------------------------------------------------------------
 # データクラス: 収集した全データをまとめるコンテナ
@@ -106,13 +115,24 @@ def collect_prompt_data(
     # 実際にはマクロ環境からセクター重みを調整
     sector = data.get("sector", "")
     
-    # 有報データ取得
+    # 有報データ取得（日本株: EDINET, 米国株: SEC）
     yuho_data = {}
     if ticker.endswith('.T'):
         try:
+            logger.info(f"EDINET 有報取得中...")
             yuho_data = extract_yuho_data(ticker)
         except Exception as e:
             logger.warning(f"有報取得エラー: {e}")
+    elif HAS_SEC and is_us_stock(ticker):
+        try:
+            logger.info(f"SEC 10-K/10-Q 取得中...")
+            yuho_data = extract_sec_data(ticker)
+            if yuho_data and yuho_data.get('available'):
+                logger.info("SEC データ取得成功")
+            else:
+                logger.warning("SEC データなし")
+        except Exception as e:
+            logger.warning(f"SEC 取得エラー: {e}")
             
     scorecard = generate_scorecard(
         data.get("metrics", {}),

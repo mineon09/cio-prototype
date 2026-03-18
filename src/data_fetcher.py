@@ -288,8 +288,11 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
 
 def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
     """
-    対象銘柄の競合銘柄、代替資産、ベンチマークをAIに選定させる。
-    マクロ環境が渡された場合、その影響を受けやすい競合や相関銘柄を含めるよう促す。
+    対象銘柄の競合銘柄、代替資産、ベンチマークを選定する。
+    優先順位:
+      1. config.json の sector_competitors（全セクターカバー）
+      2. ハードコードのルールベース（後方互換）
+      3. AI フォールバック（未知セクターのみ）
     """
     ticker = target_data.get('ticker')
     name = target_data.get('name')
@@ -300,8 +303,31 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
     b_count = CONFIG.get("competitor_selection", {}).get("benchmark_count", 2)
 
     is_jp = str(ticker).endswith('.T')
+    regime = (macro_data or {}).get('regime', '')
 
-    if not macro_data and sector:
+    # --- 優先1: config の sector_competitors から取得 ---
+    sc = CONFIG.get("sector_competitors", {})
+    if sector:
+        for sec_key, mapping in sc.items():
+            if sec_key in sector or sector in sec_key:
+                region = "jp" if is_jp else "us"
+                rule = mapping.get(region, {})
+                if rule:
+                    result = {
+                        "direct":     [t for t in rule.get("direct", [])     if t != ticker],
+                        "substitute": [t for t in rule.get("substitute", []) if t != ticker],
+                        "benchmark":  [t for t in rule.get("benchmark", [])  if t != ticker],
+                        "reasoning":  f"{sector}セクター標準構成（ルールベース）",
+                        "ai_model":   "Rule-based (config)",
+                    }
+                    # マクロ情報を reasoning に追記（AI不要でも文脈を残す）
+                    if regime and regime not in ('NEUTRAL', 'UNAVAILABLE'):
+                        result["reasoning"] += f" ／ マクロレジーム: {regime}"
+                    print(f"🚀 [Rules] 比較対象をルールベースで選定中... ({sector}, {region})")
+                    return result
+
+    # --- 優先2: ハードコードルール（後方互換） ---
+    if sector:
         rule_result = None
         if "Technology" in sector:
             if is_jp:
@@ -324,10 +350,13 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
             for cat in ["direct", "substitute", "benchmark"]:
                 rule_result[cat] = [t for t in rule_result[cat] if t != ticker]
 
-            rule_result["reasoning"] = f"{sector}セクターの代表的な構成（API節約）"
+            rule_result["reasoning"] = f"{sector}セクターの代表的な構成（ルールベース）"
+            if regime and regime not in ('NEUTRAL', 'UNAVAILABLE'):
+                rule_result["reasoning"] += f" ／ マクロレジーム: {regime}"
             rule_result["ai_model"] = "Rule-based"
             return rule_result
 
+    # --- 優先3: AI フォールバック（未知セクター） ---
     macro_text = ""
     if macro_data and macro_data.get("regime"):
         macro_text = f"現在のマクロ環境は '{macro_data['regime']}' です。この環境下で特に比較的重要となる競合、あるいは逆相関・ヘッジ先となる銘柄を優先的に含めてください。"
@@ -355,7 +384,7 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
 
 ※出力は有効なJSONのみ、余計な解説文は不要。米国株はティッカーのみ、日本株は.Tを付けること。yfinanceでデータ取得可能な実在するティッカーシンボルのみを使用してください（例: 日経平均は ^N225、TOPIXには必ず 1306.T を使用してください）。
 """
-    print(f"🚀 [API] 比較対象を選定中...")
+    print(f"🚀 [API] 比較対象を選定中... (未知セクター: {sector})")
     result, model_name = call_gemini(prompt, parse_json=True)
     
     # デフォルト値
@@ -699,14 +728,22 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         else:
             metrics['per'] = info.get('trailingPE')
             metrics['pbr'] = info.get('priceToBook')
-            # Bug #1 Fix: Prevent double conversion of dividend yield
-            dy_raw = info.get('dividendYield') or 0
-            if dy_raw > 0:
-                # If dividend yield is unexpectedly high (e.g. >= 1.0 = 100%), it's already a percentage
-                if dy_raw >= 1.0:
-                    metrics['dividend_yield'] = dy_raw
-                else: # Normal small decimal (e.g. 0.0215 -> 2.15)
-                    metrics['dividend_yield'] = dy_raw * 100
+            # Bug #2 Fix: yfinance's dividendYield can return incorrect values (e.g. payout ratio).
+            # Use trailingAnnualDividendYield (decimal) as primary source, then compute from
+            # dividendRate/price, and fall back to dividendYield only as last resort.
+            dy_trailing = info.get('trailingAnnualDividendYield') or 0
+            dy_rate = info.get('dividendRate') or 0
+            dy_yield = info.get('dividendYield') or 0
+            if dy_trailing > 0:
+                metrics['dividend_yield'] = round(dy_trailing * 100, 2)
+            elif dy_rate > 0 and current_price and current_price > 0:
+                metrics['dividend_yield'] = round(dy_rate / current_price * 100, 2)
+            elif dy_yield > 0:
+                # dy_yield >= 1.0 means already in percentage form (e.g. 2.93 = 2.93%)
+                if dy_yield >= 1.0:
+                    metrics['dividend_yield'] = round(dy_yield, 2)
+                else:
+                    metrics['dividend_yield'] = round(dy_yield * 100, 2)
             else:
                 metrics['dividend_yield'] = 0
 
@@ -743,6 +780,12 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
             technical['ma25'] = round(closes.rolling(window=25).mean().iloc[-1], 2)
         if len(closes) >= 75:
             technical['ma75'] = round(closes.rolling(window=75).mean().iloc[-1], 2)
+
+        # Perfect Order: MA5 > MA25 > MA75 (strong uptrend alignment)
+        if all(k in technical for k in ('ma5', 'ma25', 'ma75')):
+            technical['perfect_order'] = bool(
+                technical['ma5'] > technical['ma25'] > technical['ma75']
+            )
 
         # ボリンジャーバンド (20, 2)
         if len(closes) >= 20:

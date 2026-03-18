@@ -27,13 +27,35 @@ SEC_HEADERS = {
     "Accept": "application/json",
 }
 
-# Gemini（data_fetcherから借用）
+# Gemini / Groq（data_fetcherから借用）
 try:
-    from .data_fetcher import call_gemini
+    from .data_fetcher import call_gemini, call_groq
 except ImportError:
     def call_gemini(prompt, parse_json=False):
         print("⚠️ Gemini API 未設定（SEC定性分析スキップ）")
         return None
+    def call_groq(prompt, parse_json=False):
+        print("⚠️ Groq API 未設定（SEC定性分析スキップ）")
+        return None, None
+
+# Groq の無料tier TPM 制限 (~12,000 tokens) に収まる文字数の上限
+# 1 token ≈ 4 chars; プロンプトのオーバーヘッド (~500 tokens) を差し引いた安全値
+_GROQ_MAX_CHARS = 30_000
+
+# SEC キャッシュ・チャンク解析（利用可能な場合のみ）
+try:
+    from pathlib import Path as _Path
+    import sys as _sys
+    _project_root = str(_Path(__file__).parent.parent)
+    if _project_root not in _sys.path:
+        _sys.path.insert(0, _project_root)
+    from sec_cache import SecCache as _SecCache
+    from sec_analyzer_patch import analyze_10k_with_groq_chunked as _chunked_groq
+    _sec_cache = _SecCache()
+    HAS_SEC_CACHE = True
+except ImportError:
+    HAS_SEC_CACHE = False
+    _sec_cache = None
 
 
 def is_us_stock(ticker: str) -> bool:
@@ -68,20 +90,26 @@ def _get_latest_filing(cik: str, form_type: str = "10-K") -> dict | None:
         resp.raise_for_status()
         data = resp.json()
 
+        entity_name = data.get('name', '')
+
         recent = data.get('filings', {}).get('recent', {})
         forms = recent.get('form', [])
         dates = recent.get('filingDate', [])
         accessions = recent.get('accessionNumber', [])
         primary_docs = recent.get('primaryDocument', [])
+        report_dates = recent.get('reportDate', [])
 
         for i, form in enumerate(forms):
             if form == form_type:
+                report_date = report_dates[i] if i < len(report_dates) else ''
                 return {
                     'form': form,
                     'date': dates[i],
+                    'report_date': report_date,
                     'accession': accessions[i].replace('-', ''),
                     'primary_doc': primary_docs[i],
                     'cik': cik,
+                    'entity_name': entity_name,
                 }
         return None
     except Exception as e:
@@ -199,19 +227,9 @@ def _download_filing_text(filing: dict, max_chars: int = 80000) -> str | None:
         return None
 
 
-def _analyze_sec_with_gemini(text: str, ticker: str) -> dict:
-    """
-    SEC 10-K/10-Q のテキストを Gemini で解析し、
-    score_qualitative が期待する構造化データを返す。
-    edinet_client._analyze_yuho_with_gemini と同等の出力形式。
-    """
-    if not text:
-        return {}
-
-    # トークン数削減のため圧縮
-    clean_text = re.sub(r'\s+', ' ', text)[:80000]
-
-    prompt = f"""
+def _build_sec_analysis_prompt(text: str, ticker: str) -> str:
+    """SEC解析プロンプトを生成する（テキストサイズ可変）"""
+    return f"""
 You are a securities analyst.
 From the following SEC 10-K/10-Q filing text for {ticker}, extract key qualitative information for investment analysis.
 Output MUST be in JSON format. All text values should be in Japanese.
@@ -237,29 +255,40 @@ Output MUST be in JSON format. All text values should be in Japanese.
 6. summary (str): Summary of company's current state and outlook (Japanese, 200 chars max).
 
 【Filing Text】
-{clean_text}
+{text}
     """
+
+
+def _analyze_sec_with_gemini(text: str, ticker: str) -> dict:
+    """
+    SEC 10-K/10-Q のテキストを Gemini で解析し、
+    score_qualitative が期待する構造化データを返す。
+    edinet_client._analyze_yuho_with_gemini と同等の出力形式。
+    Gemini 失敗時は空の dict を返す（Groq フォールバックは呼び出し元で処理）。
+    """
+    if not text:
+        return {}
+
+    # Gemini 用: 80k文字まで（約20k tokens）
+    clean_text = re.sub(r'\s+', ' ', text)[:80000]
+    prompt = _build_sec_analysis_prompt(clean_text, ticker)
 
     print(f"  🧠 Gemini で 10-K/10-Q を解析中（テキストサイズ: {len(clean_text)//1000}k文字）...")
     response = call_gemini(prompt, parse_json=True)
 
-    if not response:
-        return {}
-
-    # call_gemini returns (result, model_name) or just result
-    if isinstance(response, tuple) and len(response) >= 2:
-        result, model_name = response[0], response[1]
-    elif isinstance(response, tuple) and len(response) == 1:
+    result = None
+    if isinstance(response, tuple) and len(response) >= 1:
         result = response[0]
-    else:
+    elif response and not isinstance(response, tuple):
         result = response
 
-    if isinstance(result, dict):
+    if isinstance(result, dict) and result:
         return result
+
     return {}
 
 
-def extract_sec_data(ticker: str) -> dict:
+def extract_sec_data(ticker: str, no_cache: bool = False) -> dict:
     """
     米国株の SEC 10-K / 10-Q を取得し、
     生テキストを返す（AI解析は最終レポート生成時に一括で行う）。
@@ -291,39 +320,108 @@ def extract_sec_data(ticker: str) -> dict:
     # レート制限（SEC は 10req/sec が上限）
     time.sleep(0.2)
 
-    # テキスト取得
-    text = _download_filing_text(filing)
+    filing_date = filing.get('date', '')
+
+    # テキスト取得（キャッシュ優先）
+    text = None
+    if HAS_SEC_CACHE and _sec_cache:
+        text = _sec_cache.get_text(ticker, filing_date, no_cache=no_cache)
+        if text:
+            print(f"  ✅ 10-K テキストキャッシュ使用: {ticker}_{filing_date}")
+
+    if text is None:
+        text = _download_filing_text(filing)
+        if HAS_SEC_CACHE and _sec_cache and text and filing_date:
+            _sec_cache.save_text(ticker, filing_date, text)
+
     if not text:
         return {"available": False}
 
     print(f"  📝 テキスト取得: {len(text):,} 文字")
 
-    # 最初の10万文字からリスクセクション（Item 1A）を探す
-    filing_text = text # Use the downloaded text
-    filing_text = filing_text.replace("\n", " ")
-    risk_start = filing_text.find("Item 1A.")
-    if risk_start == -1:
-        risk_start = filing_text.find("ITEM 1A.")
-    
-    filing_summary = ""
-    if risk_start != -1:
-        # リスクセクション周辺を抽出
-        filing_summary = filing_text[risk_start:risk_start+10000]
+    # raw_text の選定: _download_filing_text が既にセクション抽出済みの場合はそのまま使用。
+    # そうでなければ "Item 1A." を検索して Risk Factors 周辺を抽出する。
+    # XBRL タクソノミ URL（"http://fasb.org/..." 等）を含む行はプロンプトへの混入を防ぐためスキップする。
+    if text.startswith("【Risk Factors】") or text.startswith("【MD&A】"):
+        # _download_filing_text が構造化テキストを返した場合はそのまま利用
+        filing_summary = text[:10000]
     else:
-        # 見つらなければ冒頭
-        filing_summary = filing_text[:10000]
+        filing_text = text.replace("\n", " ")
+        risk_start = filing_text.find("Item 1A.")
+        if risk_start == -1:
+            risk_start = filing_text.find("ITEM 1A.")
+        if risk_start != -1:
+            filing_summary = filing_text[risk_start:risk_start + 10000]
+        else:
+            filing_summary = filing_text[:10000]
 
-    # doc_info を構築 (filing と form_type から)
+    # XBRL タクソノミ URI を含む行を除去して可読性を高める
+    xbrl_pattern = re.compile(r'https?://[^\s]+#\w+')
+    clean_lines = [line for line in filing_summary.splitlines()
+                   if not xbrl_pattern.search(line)]
+    filing_summary = " ".join(clean_lines).strip()
+    # 連続スペースを圧縮
+    filing_summary = re.sub(r'\s{3,}', '  ', filing_summary)
+
+    # doc_info を構築（format_yuho_for_prompt が期待するキーを含む）
+    submit_date = filing.get('date', '')
+    report_date = filing.get('report_date', '')
+    entity_name = filing.get('entity_name', ticker.upper())
+    # 期間情報: report_date があればそれを period_end に使用、なければ submit_date から推定
+    if report_date:
+        period_end = report_date
+        # 10-K は通常12ヶ月間なので period_start は period_end の1年前
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            pe = _dt.strptime(report_date, '%Y-%m-%d')
+            period_start = (pe.replace(year=pe.year - 1) + _td(days=1)).strftime('%Y-%m-%d')
+        except Exception:
+            period_start = ''
+    else:
+        period_end = submit_date
+        period_start = ''
+
     doc_info = {
         "form": form_type,
-        "date": filing['date'],
+        "filer_name": entity_name,
+        "submit_date": submit_date,
+        "period_start": period_start,
+        "period_end": period_end,
         "accession": filing['accession'],
         "primary_doc": filing['primary_doc'],
         "cik": filing['cik'],
     }
 
-    # AI解析: 生テキストから構造化データ（リスク・堀・経営陣トーン等）を抽出
-    analysis_result = _analyze_sec_with_gemini(text, ticker)
+    # AI解析: キャッシュ確認 → Gemini → Groq チャンク分割フォールバック
+    chunking_meta = None
+
+    if HAS_SEC_CACHE and _sec_cache:
+        cached = _sec_cache.get_analysis(ticker, filing_date, no_cache=no_cache)
+        if cached:
+            print(f"  ✅ 10-K 解析キャッシュ使用: {ticker}_{filing_date}")
+            analysis_result = cached.get("analysis", {})
+            chunking_meta = cached.get("meta")
+        else:
+            analysis_result = _analyze_sec_with_gemini(text, ticker)
+            if not analysis_result:
+                print(f"  🔀 Groq チャンク解析にフォールバック（{len(text):,}文字）...")
+                analysis_result, chunking_meta = _chunked_groq(text, ticker, verbose=True)
+            if analysis_result and filing_date:
+                _sec_cache.save_analysis(ticker, filing_date, analysis_result, chunking_meta or {})
+    else:
+        analysis_result = _analyze_sec_with_gemini(text, ticker)
+        if not analysis_result:
+            print(f"  🔄 Groq 用にテキストを削減して再試行中（{_GROQ_MAX_CHARS//1000}k文字）...")
+            groq_text = re.sub(r'\s+', ' ', text)[:_GROQ_MAX_CHARS]
+            groq_prompt = _build_sec_analysis_prompt(groq_text, ticker)
+            groq_response = call_groq(groq_prompt, parse_json=True)
+            groq_result = None
+            if isinstance(groq_response, tuple) and len(groq_response) >= 1:
+                groq_result = groq_response[0]
+            elif groq_response and not isinstance(groq_response, tuple):
+                groq_result = groq_response
+            if isinstance(groq_result, dict) and groq_result:
+                analysis_result = groq_result
 
     return {
         "available": True,
@@ -335,6 +433,7 @@ def extract_sec_data(ticker: str) -> dict:
         "rd_focus": analysis_result.get("rd_focus", []),
         "management_challenges": analysis_result.get("management_challenges", ""),
         "summary": analysis_result.get("summary", "SEC 10-K/10-Q Raw Text Extracted"),
+        "chunking_meta": chunking_meta,
     }
 
 

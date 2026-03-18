@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 
 try:
-    from .data_fetcher import call_gemini
+    from .data_fetcher import call_groq
 except ImportError:
-    from data_fetcher import call_gemini
+    from data_fetcher import call_groq
 
 
 # セクター定義
@@ -140,7 +140,7 @@ Use recent data from the past 3 months. Output in Japanese.
     
     try:
         print(f"  🌐 {sector_name_jp} 業界の動向を調査中...")
-        result, model = call_gemini(prompt, parse_json=True, use_search=True)
+        result, model = call_groq(prompt, parse_json=True)
         
         if isinstance(result, dict):
             return {
@@ -207,7 +207,7 @@ Output in Japanese.
 """
     
     try:
-        result, _ = call_gemini(prompt, parse_json=True)
+        result, _ = call_groq(prompt, parse_json=True)
         
         if isinstance(result, dict):
             return {
@@ -268,7 +268,7 @@ If specific dates are unknown, provide estimates based on historical patterns.
 """
     
     try:
-        result, _ = call_gemini(prompt, parse_json=True, use_search=True)
+        result, _ = call_groq(prompt, parse_json=True)
         
         if isinstance(result, list):
             return {
@@ -294,32 +294,120 @@ def fetch_all_industry_data(
     peers: List[str] = None
 ) -> Dict:
     """
-    全ての業界データを収集
-    
+    全ての業界データを1回の Gemini 呼び出しで収集する。
+    （旧実装: 3回 → 新実装: 1回、精度維持のため1プロンプトに統合）
+
     Parameters
     ----------
     ticker       : 銘柄コード
     sector       : セクター
     company_name : 会社名
     peers        : 競合他社リスト
-    
-    Returns
-    -------
-    統合業界データ
     """
     print(f"  🏭 {sector} 業界の分析を開始...")
-    
-    overview = fetch_industry_overview(sector, company_name, ticker)
-    peer_comparison = fetch_peer_comparison(ticker, sector, peers)
-    catalysts = fetch_catalyst_calendar(ticker, company_name)
-    
-    return {
-        "available": True,
-        "overview": overview,
-        "peer_comparison": peer_comparison,
-        "catalysts": catalysts,
-        "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
+
+    sector_info = SECTOR_MAPPING.get(sector, {})
+    sector_name_jp = sector_info.get("name_jp", sector)
+    name = company_name or ticker
+    peers_context = f"特に以下の競合他社と比較：{', '.join(peers[:5])}" if peers else ""
+
+    # ── 3つのプロンプトを1つに統合（use_search=True で最新情報を取得） ──
+    prompt = f"""
+You are a senior investment analyst. Analyze {name} ({ticker}) and its industry ({sector_name_jp}).
+Use the latest available data (past 3 months) via search.
+
+{peers_context}
+
+Return a SINGLE JSON object with the following three sections:
+
+{{
+  "overview": {{
+    "sector_name_jp": "日本語セクター名",
+    "sector_name_en": "{sector}",
+    "growth_rate_cagr": "数値（%）または範囲（例：「8-12%」）",
+    "growth_drivers": [
+      {{"driver": "要因名", "impact": "high/medium/low", "description": "説明（日本語）"}}
+    ],
+    "risks": [
+      {{"risk": "リスク名", "impact": "high/medium/low", "description": "説明（日本語）"}}
+    ],
+    "competitive_landscape": "競争環境の説明（日本語 200 文字）",
+    "regulatory_environment": "規制環境の説明（日本語 150 文字）",
+    "technology_trends": ["トレンド 1", "トレンド 2", "トレンド 3"],
+    "valuation_context": "バリュエーション状況（日本語 100 文字）",
+    "outlook": "業界展望（日本語 200 文字）"
+  }},
+  "peer_comparison": {{
+    "valuation_vs_peers": "higher/lower/inline",
+    "valuation_commentary": "バリュエーション比較（日本語 100 文字）",
+    "profitability_vs_peers": "superior/average/inferior",
+    "profitability_commentary": "収益性比較（日本語 100 文字）",
+    "growth_vs_peers": "faster/inline/slower",
+    "growth_commentary": "成長性比較（日本語 100 文字）",
+    "financial_health_vs_peers": "stronger/average/weaker",
+    "financial_health_commentary": "財務健全性比較（日本語 100 文字）",
+    "competitive_positioning": "総合的な競争ポジション（日本語 150 文字）",
+    "key_differentiators": ["差別化要因 1", "差別化要因 2"]
+  }},
+  "catalysts": [
+    {{
+      "event": "イベント名（日本語）",
+      "expected_date": "YYYY-MM-DD または YYYY-Q# または「未定」",
+      "type": "earnings/product/regulatory/other",
+      "importance": "high/medium/low",
+      "description": "説明（日本語 100 文字）",
+      "potential_impact": "positive/negative/mixed"
+    }}
+  ]
+}}
+
+Rules:
+- growth_drivers: top 3-5 items
+- risks: top 3-5 items
+- catalysts: next 12 months, up to 5 items
+- All text fields must be in Japanese
+- Output ONLY valid JSON. No markdown, no explanation.
+"""
+
+    try:
+        print(f"  🌐 {sector_name_jp} 業界の動向を調査中... (Groq 統合1回)")
+        result, model = call_groq(prompt, parse_json=True)
+
+        if not isinstance(result, dict):
+            raise ValueError(f"期待するdictではありません: {type(result)}")
+
+        # 各サブセクションを既存の戻り値形式に合わせて組み立て
+        overview_raw = result.get("overview", {})
+        peer_raw = result.get("peer_comparison", {})
+        catalysts_raw = result.get("catalysts", [])
+
+        overview = {"available": bool(overview_raw), **overview_raw,
+                    "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        peer_comparison = {"available": bool(peer_raw), **peer_raw}
+        catalysts_list = catalysts_raw if isinstance(catalysts_raw, list) else []
+        catalysts = {"available": bool(catalysts_list), "catalysts": catalysts_list[:5]}
+
+        return {
+            "available": True,
+            "overview": overview,
+            "peer_comparison": peer_comparison,
+            "catalysts": catalysts,
+            "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    except Exception as e:
+        print(f"  ⚠️ 業界動向（統合）取得エラー: {e} → 個別取得にフォールバック")
+        # フォールバック：個別取得（Groq）
+        overview = fetch_industry_overview(sector, company_name, ticker)
+        peer_comparison = fetch_peer_comparison(ticker, sector, peers)
+        catalysts = fetch_catalyst_calendar(ticker, company_name)
+        return {
+            "available": True,
+            "overview": overview,
+            "peer_comparison": peer_comparison,
+            "catalysts": catalysts,
+            "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
 
 def format_industry_for_prompt(industry_data: Dict) -> str:

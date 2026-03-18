@@ -17,6 +17,7 @@ __pycache__/
 env/
 venv/
 ENV/
+prompts/
 
 # Debug and Logs
 debug_*
@@ -35,6 +36,7 @@ data/*.db
 # Data and Cache
 data/cache/
 data/results.json
+cache/
 
 # Verification Artifacts
 result_*.json

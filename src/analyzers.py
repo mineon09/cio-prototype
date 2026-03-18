@@ -206,8 +206,9 @@ def score_fundamental(metrics: dict, sector: str = "") -> dict:
         count += 1
 
     # CF品質 (Operating CF / Net Income)
+    # 金融セクターは銀行業務の性質上 CF/NI 比率が異常値になりやすいためスキップ
     cf = _safe(metrics.get('cf_quality'))
-    if cf is not None and cf > 0:
+    if cf is not None and cf > 0 and profile_name != "financial":
         cf_excellent = THRESHOLDS["fundamental"].get("cf_quality_excellent", 1.5)
         if cf >= cf_excellent:
             s = 9
@@ -745,13 +746,20 @@ def score_qualitative(yuho_data: dict) -> dict:
     """
     if not yuho_data or not yuho_data.get("available"):
         reason = yuho_data.get("reason", "有報データなし") if yuho_data else "有報データなし"
+        # 生テキストがあれば「取得済み」扱いで 5.0 を返す（スキップではない）
+        if yuho_data and yuho_data.get("raw_text"):
+            return {
+                "layer": "Qualitative",
+                "score": 5.0,
+                "details": ["有報/10-K データ取得済み（AI 解析は最終レポートで実施）"],
+                "data_points": 1,
+            }
         return {
             "layer": "Qualitative",
             "score": 5.0,
             "details": [f"定性分析スキップ（{reason}）"],
             "data_points": 0,
         }
-
     parts = []
     total = 0.0
     count = 0
@@ -793,7 +801,7 @@ def score_qualitative(yuho_data: dict) -> dict:
         total += _clamp(s)
         count += 1
 
-        risk_names = [r.get("risk", "不明") for r in risks[:3]]
+        risk_names = [r.get("risk", "不明") if isinstance(r, dict) else str(r) for r in risks[:3]]
         parts.append(f"  主要リスク: {', '.join(risk_names)}")
 
     # R&D 注力分野（あれば加点）
@@ -983,9 +991,15 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
 
 def format_yuho_for_prompt(yuho_data: dict) -> str:
     """
-    有報解析結果をGeminiプロンプトに注入するテキスト形式に変換。
+    有報解析結果を Gemini プロンプトに注入するテキスト形式に変換。
+    生テキストがあれば、それも必ず含める（AI 解析がなくても Gemini が直接解析可能）。
     """
-    if not yuho_data or not yuho_data.get("available"):
+    if not yuho_data:
+        return ""
+    
+    # available が false でも raw_text があれば処理を続行
+    has_raw_text = bool(yuho_data.get("raw_text"))
+    if not yuho_data.get("available") and not has_raw_text:
         return ""
 
     lines = ["【有価証券報告書分析】"]
@@ -1044,6 +1058,17 @@ def format_yuho_for_prompt(yuho_data: dict) -> str:
     summary = yuho_data.get("summary")
     if summary:
         lines.append(f"〈アナリスト要約〉{summary}")
+
+
+    # 生テキストがあれば追加（AI 解析が失敗した場合のフォールバック）
+    if has_raw_text:
+        raw = yuho_data["raw_text"]
+        # トークン超過防止のため、出力は最大1000文字に制限
+        limit = 1000
+        if len(raw) > limit:
+            lines.append(f"〈有報/10-K 生テキスト（抜粋）〉{raw[:limit]}\n...(中略)...")
+        else:
+            lines.append(f"〈有報/10-K 生テキスト〉{raw}")
 
     return "\n".join(lines)
 

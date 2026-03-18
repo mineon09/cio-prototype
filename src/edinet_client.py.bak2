@@ -440,7 +440,7 @@ def extract_yuho_data(ticker: str) -> dict:
     """
     メインフローから呼ばれるエントリーポイント。
     日本株ティッカーから有報メタデータを取得する（AI解析は最終レポートで一括）。
-    非日本株やエラー時も生テキストだけは返すようフォールバック改善。
+    非日本株やエラー時は空辞書を返す。
     """
     if not is_japanese_stock(ticker):
         return {"available": False, "reason": "非日本株のためEDINET対象外"}
@@ -472,11 +472,6 @@ def extract_yuho_data(ticker: str) -> dict:
 
     # キャッシュがなければフルスキャン
     if not doc_info:
-        # API キーチェックをここに移動（キャッシュはキー不要のため）
-        if not _get_edinet_key():
-            print("  ⚠️ EDINET_API_KEY 未設定 — キャッシュもありません")
-            return {"available": False, "reason": "EDINET_API_KEY 未設定"}
-        
         doc_info = find_latest_yuho(sec_code)
         # 結果をキャッシュ保存
         if doc_info:
@@ -513,11 +508,8 @@ def extract_yuho_data(ticker: str) -> dict:
     else:
         print("  ⚠️ PDFダウンロード失敗")
 
-    # 生テキストがあれば「利用可能」として返す（AI 解析結果がなくても定性分析は可能）
-    has_data = bool(raw_text_extract) or bool(analysis_result)
-    
     return {
-        "available": has_data,
+        "available": True,
         "doc_info": doc_info,
         "risk_top3": analysis_result.get("risk_top3", []),
         "moat": analysis_result.get("moat", {
@@ -530,7 +522,7 @@ def extract_yuho_data(ticker: str) -> dict:
         "management_challenges": analysis_result.get("management_challenges", ""),
         "summary": analysis_result.get("summary", ""),
         # 必要に応じて生テキストの冒頭/重要部分を渡すことも可能だが、サイズに注意
-        "raw_text": raw_text_extract[:20000] if raw_text_extract else ""
+        "raw_text": raw_text_extract[:10000] if raw_text_extract else ""
     }
 
 

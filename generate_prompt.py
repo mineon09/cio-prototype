@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-generate_prompt.py - 投資判断用プロンプト生成ツール（強化版）
+generate_prompt.py - 投資判断用プロンプト生成ツール（高品質・最小 API 版）
 =====================================================
 銘柄コードを指定するだけで、LLM 用の投資判断プロンプトを生成します。
 
-定性情報（ニュース、アナリスト評価、業界動向）を自動取得して
-プロンプトに埋め込むことで、より精度の高い分析が可能になります。
+スコアカード（Fundamental, Valuation, Technical, Qualitative）と
+マクロレジーム分析をベースにした高品質なプロンプトを生成します。
 
 使い方:
     ./venv/bin/python3 generate_prompt.py 7203.T
-    ./venv/bin/python3 generate_prompt.py AAPL --output prompt.txt
-    ./venv/bin/python3 generate_prompt.py 7203.T --copy  # クリップボードにコピー
-    ./venv/bin/python3 generate_prompt.py AMAT --enhanced  # 定性情報あり
+    ./venv/bin/python3 generate_prompt.py AAPL -o custom_prompt.txt
+    ./venv/bin/python3 generate_prompt.py XOM --copy  # クリップボードにコピー
 """
 
 import argparse
@@ -20,7 +19,195 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
+
+# デフォルト出力ディレクトリ
+DEFAULT_OUTPUT_DIR = Path(__file__).parent / "prompts"
+DEFAULT_OUTPUT_DIR.mkdir(exist_ok=True)
+
+# SEC EDGAR（利用可能な場合のみ）
+try:
+    from src.sec_client import extract_sec_data, is_us_stock
+    HAS_SEC = True
+except ImportError:
+    HAS_SEC = False
+    def is_us_stock(ticker): return not str(ticker).endswith('.T')
+    def extract_sec_data(ticker): return {}
+
+
+def format_scorecard_text(scorecard: dict) -> str:
+    """スコアカードをテキスト形式に整形"""
+    fund = scorecard.get("fundamental", {})
+    val = scorecard.get("valuation", {})
+    tech = scorecard.get("technical", {})
+    qual = scorecard.get("qualitative", {})
+
+    lines = [
+        f"  Fundamental  (地力)  : {fund.get('score', 'N/A'):>4} / 10",
+        f"  Valuation  (割安度)  : {val.get('score', 'N/A'):>4} / 10",
+        f"  Technical  (タイミング): {tech.get('score', 'N/A'):>4} / 10",
+        f"  Qualitative (定性)   : {qual.get('score', 'N/A'):>4} / 10",
+        f"  ─────────────────────────────",
+        f"  総合スコア            : {scorecard.get('total_score', 'N/A'):>4} / 10",
+        f"  シグナル              : 【{scorecard.get('signal', '---')}】",
+    ]
+
+    # サブ指標があれば補足
+    for axis_name, axis_dict in [("Fundamental", fund), ("Valuation", val),
+                                  ("Technical", tech), ("Qualitative", qual)]:
+        details = axis_dict.get("details", [])
+        if details:
+            lines.append(f"\n  [{axis_name} 詳細]")
+            if isinstance(details, list):
+                for v in details:
+                    lines.append(f"    {v}")
+            elif isinstance(details, dict):
+                for k, v in details.items():
+                    lines.append(f"    {k}: {v}")
+
+    return "\n".join(lines)
+
+
+def build_high_quality_prompt(
+    ticker: str,
+    company_name: str,
+    sector: str,
+    as_of_date: str,
+    regime: str,
+    regime_weights: dict,
+    scorecard: dict,
+    financial_metrics: dict,
+    technical_data: dict,
+    yuho_summary: str = None,
+) -> str:
+    """
+    高品質な投資分析プロンプトを生成
+    （prompt_builder.py.bak の構造をベースに改善）
+    """
+    # ウェイト取得
+    w_fund = regime_weights.get("fundamental", 0.30)
+    w_val = regime_weights.get("valuation", 0.25)
+    w_tech = regime_weights.get("technical", 0.25)
+    w_qual = regime_weights.get("qualitative", 0.20)
+
+    # スコアカードテキスト
+    scorecard_text = format_scorecard_text(scorecard)
+
+    # 財務指標の詳細
+    metrics = financial_metrics
+    fundamentals_detail = f"""
+  ROE            : {metrics.get('roe', 'N/A')}%
+  PER            : {metrics.get('per', 'N/A')}倍
+  PBR            : {metrics.get('pbr', 'N/A')}倍
+  営業利益率     : {metrics.get('op_margin', 'N/A')}%
+  自己資本比率   : {metrics.get('equity_ratio', 'N/A')}%
+  配当利回り     : {metrics.get('dividend_yield', 'N/A')}%
+  営業 CF/純利益 : {metrics.get('cf_quality', 'N/A')}
+  R&D 比率       : {metrics.get('rd_ratio', 'N/A')}%
+"""
+
+    # テクニカル指標の詳細
+    tech_detail = f"""
+  現在価格       : {technical_data.get('current_price', 'N/A')}
+  RSI(14)        : {technical_data.get('rsi', 'N/A')}
+  MA25 乖離率    : {technical_data.get('ma25_deviation', 'N/A')}%
+  BB 位置        : {technical_data.get('bb_position', 'N/A')}%
+  出来高比率     : {technical_data.get('volume_ratio', 'N/A')}
+  Perfect Order  : {technical_data.get('perfect_order', 'N/A')}
+"""
+
+    # 有報サマリー
+    yuho_section = yuho_summary if yuho_summary else "（有報データは取得されていません）"
+
+    prompt = f"""あなたはシニア・エクイティ・アナリストです。
+以下の個別銘柄データセットに基づき、Investment Thesis を策定してください。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. 基本情報・マクロ環境
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+銘柄名 / コード  : {company_name} ({ticker})
+セクター         : {sector}
+分析基準日       : {as_of_date}
+市場レジーム     : {regime}
+適用ウェイト     :
+  Fundamental  : {w_fund:.0%}
+  Valuation    : {w_val:.0%}
+  Technical    : {w_tech:.0%}
+  Qualitative  : {w_qual:.0%}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. 財務指標詳細
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{fundamentals_detail}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. テクニカル指標
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{tech_detail}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. スコアカード概要 (10 点満点)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{scorecard_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. 定性データ・有価証券報告書要約
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{yuho_section}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. 分析タスク
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+以下の 3 点について詳細に論じてください。
+
+(1) スコアの背後にある定性・定量の整合性判定
+    数値上のファンダメンタルズ/バリュエーションと、有報が示す
+    「経営リスク」「競争優位性」に矛盾はないか。
+    「地力」と「定性」スコアの乖離がある場合、その要因を推測せよ。
+
+(2) 市場レジーム ({regime}) に対する脆弱性と機会
+    現在のマクロ環境（金利・為替・地政学リスク等）が
+    このビジネスモデルにプラス/マイナスどちらに働くか。
+    テクニカル指標との乖離から読み取れる変化はないか。
+
+(3) 主要なアップサイド・ダウンサイドシナリオ（向こう 12 ヶ月）
+    株価を動かす最大のカタリストは何か。
+    投資を回避・ポジション縮小すべき最優先リスクは何か。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+7. 出力形式
+━━━━━━━━━━━━━━━━━━━━━━━━━
+■ コア・ピッチ（200 文字以内）
+  投資すべきか否かの結論と核心的理由。
+
+■ 深掘り分析（各項目 300〜500 文字程度）
+  上記タスク (1)(2)(3) の論述。
+
+■ 最終レーティング
+  [強く推奨 / 推奨 / 中立 / 回避] と目標レンジの方向感。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+8. JSON 出力（必須）
+━━━━━━━━━━━━━━━━━━━━━━━━━
+最後に、以下の JSON 形式で投資判断を出力してください：
+
+```json
+{{
+    "signal": "BUY",
+    "score": 7.5,
+    "confidence": 0.8,
+    "reasoning": "判断理由を 200 文字以内で記載",
+    "entry_price": 100.0,
+    "stop_loss": 90.0,
+    "take_profit": 120.0,
+    "position_size": 0.1,
+    "holding_period": "medium",
+    "risks": ["リスク要因 1", "リスク要因 2"],
+    "catalysts": ["カタリスト 1", "カタリスト 2"]
+}}
+```
+"""
+    return prompt
 
 
 def build_simple_prompt(ticker: str, name: str = None):
@@ -78,335 +265,135 @@ def build_simple_prompt(ticker: str, name: str = None):
     return prompt
 
 
-def build_enhanced_prompt_with_data(
-    ticker: str,
-    company_name: str = None,
-    sector: str = None,
-    financial_data: Dict = None,
-    technical_data: Dict = None,
-    news_data: Dict = None,
-    analyst_data: Dict = None,
-    industry_data: Dict = None,
-) -> str:
+def collect_data_minimal(ticker: str, use_cache: bool = True) -> tuple:
     """
-    全ての定性情報を含む完全版プロンプトを生成
+    最小限の API 呼び出しで必要なデータを収集
+    キャッシュ優先で効率的に取得
+
+    Returns
+    -------
+    (data_dict, api_calls_count, yuho_summary)
     """
-    name = company_name or ticker
-    current_date = datetime.now().strftime("%Y年%m月%d日")
+    api_calls = 0
+    cache = None
+    yuho_summary = "（有報データ未取得）"
 
-    # セクション構築
-    sections = []
+    if use_cache:
+        from src.data_cache import get_cache
+        cache = get_cache()
 
-    # 1. 基本情報
-    sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【基本情報】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-銘柄名          : {name} ({ticker})
-セクター        : {sector or 'Unknown'}
-分析基準日      : {current_date}
-""")
+    # 株価データ取得（キャッシュ優先）
+    cache_result = None
+    if cache:
+        cache_result = cache.get(ticker, "stock_data", ttl_hours=1.0)
 
-    # 2. 財務指標
-    if financial_data and financial_data.get('metrics'):
-        m = financial_data['metrics']
-        sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【財務指標】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ROE            : {m.get('roe', 'N/A')}%
-  PER            : {m.get('per', 'N/A')}倍
-  PBR            : {m.get('pbr', 'N/A')}倍
-  営業利益率     : {m.get('op_margin', 'N/A')}%
-  自己資本比率   : {m.get('equity_ratio', 'N/A')}%
-  配当利回り     : {m.get('dividend_yield', 'N/A')}%
-  営業 CF/純利益 : {m.get('cf_quality', 'N/A')}
-  R&D 比率       : {m.get('rd_ratio', 'N/A')}%
-""")
+    # キャッシュ構造のアンラップ（cache.get() はラッパーオブジェクトを返す場合がある）
+    if cache_result:
+        if isinstance(cache_result, dict) and 'data' in cache_result:
+            data = cache_result.get('data')
+        else:
+            data = cache_result
+    else:
+        data = None
 
-    # 3. テクニカル指標
-    if technical_data:
-        t = technical_data
-        sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【テクニカル指標】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  現在価格       : {t.get('current_price', 'N/A')}
-  RSI(14)        : {t.get('rsi', 'N/A')}
-  MA25 乖離率    : {t.get('ma25_deviation', 'N/A')}%
-  BB 位置        : {t.get('bb_position', 'N/A')}%
-  出来高比率     : {t.get('volume_ratio', 'N/A')}
-  Perfect Order  : {t.get('perfect_order', 'N/A')}
-""")
-
-    # 4. ニュース・センチメント
-    if news_data and news_data.get('available'):
-        from src.news_fetcher import format_news_for_prompt
-        sentiment = news_data.get('sentiment', {})
-        sentiment_score = sentiment.get('score', 0)
-        sentiment_overall = sentiment.get('overall', 'neutral')
-        
-        # ニュースベースの分析指示を追加
-        news_section = format_news_for_prompt(news_data)
-        
-        # センチメントスコアを数値化して明示
-        sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【ニュース・市場センチメント】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{news_section}
-
-【ニュース分析のヒント】
-- センチメントスコア：{sentiment_score:.2f} （-1〜+1、正=楽観、負=悲観）
-- 総合判断：{sentiment_overall.upper()}
-- 注目点：直近 7 日間のネガティブ/ポジティブニュースの偏りを確認
-- 材料織り込み度：株価が既にニュースを織り込んでいるか否かを判断
-""")
-
-    # 5. アナリスト評価
-    if analyst_data and analyst_data.get('available'):
-        from src.analyst_ratings import format_analyst_for_prompt
-        consensus = analyst_data.get('consensus', {})
-        price_target = analyst_data.get('price_target', {})
-        
-        analyst_section = format_analyst_for_prompt(analyst_data)
-        
-        # アップサイド/ダウンサイドを明示
-        upside = price_target.get('upside_pct', 0) if price_target else 0
-        target_mean = price_target.get('target_mean') if price_target else None
-        
-        sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【アナリスト評価・コンセンサス】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{analyst_section}
-
-【アナリスト評価の分析ヒント】
-- コンセンサス：{consensus.get('signal', 'NEUTRAL')}（スコア：{consensus.get('score', 5):.1f}/10）
-- 目標株価アップサイド：{upside:+.1f}%（平均目標：${target_mean if target_mean else 'N/A'}）
-- 注目点：直近の変更（アップグレード/ダウングレード）の方向性
-- 予想 EPS 成長率：アナリスト予想のコンセンサス成長率を確認
-""")
-
-    # 6. 業界動向
-    if industry_data and industry_data.get('available'):
-        from src.industry_trends import format_industry_for_prompt
-        overview = industry_data.get('overview', {})
-        peer_comp = industry_data.get('peer_comparison', {})
-        
-        industry_section = format_industry_for_prompt(industry_data)
-        
-        # 業界成長率とポジショニングを明示
-        cagr = overview.get('growth_rate_cagr', 'N/A')
-        positioning = peer_comp.get('competitive_positioning', '')
-        
-        sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【業界動向・競合比較】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{industry_section}
-
-【業界分析のヒント】
-- 業界成長率（CAGR）：{cagr}
-- 競争ポジショニング：{positioning[:50] if positioning else 'N/A'}...
-- 注目点：業界の成長ドライバーと企業の強みの整合性
-- バリュエーション比較：同業他社との PER/PBR 比較で割安・割高を判断
-""")
-
-    # 7. 分析タスク
-    sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【分析タスク】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-以下の 3 点について詳細に分析し、投資判断を導出してください：
-
-1. 総合評価（定量×定性のクロスチェック）
-   - 財務指標（ROE, PER, PBR, 営業利益率）の業界平均との比較
-   - テクニカル指標（RSI, 移動平均乖離率）からのエントリータイミング
-   - ニュースセンチメントと株価のモメンタムの整合性
-   - アナリスト評価とコンセンサスの方向性
-   - 業界動向に対する会社の競争ポジショニング
-
-2. 投資判断の根拠（具体的な数値で示す）
-   - BUY/WATCH/SELL の推奨と、その確信度（0-1）
-   - 向こう 12 ヶ月の主要カタリスト（具体的なイベント名と時期）
-   - 主要リスク要因と発生確率、影響度
-   - エントリー・利確・損切りの具体的な価格水準（根拠も記載）
-   - 適正ポジションサイズ（ポートフォリオの何%か）
-
-3. シナリオ分析（確率付きで具体性を持って）
-   - ベースケース（確率 50-60%）：コンセンサス通りの場合
-   - ブルケース（確率 20-30%）：好材料が実現した場合
-   - ベアケース（確率 20-30%）：悪材料が実現した場合
-   - 各シナリオでの目標株価と期間、トリガー
-
-【重要】
-- 個別銘柄のアルファ（固有要因）と、ベータ（市場要因）を区別して分析
-- 直近の株価材料（決算、発表等）を必ず考慮
-- リスク要因は「発生確率」と「影響度」を明記
-- 数値は具体的な根拠（例：「PER 12 倍は業界平均 15 倍より 20% 割安」）を示す
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【出力形式】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-以下の JSON 形式で**必ず**出力してください。
-
-```json
-{{
-    "signal": "BUY",
-    "score": 7.5,
-    "confidence": 0.85,
-    "reasoning": "現在の市場環境、業界展望、企業業績を踏まえた判断理由を 300 文字以内で記載",
-    "industry_outlook": "業界の将来性についての見解を 100 文字以内",
-    "competitive_position": "競争地位の評価を 100 文字以内",
-    "entry_price": 340.0,
-    "stop_loss": 300.0,
-    "take_profit": 400.0,
-    "position_size": 0.12,
-    "holding_period": "medium",
-    "time_horizon": "12-18 months",
-    "key_catalysts": [
-        {{
-            "event": "次四半期決算発表",
-            "expected_timing": "2026Q2",
-            "impact": "high",
-            "probability": 0.8
-        }},
-        {{
-            "event": "新製品発表",
-            "expected_timing": "2026Q3",
-            "impact": "medium",
-            "probability": 0.6
-        }}
-    ],
-    "key_risks": [
-        {{
-            "risk": "半導体サイクルの下落局面入り",
-            "impact": "high",
-            "mitigation": "ポートフォリオの分散とヘッジ"
-        }},
-        {{
-            "risk": "中国規制強化",
-            "impact": "medium",
-            "mitigation": "地域別売上のモニタリング"
-        }}
-    ],
-    "scenario_analysis": {{
-        "bull_case": {{
-            "target": 450.0,
-            "probability": 0.25,
-            "scenario": "AI 需要の継続とシェア拡大で EPS がコンセンサス 15% 上振れ"
-        }},
-        "base_case": {{
-            "target": 380.0,
-            "probability": 0.50,
-            "scenario": "コンセンサス通りの成長、バリュエーションは現状維持"
-        }},
-        "bear_case": {{
-            "target": 280.0,
-            "probability": 0.25,
-            "scenario": "景気後退で半導体投資が減少、マージン圧迫"
-        }}
-    }},
-    "esg_factors": {{
-        "environmental": "環境面の評価と課題",
-        "social": "社会面の評価と課題",
-        "governance": "ガバナンス面の評価と課題"
-    }}
-}}
-```
-
-【各フィールドの説明】
-- signal: "BUY"（推奨）, "WATCH"（様子見）, "SELL"（売却）のいずれか
-- score: 0-10 の総合スコア（10 が最強）
-- confidence: 0-1 の信頼度（1 が最高）
-- reasoning: 判断理由（300 文字以内）
-- industry_outlook: 業界展望（100 文字以内）
-- competitive_position: 競争地位（100 文字以内）
-- entry_price: 推奨エントリー価格
-- stop_loss: 損切り価格
-- take_profit: 利確価格
-- position_size: ポジションサイズ（0.0-1.0）
-- holding_period: "short" (数日), "medium" (数週間), "long" (数ヶ月〜)
-- time_horizon: 投資期間の見通し
-- key_catalysts: 株価上昇のカタリスト（最大 5 件）
-- key_risks: リスク要因と緩和策（最大 5 件）
-- scenario_analysis: シナリオ別目標株価と確率
-- esg_factors: ESG 評価
-""")
-
-    return "\n".join(sections)
-
-
-def build_full_prompt(ticker: str, include_qualitative: bool = True):
-    """
-    完全版プロンプトを生成（データ取得あり）
-    
-    Parameters
-    ----------
-    ticker             : 銘柄コード
-    include_qualitative: ニュース・アナリスト・業界データを含むか
-    """
-    print(f"📈 株価データ取得中...")
-    try:
-        from src.data_fetcher import fetch_stock_data
-        data = fetch_stock_data(ticker)
-    except Exception as e:
-        print(f"⚠️ データ取得失敗：{e}")
-        return build_simple_prompt(ticker)
+    if data is None:
+        try:
+            from src.data_fetcher import fetch_stock_data
+            data = fetch_stock_data(ticker)
+            api_calls = 1
+            if cache and data:
+                cache.set(ticker, "stock_data", data, ttl_hours=1.0)
+        except Exception as e:
+            print(f"⚠️ データ取得失敗：{e}")
+            return None, api_calls, yuho_summary
 
     if not data or not data.get('metrics'):
-        return build_simple_prompt(ticker)
+        print(f"⚠️ 財務データが取得できませんでした")
+        return None, api_calls, yuho_summary
 
     # スコアカード生成
-    print(f"📊 スコアカード生成中...")
     try:
         from src.analyzers import generate_scorecard
-        scorecard = generate_scorecard(
-            data.get('metrics', {}),
-            data.get('technical', {}),
-            sector=data.get('sector', ''),
+        from src.macro_regime import get_macro_regime
+        from src.utils import load_config_with_overrides
+
+        # マクロレジーム取得（軽量）
+        config = load_config_with_overrides(ticker)
+        regime = get_macro_regime(datetime.now(), config, ticker=ticker)
+
+        # 財務指標
+        metrics = data.get('metrics', {})
+        tech_data = data.get('technical', {})
+        sector = data.get('sector', '')
+
+        # 有報データ（日本株: EDINET, 米国株: SEC）
+        yuho_data = {}
+        sec_chunking_meta = None
+        if ticker.endswith('.T'):
+            try:
+                from src.edinet_client import extract_yuho_data
+                from src.analyzers import format_yuho_for_prompt
+                yuho_data = extract_yuho_data(ticker)
+                yuho_summary = format_yuho_for_prompt(yuho_data)
+            except Exception as e:
+                yuho_summary = f"（有報データ取得エラー: {e}）"
+        elif HAS_SEC and is_us_stock(ticker):
+            try:
+                from src.analyzers import format_yuho_for_prompt
+                yuho_data = extract_sec_data(ticker, no_cache=not use_cache)
+                yuho_summary = format_yuho_for_prompt(yuho_data)
+                if not yuho_data or not yuho_data.get('available'):
+                    yuho_summary = "（SEC 10-K/10-Q データなし）"
+                sec_chunking_meta = yuho_data.get('chunking_meta') if isinstance(yuho_data, dict) else None
+            except Exception as e:
+                yuho_summary = f"（SEC 取得エラー: {e}）"
+                sec_chunking_meta = None
+
+        # スコアカード生成
+        buy_threshold = (
+            config.get("signals", {})
+                  .get("BUY", {})
+                  .get("regime_overrides", {})
+                  .get(regime, {})
+                  .get("min_score", config.get("signals", {}).get("BUY", {}).get("min_score", 6.5))
         )
-    except:
-        scorecard = {'total_score': 5.0, 'scores': {}}
 
-    # 定性情報の取得
-    news_data = None
-    analyst_data = None
-    industry_data = None
+        scorecard = generate_scorecard(
+            metrics,
+            tech_data,
+            yuho_data,  # 抽出した定性データを反映
+            sector=sector,
+            macro_data={"regime": regime},
+            buy_threshold=buy_threshold,
+        )
 
-    if include_qualitative:
-        try:
-            # ニュース取得
-            from src.news_fetcher import fetch_all_news
-            news_data = fetch_all_news(ticker, company_name=data.get('name'), include_google=True)
-        except Exception as e:
-            print(f"  ⚠️ ニュース取得エラー：{e}")
+        # レジームウェイト取得
+        regime_weights = (
+            config.get("macro", {})
+                  .get("regime_weights", {})
+                  .get(regime, {})
+        )
+        if not regime_weights:
+            regime_weights = {"fundamental": 0.30, "valuation": 0.25, "technical": 0.25, "qualitative": 0.20}
 
-        try:
-            # アナリスト評価取得
-            from src.analyst_ratings import fetch_all_analyst_data
-            analyst_data = fetch_all_analyst_data(ticker)
-        except Exception as e:
-            print(f"  ⚠️ アナリスト評価取得エラー：{e}")
+        # 結果を統合
+        result = {
+            'name': data.get('name', ticker),
+            'sector': sector,
+            'metrics': metrics,
+            'technical': tech_data,
+            'scorecard': scorecard,
+            'regime': regime,
+            'regime_weights': regime_weights,
+            'sec_chunking_meta': sec_chunking_meta,
+        }
 
-        try:
-            # 業界動向取得
-            from src.industry_trends import fetch_all_industry_data
-            industry_data = fetch_all_industry_data(
-                ticker,
-                sector=data.get('sector', 'Technology'),
-                company_name=data.get('name'),
-            )
-        except Exception as e:
-            print(f"  ⚠️ 業界動向取得エラー：{e}")
+        return result, api_calls, yuho_summary
 
-    # 強化版プロンプト生成
-    prompt = build_enhanced_prompt_with_data(
-        ticker=ticker,
-        company_name=data.get('name'),
-        sector=data.get('sector'),
-        financial_data=data,
-        technical_data=data.get('technical', {}),
-        news_data=news_data,
-        analyst_data=analyst_data,
-        industry_data=industry_data,
-    )
-
-    return prompt
+    except Exception as e:
+        print(f"⚠️ 分析エラー：{e}")
+        # エラー時は基本データのみ使用
+        return None, api_calls, yuho_summary
 
 
 def copy_to_clipboard(text: str) -> bool:
@@ -419,18 +406,22 @@ def copy_to_clipboard(text: str) -> bool:
         return False
 
 
+def generate_output_filename(ticker: str) -> str:
+    """自動生成される出力ファイル名"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_ticker = ticker.replace('.', '_')
+    return f"{safe_ticker}_{timestamp}.txt"
+
+
 def main():
-    parser = argparse.ArgumentParser(description='LLM 用投資判断プロンプトを生成')
-    parser.add_argument('ticker', help='銘柄コード（例：7203.T, AAPL）')
-    parser.add_argument('-o', '--output', help='出力ファイルパス')
+    parser = argparse.ArgumentParser(description='LLM 用投資判断プロンプトを生成（高品質版）')
+    parser.add_argument('ticker', help='銘柄コード（例：7203.T, AAPL, XOM）')
+    parser.add_argument('-o', '--output', help=f'出力ファイルパス（指定がない場合は prompts/ 配下に自動保存）')
     parser.add_argument('--copy', action='store_true', help='クリップボードにコピー')
     parser.add_argument('--simple', action='store_true', help='簡易モード（データ取得なし）')
-    parser.add_argument('--enhanced', action='store_true',
-                       help='強化モード（ニュース・アナリスト・業界動向を含む）')
-    parser.add_argument('--no-qualitative', action='store_true',
-                       help='定性情報（ニュース等）をスキップ')
-    parser.add_argument('--model', choices=['gemini', 'qwen', 'chatgpt', 'claude'],
-                       default='gemini', help='対象モデル')
+    parser.add_argument('--no-cache', action='store_true', help='キャッシュを使用しない')
+    parser.add_argument('--model', choices=['gemini', 'qwen', 'chatgpt', 'claude', 'groq'],
+                       default='groq', help='対象モデル')
 
     args = parser.parse_args()
 
@@ -439,32 +430,80 @@ def main():
     # プロンプト生成
     if args.simple:
         prompt = build_simple_prompt(args.ticker)
-    elif args.enhanced or not args.no_qualitative:
-        prompt = build_full_prompt(args.ticker, include_qualitative=not args.no_qualitative)
+        api_calls = 0
     else:
-        prompt = build_full_prompt(args.ticker, include_qualitative=False)
+        # 高品質モード：データを収集してプロンプト生成
+        print(f"📊 データ収集中（キャッシュ優先）...")
+        data, api_calls, yuho_summary = collect_data_minimal(
+            args.ticker,
+            use_cache=not args.no_cache
+        )
 
-    # 出力
+        if data is None:
+            print(f"⚠️ データ取得失敗のため、簡易プロンプトを生成します")
+            prompt = build_simple_prompt(args.ticker)
+        else:
+            print(f"📝 プロンプト生成中...")
+            prompt = build_high_quality_prompt(
+                ticker=args.ticker,
+                company_name=data.get('name', args.ticker),
+                sector=data.get('sector', 'Unknown'),
+                as_of_date=datetime.now().strftime("%Y-%m-%d"),
+                regime=data.get('regime', 'NEUTRAL'),
+                regime_weights=data.get('regime_weights', {}),
+                scorecard=data.get('scorecard', {}),
+                financial_metrics=data.get('metrics', {}),
+                technical_data=data.get('technical', {}),
+                yuho_summary=yuho_summary,
+            )
+            # Groq チャンク分割解析が発生した場合は警告をプロンプト冒頭に挿入
+            sec_meta = data.get('sec_chunking_meta') if data else None
+            if sec_meta:
+                try:
+                    from sec_analyzer_patch import inject_warning_into_prompt
+                    prompt = inject_warning_into_prompt(prompt, sec_meta)
+                except ImportError:
+                    pass
+
+    # 出力先決定
+    output_path = args.output
+    if output_path is None:
+        # デフォルト：prompts/ ディレクトリに自動保存
+        filename = generate_output_filename(args.ticker)
+        output_path = str(DEFAULT_OUTPUT_DIR / filename)
+
+    # ファイルに保存
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(prompt)
+    print(f"✅ 保存先：{output_path}")
+
+    # クリップボードコピー
     if args.copy:
         if copy_to_clipboard(prompt):
             print(f"✅ クリップボードにコピーしました")
         else:
             print(f"⚠️ クリップボードコピー失敗（pyperclip をインストール：pip install pyperclip）")
 
-    if args.output:
-        with open(args.output, 'w', encoding='utf-8') as f:
-            f.write(prompt)
-        print(f"✅ ファイルに保存：{args.output}")
-
-    if not args.output and not args.copy:
-        print(f"\n{'='*60}")
-        print(prompt)
-        print(f"{'='*60}")
+    # 画面表示
+    print(f"\n{'='*60}")
+    print(prompt)
+    print(f"{'='*60}")
 
     print(f"\n💡 使用方法:")
     print(f"   1. 上記プロンプトをコピー")
     print(f"   2. {args.model.upper()} のチャットに貼り付け")
     print(f"   3. 実行して投資判断を取得")
+
+    # API 呼び出し状況
+    if api_calls > 0:
+        print(f"\n📊 API 呼び出し：{api_calls}回（株価データ）")
+    else:
+        print(f"\n✅ API 呼び出しなし（キャッシュまたは簡易モード）")
+
+    print(f"\n💡 ヒント:")
+    print(f"   --simple    : データ取得なし（最速）")
+    print(f"   --no-cache  : 最新データ取得（API 呼び出しあり）")
+    print(f"   -o <path>   : 出力先を指定")
 
 
 if __name__ == '__main__':

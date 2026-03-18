@@ -378,7 +378,7 @@ PBR: 低いほど割安。1倍割れは資産価値以下。
     if model_name:
         report += f"\n\n(分析エンジン: {model_name})"
 
-    return report, table_str, model_name
+    return report, table_str, model_name, rec_pct
 
 
 # ==========================================
@@ -443,50 +443,44 @@ def run(ticker: str, strategy: str = "long"):
     else:
         print(f"ℹ️ 有価証券報告書の取得をスキップ")
 
-    # ── 日本株ニュース取得（Gemini google_search） ──
-    if is_japanese_stock(ticker) and not target_data.get('news'):
-        print(f"  📰 {ticker} 日本語ニュースを検索中...")
-        _news_cache_dir = os.path.join("data", "cache", "news")
-        os.makedirs(_news_cache_dir, exist_ok=True)
-        _news_cache_file = os.path.join(_news_cache_dir, f"{ticker}_{datetime.now().strftime('%Y%m%d')}.json")
-
-        # 当日キャッシュ確認
-        if os.path.exists(_news_cache_file):
-            try:
-                with open(_news_cache_file, "r", encoding="utf-8") as f:
-                    cached_news = json.load(f)
-                target_data['news'] = cached_news
-                print(f"  ⚡ ニュースキャッシュ使用: {len(cached_news)}件")
-            except Exception:
-                pass
-
-        if not target_data.get('news'):
-            news_prompt = f"""
-{ticker}（{target_data.get('name', '')}）に関する直近7日間のニュースを検索し、
-以下の形式で最大8件返してください。JSONのみ出力。
-
-[
-  {{"date": "MM/DD", "title": "ニュースタイトル", "source": "メディア名", "sentiment": "positive/neutral/negative"}}
-]
-
-投資判断に関連するもの（決算、格付け変更、規制、M&A、経営陣発言等）を優先してください。
-"""
-            news_raw, _ = call_gemini(news_prompt, parse_json=True, use_search=True)
-
-            if news_raw and isinstance(news_raw, list):
-                target_data['news'] = [
-                    f"[{n.get('date','')}] {n.get('title','')} ({n.get('source','')})"
-                    for n in news_raw if n.get('title')
-                ]
-                print(f"  ✅ ニュース取得: {len(target_data['news'])}件")
-                # 当日キャッシュ保存
-                try:
-                    with open(_news_cache_file, "w", encoding="utf-8") as f:
-                        json.dump(target_data['news'], f, ensure_ascii=False)
-                except Exception:
-                    pass
+    # ── ニュース取得（Gemini google_search） ──
+    # 日本株・米国株問わずニュースを取得
+    if not target_data.get('news'):
+        print(f"  📰 {ticker} のニュースを検索中...")
+        try:
+            from src.news_fetcher import fetch_all_news
+            
+            # 過去 14 日分のニュースを取得
+            news_data = fetch_all_news(
+                ticker=ticker,
+                company_name=target_data.get('name', ''),
+                include_google=True,
+                yf_limit=5,
+                google_limit=10,
+                google_days=14
+            )
+            
+            # ニュースを文字列リストに変換
+            all_news = news_data.get('all_news', [])
+            if all_news:
+                target_data['news'] = []
+                for n in all_news[:10]:
+                    date = n.get('published_at', '')[:10] if n.get('published_at') else ''
+                    title = n.get('title', '')
+                    source = n.get('publisher', '') or n.get('source', '')
+                    if title:
+                        target_data['news'].append(f"[{date}] {title} ({source})")
+                print(f"  ✅ ニュース取得：{len(target_data['news'])}件")
+                
+                # センチメント情報も保存
+                sentiment = news_data.get('sentiment', {})
+                target_data['news_sentiment'] = sentiment
             else:
                 print(f"  ⚠️ ニュース取得失敗（スキップ）")
+                target_data['news'] = []
+        except Exception as e:
+            print(f"  ⚠️ ニュース取得エラー：{e}")
+            target_data['news'] = []
 
     # ── DCF理論株価算出 ──
     dcf_data = {}
@@ -530,7 +524,7 @@ def run(ticker: str, strategy: str = "long"):
     if summary_text:
         print(f"\n{summary_text}")
 
-    report, table_str, model_name = analyze_all(
+    report, table_str, model_name, rec_pct = analyze_all(
         ticker, all_data, competitors,
         yuho_data=yuho_data, scorecard=scorecard,
         macro_data=macro_data, dcf_data=dcf_data,
@@ -545,7 +539,8 @@ def run(ticker: str, strategy: str = "long"):
 
     # ── ダッシュボード用JSON出力（履歴蓄積型） ──
     save_to_dashboard_json(ticker, target_data, scorecard, report,
-                           dcf_data=dcf_data, macro_data=macro_data, model_name=model_name)
+                           dcf_data=dcf_data, macro_data=macro_data, model_name=model_name,
+                           rec_pct=rec_pct)
 
     print("\n" + "="*60 + "\n" + report + "\n" + "="*60)
     return report
@@ -609,7 +604,7 @@ def run_strategy_analysis(ticker, strategy, base_scorecard, macro_data, config):
 
 
 def save_to_dashboard_json(ticker, target_data, scorecard, report,
-                           dcf_data=None, macro_data=None, model_name=None):
+                           dcf_data=None, macro_data=None, model_name=None, rec_pct=None):
     """分析結果をWebダッシュボード用のJSON（履歴蓄積型）に保存する"""
     data_dir = "data"
     if not os.path.exists(data_dir):
@@ -648,7 +643,7 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
                 "weights":    scorecard.get("weights", {}),
                 "signal":     scorecard.get("signal", "WATCH"),
                 "holding":    scorecard.get("signal") == "BUY",       # C-1
-                "position_size": 0.10,                                # C-1
+                "position_size": rec_pct if rec_pct is not None else 0.10,  # 算出済み推奨値を使用
                 "total_score": scorecard.get("total_score", 0),
                 "metrics":    target_data.get("metrics", {}),
                 "technical_data": target_data.get("technical", {}),
