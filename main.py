@@ -138,7 +138,8 @@ def _validate_market_bug_logic(metrics: dict, all_data: dict, target_ticker: str
 
 def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
                 yuho_data: dict = None, scorecard: dict = None,
-                macro_data: dict = None, dcf_data: dict = None) -> tuple[str, str, str]:
+                macro_data: dict = None, dcf_data: dict = None,
+                engine: str = "gemini") -> tuple[str, str, str]:
     labels = {
         'op_margin':     '営業利益率(%)',
         'net_margin':    '純利益率(%)',
@@ -349,7 +350,16 @@ PBR: 低いほど割安。1倍割れは資産価値以下。
 """
     # 日本株の場合は google_search ツールを有効化（yfinanceニュースが日本株ではほぼ空のため）
     is_jp = target_ticker.endswith('.T')
-    report, model_name = call_gemini(prompt, use_search=is_jp)
+    if engine == "copilot":
+        try:
+            from src.copilot_client import call_github_models
+            print(f"🤖 [GitHub Models] gpt-4o で分析中...")
+            report, model_name = call_github_models(prompt, model="gpt-4o")
+        except RuntimeError as e:
+            print(f"  ⚠️ GitHub Models 失敗（Gemini に切り替え）: {e}")
+            report, model_name = call_gemini(prompt, use_search=is_jp)
+    else:
+        report, model_name = call_gemini(prompt, use_search=is_jp)
 
     # Bug #3: AI出力の事後矛盾チェック
     if report and report != "分析失敗":
@@ -385,7 +395,7 @@ PBR: 低いほど割安。1倍割れは資産価値以下。
 # メインフロー
 # ==========================================
 
-def run(ticker: str, strategy: str = "long"):
+def run(ticker: str, strategy: str = "long", engine: str = "gemini"):
     print(f"\n{'='*60}\n🚀 {ticker} の司令塔分析を開始 (Professional CIO Edition)\n{'='*60}")
 
     target_data = fetch_stock_data(ticker)
@@ -528,6 +538,7 @@ def run(ticker: str, strategy: str = "long"):
         ticker, all_data, competitors,
         yuho_data=yuho_data, scorecard=scorecard,
         macro_data=macro_data, dcf_data=dcf_data,
+        engine=engine,
     )
 
     # ── 新規出力 (MDとNotion) ──
@@ -729,7 +740,14 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
 
 
 def main():
-    if not os.environ.get('GEMINI_API_KEY'):
+    engine = "gemini"
+    for arg in sys.argv[1:]:
+        if arg.startswith("--engine="):
+            engine = arg.split("=", 1)[1].lower()
+        elif arg == "--engine" and sys.argv.index(arg) + 1 < len(sys.argv):
+            engine = sys.argv[sys.argv.index(arg) + 1].lower()
+
+    if engine != "copilot" and not os.environ.get('GEMINI_API_KEY'):
         print("❌ GEMINI_API_KEY が未設定")
         sys.exit(1)
 
@@ -746,6 +764,10 @@ def main():
             if i + 1 < len(args): 
                 strategy = args[i+1].lower()
                 skip = True
+        elif arg.lower() == '--engine':
+            skip = True  # 次のトークン（エンジン名）をスキップ
+        elif arg.lower().startswith('--engine='):
+            pass  # 既に処理済み
         elif not arg.startswith('--'):
             tickers.append(arg.upper())
 
@@ -765,11 +787,11 @@ def main():
         print("❌ 銘柄コードが入力されていません")
         sys.exit(1)
 
-    print(f"🎯 分析対象: {', '.join(tickers)}")
+    print(f"🎯 分析対象: {', '.join(tickers)}  エンジン: {engine}")
     for i, ticker in enumerate(tickers):
         print(f"\n[{i+1}/{len(tickers)}] {ticker}")
         try:
-            run(ticker, strategy=strategy)
+            run(ticker, strategy=strategy, engine=engine)
         except Exception as e:
             err_msg = str(e)
             print(f"❌ {ticker} 失敗: {err_msg}")

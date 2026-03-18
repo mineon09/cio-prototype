@@ -38,21 +38,27 @@
 
 ```
 .
-├── main.py                    # オーケストレーション＆分析ロジック
-├── edinet_client.py           # EDINET API v2 有報取得モジュール
-├── analyzers.py               # 4軸ルールベーススコアリング
+├── main.py                    # オーケストレーション＆分析ロジック（Gemini 自動分析）
+├── analyze.py                 # GitHub Models API 版（追加 API キー不要）
+├── generate_prompt.py         # プロンプト生成 → Claude 等に手動貼り付け用
+├── save_claude_result.py      # Claude 回答をダッシュボードに取り込む
 ├── config.json                # 設定（閾値・セクタープロファイル）
-├── serve.py                   # ダッシュボード用ローカルサーバー
-├── index.html                 # CIO Intelligence Dashboard
-├── dashboard.css              # ダッシュボードスタイル
-├── dashboard.js               # ダッシュボードロジック
 ├── data/
 │   └── results.json           # 分析結果（自動生成）
+├── prompts/                   # 生成されたプロンプト・コンテキスト保存先
+│   ├── 7203_T_YYYYMMDD.txt    # 生成プロンプト
+│   └── 7203_T_context.json    # スコアカード等コンテキスト（save_claude_result.py が参照）
+├── src/                       # コアモジュール群
+│   ├── data_fetcher.py        # 株価・財務データ取得 + Gemini/Groq API 呼び出し
+│   ├── analyzers.py           # 4軸スコアカード生成
+│   ├── edinet_client.py       # EDINET 有報取得（日本株）
+│   ├── sec_client.py          # SEC 10-K/10-Q 取得（米国株）
+│   ├── macro_regime.py        # マクロ環境レジーム判定
+│   └── copilot_client.py      # GitHub Models API クライアント
+├── web/                       # ダッシュボード UI
 ├── requirements.txt
 ├── .env.example
-├── .gitignore
-└── .github/workflows/
-    └── main.yml               # GitHub Actions（手動実行）
+└── AGENTS.md                  # エージェント作業ルール
 ```
 
 ---
@@ -90,17 +96,105 @@ GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
 
 ## 💻 使い方
 
-### 分析を実行
+### 🥇 推奨: Claude Sonnet で分析（高精度・半自動）
+
+データ収集・プロンプト生成・結果保存は自動。Claude への貼り付けのみ手動。
 
 ```bash
-# 1銘柄
-python main.py 7203.T
+# Step 1: プロンプト生成（スコアカード・財務・テクニカルを自動収集）
+./venv/bin/python3 generate_prompt.py 7203.T --copy
+# → プロンプトがクリップボードにコピー、prompts/7203_T_context.json も自動保存
+
+# Step 2: 【手動】Claude Sonnet (copilot.github.com 等) に貼り付け → 回答全体をコピー
+
+# Step 3: 回答をダッシュボードに自動保存
+./venv/bin/python3 save_claude_result.py 7203.T --from-clipboard
+# → data/results.json に追記（signal / entry / stop / take_profit / risks 等）
+```
+
+**オプション:**
+
+```bash
+# 最新データで再取得（キャッシュ無効）
+./venv/bin/python3 generate_prompt.py 7203.T --copy --no-cache
+
+# 回答をファイルから読み込む
+./venv/bin/python3 save_claude_result.py 7203.T --from-file response.txt
+
+# モデル名を記録（デフォルト: claude-sonnet）
+./venv/bin/python3 save_claude_result.py 7203.T --from-clipboard --model claude-sonnet-4-5
+```
+
+---
+
+### 🤖 完全自動: Gemini / Groq で分析
+
+```bash
+# Gemini 使用（デフォルト）
+./venv/bin/python3 main.py 7203.T
 
 # 複数銘柄
-python main.py 7203.T 8306.T AAPL
+./venv/bin/python3 main.py 7203.T 8306.T AAPL
+```
 
-# 対話モード
-python main.py
+---
+
+### 🆕 analyze.py（GitHub Models API 版 — 追加 API キー不要）
+
+`gh auth login` で GitHub にログイン済みであれば、追加の API キーなしで実行できます。
+
+```bash
+# 基本（gpt-4o で分析）
+./venv/bin/python3 analyze.py AMAT
+
+# 日本株
+./venv/bin/python3 analyze.py 7203.T
+
+# 高速モード（gpt-4o-mini）
+./venv/bin/python3 analyze.py XOM --model gpt-4o-mini
+
+# キャッシュなし（最新データ）
+./venv/bin/python3 analyze.py NVDA --no-cache
+
+# レポートのコピー先を指定
+./venv/bin/python3 analyze.py AMAT -o ~/Desktop/amat_report.md
+```
+
+レポートは `data/reports/YYYYMM/TICKER_date.md` に自動保存されます。
+
+**利用可能モデル（`--model`）:**
+
+| 略称 | 正式名称 | 特徴 |
+|------|---------|------|
+| `gpt-4o` | GPT-4o | 高品質・推奨（デフォルト） |
+| `gpt-4o-mini` | GPT-4o-mini | 高速・低コスト |
+| `llama405b` | Meta-Llama-3.1-405B-Instruct | オープンソース高性能 |
+| `llama70b` | Meta-Llama-3.1-70B-Instruct | バランス型 |
+| `mistral` | Mistral-large-2407 | Mistral 系 |
+
+> **注意**: GitHub Models API では現時点で Claude Sonnet は利用不可。
+> プロンプトのみ生成して手動でコピペする場合は `generate_prompt.py` を使用。
+
+### プロンプト生成のみ（手動貼り付け用・旧フロー）
+
+```bash
+# プロンプト生成 → ファイル保存
+./venv/bin/python3 generate_prompt.py AMAT -o prompt.txt
+```
+
+> **推奨**: `--copy` フラグ + `save_claude_result.py` を使う新フローの方がシステマチック（上記参照）。
+
+### main.py（Gemini / GitHub Models 切り替え版）
+
+```bash
+# Gemini 使用（デフォルト）
+./venv/bin/python3 main.py 7203.T
+
+# GitHub Models (gpt-4o) に切り替え
+./venv/bin/python3 main.py AMAT --engine copilot
+
+# 複数銘柄
+./venv/bin/python3 main.py 7203.T 8306.T AAPL
 ```
 
 ### ダッシュボードを表示

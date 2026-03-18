@@ -477,6 +477,44 @@ def main():
         f.write(prompt)
     print(f"✅ 保存先：{output_path}")
 
+    # コンテキスト JSON を保存（save_claude_result.py が利用）
+    if data is not None and not args.simple:
+        safe_ticker = args.ticker.replace('.', '_')
+        context_path = DEFAULT_OUTPUT_DIR / f"{safe_ticker}_context.json"
+        context = {
+            "ticker": args.ticker,
+            "name": data.get('name', args.ticker),
+            "sector": data.get('sector', 'Unknown'),
+            "currency": "JPY" if args.ticker.endswith('.T') else "USD",
+            "metrics":   data.get('metrics', {}),
+            "technical": data.get('technical', {}),
+            "scorecard": data.get('scorecard', {}),
+            "regime": data.get('regime', 'NEUTRAL'),
+            "regime_weights": data.get('regime_weights', {}),
+            "generated_at": datetime.now().isoformat(),
+        }
+        try:
+            import numpy as np
+
+            class _NpEncoder(json.JSONEncoder):
+                def default(self, obj):
+                    if isinstance(obj, (np.integer,)):  return int(obj)
+                    if isinstance(obj, (np.floating,)): return float(obj)
+                    if isinstance(obj, np.ndarray):     return obj.tolist()
+                    if isinstance(obj, (np.bool_,)):    return bool(obj)
+                    return super().default(obj)
+
+            context_path.write_text(
+                json.dumps(context, indent=2, ensure_ascii=False, cls=_NpEncoder),
+                encoding='utf-8'
+            )
+        except Exception:
+            context_path.write_text(
+                json.dumps(context, indent=2, ensure_ascii=False),
+                encoding='utf-8'
+            )
+        print(f"📋 コンテキスト保存: {context_path}")
+
     # クリップボードコピー
     if args.copy:
         if copy_to_clipboard(prompt):
@@ -489,10 +527,11 @@ def main():
     print(prompt)
     print(f"{'='*60}")
 
-    print(f"\n💡 使用方法:")
-    print(f"   1. 上記プロンプトをコピー")
-    print(f"   2. {args.model.upper()} のチャットに貼り付け")
-    print(f"   3. 実行して投資判断を取得")
+    print(f"\n💡 次のステップ:")
+    print(f"   1. 上記プロンプトを Claude Sonnet 等に貼り付け")
+    print(f"   2. 回答全体をコピー")
+    print(f"   3. 回答をダッシュボードに保存:")
+    print(f"      ./venv/bin/python3 save_claude_result.py {args.ticker} --from-clipboard")
 
     # API 呼び出し状況
     if api_calls > 0:

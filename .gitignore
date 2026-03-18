@@ -18,7 +18,7 @@ env/
 venv/
 ENV/
 prompts/
-
+data/reports/
 # Debug and Logs
 debug_*
 *.log
