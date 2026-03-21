@@ -499,24 +499,24 @@ def extract_yuho_data(ticker: str) -> dict:
     analysis_result = {}
     raw_text_extract = ""
     
+    failure_reason = None
     if pdf_bytes:
         print("  📄 PDFテキスト抽出中...")
         raw_text_extract = _extract_text_from_pdf_bytes(pdf_bytes)
         if raw_text_extract:
             print(f"  ✅ テキスト抽出完了 ({len(raw_text_extract)}文字)")
             analysis_result = _analyze_yuho_with_gemini(raw_text_extract, doc_info.get('filer_name', ''))
-            # 続きの分析（Layer3）のために生テキストの一部（最大2万文字程度）を保持する手もあるが、
-            # ここで構造化データにしてしまった方が扱いやすい。
-            # 今回はフォーマット済みの analysis_result を優先使用する。
         else:
-            print("  ⚠️ テキスト抽出失敗または空")
+            print("  ⚠️ テキスト抽出失敗または空（画像PDF・スキャンPDFの可能性）")
+            failure_reason = "PDFテキスト抽出失敗（画像PDF等）"
     else:
         print("  ⚠️ PDFダウンロード失敗")
+        failure_reason = "PDFダウンロード失敗"
 
-    # 生テキストがあれば「利用可能」として返す（AI 解析結果がなくても定性分析は可能）
+    # 生テキストまたはAI解析結果があれば「利用可能」
     has_data = bool(raw_text_extract) or bool(analysis_result)
-    
-    return {
+
+    result = {
         "available": has_data,
         "doc_info": doc_info,
         "risk_top3": analysis_result.get("risk_top3", []),
@@ -529,9 +529,12 @@ def extract_yuho_data(ticker: str) -> dict:
         "rd_focus": analysis_result.get("rd_focus", []),
         "management_challenges": analysis_result.get("management_challenges", ""),
         "summary": analysis_result.get("summary", ""),
-        # 必要に応じて生テキストの冒頭/重要部分を渡すことも可能だが、サイズに注意
-        "raw_text": raw_text_extract[:20000] if raw_text_extract else ""
+        "raw_text": raw_text_extract[:20000] if raw_text_extract else "",
     }
+    # 失敗した場合は reason を付与（score_qualitative のメッセージに使われる）
+    if not has_data and failure_reason:
+        result["reason"] = failure_reason
+    return result
 
 
 # ==========================================

@@ -68,6 +68,98 @@ def format_scorecard_text(scorecard: dict) -> str:
     return "\n".join(lines)
 
 
+def _sector_context(sector: str) -> str:
+    """セクター別の評価注意事項を返す（LLMへのコンテキスト補足）"""
+    s = (sector or "").lower()
+    if any(k in s for k in ["financial", "bank", "insurance"]):
+        return (
+            "【金融セクター評価注意】\n"
+            "  - 自己資本比率 4〜6% は銀行の Basel III Tier1 基準内で正常（一般事業会社と異なる）\n"
+            "  - 営業 CF/純利益 は金融業では意味が薄い（貸出・運用キャッシュフローが主）\n"
+            "  - NIM（純利ざや）・信用コスト比率・CET1 比率が本質的指標\n"
+            "  - 金利上昇局面は NIM 拡大でプラス、信用コスト増加リスクとのバランスを評価せよ\n"
+            "  - PBR 1.0 倍前後が銀行の妥当圏（ROE と資本コストの関係で判断）"
+        )
+    if any(k in s for k in ["technology", "software", "semiconductor"]):
+        return (
+            "【テクノロジーセクター評価注意】\n"
+            "  - R&D 比率 10〜20% が典型的な成長投資水準\n"
+            "  - PER 30〜50 倍でも成長率次第で割高とは言えない（PEG 比率で補完せよ）\n"
+            "  - フリーキャッシュフローマージンが利益の質を示す最重要指標\n"
+            "  - 受注残・ARR・NRR などの SaaS 指標があれば優先評価せよ"
+        )
+    if any(k in s for k in ["energy", "oil", "gas"]):
+        return (
+            "【エネルギーセクター評価注意】\n"
+            "  - 原油・天然ガス価格サイクルに業績が強く連動する\n"
+            "  - 設備投資（CAPEX）サイクルと FCF 利回りが重要\n"
+            "  - 環境規制・エネルギー転換リスクを中長期シナリオに必ず織り込め"
+        )
+    if any(k in s for k in ["consumer", "retail", "auto"]):
+        return (
+            "【消費財・自動車セクター評価注意】\n"
+            "  - 景気後退時の需要弾力性（必需品 vs 耐久財）を区別せよ\n"
+            "  - 在庫サイクル・供給網（半導体・原材料）の状況を確認\n"
+            "  - EV 移行・脱炭素コストは長期ダウンサイドシナリオに含めよ"
+        )
+    return ""
+
+
+def _regime_context(regime: str, sector: str) -> str:
+    """市場レジーム別の分析フォーカスを返す"""
+    s = (sector or "").lower()
+    is_financial = any(k in s for k in ["financial", "bank", "insurance"])
+
+    if regime == "RISK_OFF":
+        base = (
+            "【RISK_OFF レジーム — 分析フォーカス】\n"
+            "  ✓ バランスシート強度（自己資本比率・純負債/EBITDA）を最優先評価\n"
+            "  ✓ 配当維持能力・自社株買い余力の確認\n"
+            "  ✓ ディフェンシブな収益源（サブスクリプション・必需品需要）があるか\n"
+            "  ✗ 高 PER 成長株・高レバレッジ銘柄は割引率上昇でバリュエーション毀損リスク\n"
+            "  ✗ 景気敏感セクターは業績下方修正リスクに注意"
+        )
+        if is_financial:
+            base += (
+                "\n  ★ 金融株特記: 信用スプレッド拡大→貸倒引当金増加リスク、"
+                "一方で長期金利高止まりなら NIM はプラス。両面を定量評価せよ"
+            )
+        return base
+    if regime == "RISK_ON":
+        return (
+            "【RISK_ON レジーム — 分析フォーカス】\n"
+            "  ✓ 成長率・モメンタム・アップサイドカタリストを重視\n"
+            "  ✓ テクニカルトレンド（MA アライメント・出来高確認）が追い風になりやすい\n"
+            "  ✓ 市場 Beta の高い銘柄は超過リターンが期待できる\n"
+            "  ✗ 過熱シグナル（RSI>70, BB上抜け）には利確タイミングに注意"
+        )
+    if regime in ("RATE_HIKE", "YIELD_INVERSION"):
+        base = (
+            f"【{regime} レジーム — 分析フォーカス】\n"
+            "  ✓ 高金利環境で恩恵を受けるセクター（金融・エネルギー）を優位に評価\n"
+            "  ✓ 短期債務比率・借り換えリスクを確認\n"
+            "  ✗ 高バリュエーション・長デュレーション資産の割引率感応度に注意\n"
+            "  ✗ 逆イールドが続く場合は景気後退先行指標として織り込め"
+        )
+        if is_financial:
+            base += "\n  ★ 金融株特記: NIM 拡大がプラス。ただし信用コスト増加と相殺される可能性に注意"
+        return base
+    if regime == "RATE_CUT":
+        return (
+            "【RATE_CUT レジーム — 分析フォーカス】\n"
+            "  ✓ 利下げ恩恵銘柄（不動産・公益・成長株）の再評価余地\n"
+            "  ✓ 長期デュレーション資産のバリュエーション改善\n"
+            "  ✗ 金融株は NIM 縮小懸念。収益の質（手数料収入比率）を確認せよ"
+        )
+    # NEUTRAL
+    return (
+        "【NEUTRAL レジーム — 分析フォーカス】\n"
+        "  ✓ ファンダメンタルズ重視のボトムアップ分析が有効\n"
+        "  ✓ 個別カタリスト（決算・新製品・M&A）が株価を動かす主因\n"
+        "  ✓ セクターローテーション動向を確認し、資金流入方向と整合性を取れ"
+    )
+
+
 def build_high_quality_prompt(
     ticker: str,
     company_name: str,
@@ -81,19 +173,18 @@ def build_high_quality_prompt(
     yuho_summary: str = None,
 ) -> str:
     """
-    高品質な投資分析プロンプトを生成
-    （prompt_builder.py.bak の構造をベースに改善）
+    高品質な投資分析プロンプトを生成。
+    セクター別注意事項・レジーム別フォーカス・MA75 乖離を追加し、
+    JSON 出力のスキーマ制約と出口戦略・監視ポイントを強化。
     """
     # ウェイト取得
     w_fund = regime_weights.get("fundamental", 0.30)
-    w_val = regime_weights.get("valuation", 0.25)
+    w_val  = regime_weights.get("valuation", 0.25)
     w_tech = regime_weights.get("technical", 0.25)
     w_qual = regime_weights.get("qualitative", 0.20)
 
-    # スコアカードテキスト
     scorecard_text = format_scorecard_text(scorecard)
 
-    # 財務指標の詳細
     metrics = financial_metrics
     fundamentals_detail = f"""
   ROE            : {metrics.get('roe', 'N/A')}%
@@ -106,18 +197,31 @@ def build_high_quality_prompt(
   R&D 比率       : {metrics.get('rd_ratio', 'N/A')}%
 """
 
-    # テクニカル指標の詳細
+    ma75_dev = technical_data.get('ma75_deviation', 'N/A')
+    ma75_str = f"{ma75_dev}%" if ma75_dev != 'N/A' else 'N/A'
     tech_detail = f"""
   現在価格       : {technical_data.get('current_price', 'N/A')}
   RSI(14)        : {technical_data.get('rsi', 'N/A')}
   MA25 乖離率    : {technical_data.get('ma25_deviation', 'N/A')}%
+  MA75 乖離率    : {ma75_str}
   BB 位置        : {technical_data.get('bb_position', 'N/A')}%
   出来高比率     : {technical_data.get('volume_ratio', 'N/A')}
   Perfect Order  : {technical_data.get('perfect_order', 'N/A')}
 """
 
-    # 有報サマリー
-    yuho_section = yuho_summary if yuho_summary else "（有報データは取得されていません）"
+    yuho_section = yuho_summary if yuho_summary else "（有報データ未取得）"
+    sector_ctx   = _sector_context(sector)
+    regime_ctx   = _regime_context(regime, sector)
+
+    # 有報なし時の補足注記
+    yuho_missing_note = ""
+    if not yuho_summary or "未取得" in (yuho_summary or "") or "データなし" in (yuho_summary or ""):
+        yuho_missing_note = (
+            "\n⚠️ 【定性データ未取得の影響】\n"
+            "  有報が取得できていないため Qualitative スコアは中立値（5.0）で固定されています。\n"
+            "  定性面（経営リスク・競争優位性・経営陣の質）については公知情報・業界知識から\n"
+            "  合理的な推定を行い、confidence（信頼度）を低めに設定してください。\n"
+        )
 
     prompt = f"""あなたはシニア・エクイティ・アナリストです。
 以下の個別銘柄データセットに基づき、Investment Thesis を策定してください。
@@ -135,10 +239,13 @@ def build_high_quality_prompt(
   Technical    : {w_tech:.0%}
   Qualitative  : {w_qual:.0%}
 
+{regime_ctx}
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 2. 財務指標詳細
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {fundamentals_detail}
+{sector_ctx}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 3. テクニカル指標
@@ -154,6 +261,7 @@ def build_high_quality_prompt(
 5. 定性データ・有価証券報告書要約
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {yuho_section}
+{yuho_missing_note}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 6. 分析タスク
@@ -161,51 +269,72 @@ def build_high_quality_prompt(
 以下の 3 点について詳細に論じてください。
 
 (1) スコアの背後にある定性・定量の整合性判定
-    数値上のファンダメンタルズ/バリュエーションと、有報が示す
-    「経営リスク」「競争優位性」に矛盾はないか。
-    「地力」と「定性」スコアの乖離がある場合、その要因を推測せよ。
+    - 財務指標（ROE・PBR・営業利益率）と総合スコアの間に矛盾はないか。
+    - セクター固有の評価基準（上記注意事項）を踏まえ、スコアが過大 / 過小評価でないか判断せよ。
+    - 有報データがある場合は「経営リスク」「競争優位性」との整合性を検証。
+      ない場合は業界知識から定性面を補完し、その不確実性を明示せよ。
 
 (2) 市場レジーム ({regime}) に対する脆弱性と機会
-    現在のマクロ環境（金利・為替・地政学リスク等）が
-    このビジネスモデルにプラス/マイナスどちらに働くか。
-    テクニカル指標との乖離から読み取れる変化はないか。
+    - 上記レジームコンテキストに沿って、このビジネスモデルへの影響を定量的に推定せよ。
+    - MA25/MA75 乖離・RSI・BB 位置から「売られ過ぎ」「買われ過ぎ」の根拠を示せ。
+    - テクニカルとファンダメンタルが乖離している場合、その要因（一時的 / 構造的）を判断せよ。
 
 (3) 主要なアップサイド・ダウンサイドシナリオ（向こう 12 ヶ月）
-    株価を動かす最大のカタリストは何か。
-    投資を回避・ポジション縮小すべき最優先リスクは何か。
+    - アップサイド: 株価を動かす最大カタリスト 2〜3 件（具体的イベント・時期・株価インパクト）。
+    - ダウンサイド: 投資を回避すべき最優先リスク 2〜3 件（トリガー条件・影響度を明示）。
+    - ベースケース株価レンジ（現在価格比±%）を示せ。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 7. 出力形式
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-■ コア・ピッチ（200 文字以内）
-  投資すべきか否かの結論と核心的理由。
+■ コア・ピッチ（150 文字以内）
+  投資すべきか否かの結論と核心的理由を 1 段落で。
 
 ■ 深掘り分析（各項目 300〜500 文字程度）
-  上記タスク (1)(2)(3) の論述。
+  上記タスク (1)(2)(3) の論述。データ数値を引用して根拠を示すこと。
+
+■ 出口戦略・監視ポイント
+  - 損切り条件（価格・指標トリガー）
+  - 利確条件（価格・イベントトリガー）
+  - 継続保有を再評価すべき KPI（決算・マクロ指標）
 
 ■ 最終レーティング
-  [強く推奨 / 推奨 / 中立 / 回避] と目標レンジの方向感。
+  [強く推奨 / 推奨 / 中立 / 回避] と 12 ヶ月目標株価レンジ（ベース / ブル / ベア）。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 8. JSON 出力（必須）
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-最後に、以下の JSON 形式で投資判断を出力してください：
+分析の最後に、以下の JSON を **コードブロック内** に出力してください。
+フィールドの説明に従い、数値・文字列の型を厳守してください。
 
 ```json
 {{
-    "signal": "BUY",
-    "score": 7.5,
-    "confidence": 0.8,
-    "reasoning": "判断理由を 200 文字以内で記載",
-    "entry_price": 100.0,
-    "stop_loss": 90.0,
-    "take_profit": 120.0,
-    "position_size": 0.1,
+    "signal": "WATCH",
+    "score": 5.9,
+    "confidence": 0.65,
+    "reasoning": "200 文字以内で投資判断の核心理由を記載",
+    "entry_price": 2686.0,
+    "stop_loss": 2500.0,
+    "take_profit": 3100.0,
+    "position_size": 0.05,
     "holding_period": "medium",
-    "risks": ["リスク要因 1", "リスク要因 2"],
-    "catalysts": ["カタリスト 1", "カタリスト 2"]
+    "risks": ["リスク要因（具体的に）", "リスク要因 2"],
+    "catalysts": ["カタリスト（具体的に）", "カタリスト 2"],
+    "exit_strategy": "損切り条件と利確条件を 1 行で",
+    "watch_points": ["次回決算 EPS 動向", "マクロ指標変化"]
 }}
 ```
+
+【JSON フィールド制約】
+- signal    : "BUY" / "WATCH" / "SELL" の 3 値のみ。"HOLD" は使用禁止。
+- score     : 0.0〜10.0（スコアカードの総合スコアと整合させること）
+- confidence: 0.0〜1.0（有報なし・レジーム不確実性が高い場合は 0.6 以下を推奨）
+- entry_price / stop_loss / take_profit: 現在の市場価格を基準に現実的な数値で設定
+- stop_loss : entry_price の -5〜-15% が目安（ボラティリティに応じて調整）
+- take_profit: entry_price の +10〜+30% が目安（スコアと holding_period に応じて調整）
+- position_size: BUY かつ score≥7.0 → 0.10〜0.20、WATCH → 0.03〜0.08、SELL → 0.0
+- holding_period: "short"（〜4週）/ "medium"（1〜6ヶ月）/ "long"（6ヶ月〜）
+- risks / catalysts: 各 2〜4 件、具体的なイベント名・数値を含めること
 """
     return prompt
 
@@ -250,7 +379,7 @@ def build_simple_prompt(ticker: str, name: str = None):
 ```
 
 【各フィールドの説明】
-- signal: "BUY", "WATCH", "SELL" のいずれか
+- signal: 必ず "BUY"（推奨）, "WATCH"（様子見）, "SELL"（売却）の3値のみ。"HOLD" は使用禁止。中立判断は "WATCH" を使うこと。
 - score: 0-10 のスコア（10 が最強）
 - confidence: 0-1 の信頼度（1 が最高）
 - reasoning: 判断理由（200 文字以内）
