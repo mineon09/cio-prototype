@@ -188,6 +188,8 @@ with st.sidebar:
                 st.error(f"❌ Groq接続テスト失敗: {e}")
 
     st.markdown("---")
+    st.page_link("pages/01_prompt_studio.py", label="🧠 Prompt Studio", icon="🧠")
+    st.markdown("---")
 
     # Past Analysis History
     st.subheader("📋 分析履歴")
