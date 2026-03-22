@@ -739,10 +739,84 @@ class TechnicalAnalyzer:
 # Layer 4: Qualitative（有報による定性分析）
 # ==========================================
 
-def score_qualitative(yuho_data: dict) -> dict:
+def _estimate_qualitative_from_metrics(metrics: dict, sector: str = "") -> dict | None:
+    """
+    有報データ未取得時に、定量メトリクスと業界ポジションから
+    定性スコアを推定する（フォールバック）。
+
+    推定根拠:
+      - 時価総額   → 市場でのポジションから競争優位性を代理推定
+      - ROE        → 収益持続性 → 経営リスクレベルの代理指標
+      - 推定値は中立5.0方向に引き寄せ、確信度を LOW に設定
+
+    Returns None if insufficient metrics to estimate.
+    """
+    profile_name, _, _, _, _ = resolve_sector_profile(sector)
+    parts = ["⚠️ 有報未取得 — 定量データから定性スコアを推定（確信度: LOW）"]
+    total = 0.0
+    count = 0
+
+    # 時価総額 → 競争優位性の代理推定
+    market_cap = _safe(metrics.get("market_cap"))
+    if market_cap and market_cap > 0:
+        if market_cap >= 5e12:  # 5兆円超 or $50B+
+            s = 8.0
+            parts.append(f"時価総額 {market_cap/1e12:.1f}兆円 → メガキャップ（高い競争優位性を推定）")
+        elif market_cap >= 1e12:  # 1兆円超 or $10B+
+            s = 7.0
+            parts.append(f"時価総額 {market_cap/1e12:.1f}兆円 → 大型株（一定の競争優位性を推定）")
+        elif market_cap >= 1e11:  # 1000億円超 or $1B+
+            s = 5.5
+            parts.append(f"時価総額 {market_cap/1e9:.0f}億円 → 中型株（競争優位性は不明）")
+        else:
+            s = 4.0
+            parts.append(f"時価総額 {market_cap/1e9:.1f}億円 → 小型株（競争優位性の推定困難）")
+        total += _clamp(s)
+        count += 1
+
+    # ROE → 収益持続性から経営リスクを推定
+    roe = _safe(metrics.get("roe"))
+    if roe is not None:
+        roe_good = {"financial": 8, "value": 8}.get(profile_name, 10)
+        if roe >= roe_good * 1.5:
+            s = 8.0
+            parts.append(f"ROE {roe:.1f}% → 高収益維持（経営リスク低と推定）")
+        elif roe >= roe_good:
+            s = 6.0
+            parts.append(f"ROE {roe:.1f}% → 標準的収益力（経営リスク中程度）")
+        elif roe > 0:
+            s = 4.0
+            parts.append(f"ROE {roe:.1f}% → 低収益（経営リスク要注意）")
+        else:
+            s = 2.0
+            parts.append(f"ROE {roe:.1f}% → 赤字/負ROE（経営リスク高）")
+        total += _clamp(s)
+        count += 1
+
+    if count == 0:
+        return None
+
+    raw_score = total / count
+    # 推定値は確信度が低いため、中立5.0方向に引き寄せる（回帰）
+    estimated_score = _clamp(round((raw_score + 5.0) / 2, 1))
+
+    return {
+        "layer": "Qualitative",
+        "score": estimated_score,
+        "details": parts,
+        "data_points": count,
+        "estimated": True,
+        "confidence": "LOW",
+    }
+
+
+def score_qualitative(yuho_data: dict, metrics: dict = None, sector: str = "") -> dict:
     """
     有報解析データ（リスクTOP3, 堀, R&D, 経営課題）からスコアを算出。
-    有報データがない場合は 5.0（中立）を返す。
+
+    有報データがない場合:
+      - metrics が提供されていれば定量データから推定（estimated=True）
+      - metrics もなければ中立5.0を返す
     """
     if not yuho_data or not yuho_data.get("available"):
         reason = yuho_data.get("reason", "有報データなし") if yuho_data else "有報データなし"
@@ -754,10 +828,16 @@ def score_qualitative(yuho_data: dict) -> dict:
                 "details": ["有報/10-K データ取得済み（AI 解析は最終レポートで実施）"],
                 "data_points": 1,
             }
+        # 定量データからの推定を試みる
+        if metrics:
+            estimated = _estimate_qualitative_from_metrics(metrics, sector)
+            if estimated:
+                estimated["details"].append(f"（有報未取得理由: {reason}）")
+                return estimated
         return {
             "layer": "Qualitative",
             "score": 5.0,
-            "details": [f"定性分析スキップ（{reason}）"],
+            "details": [f"定性分析スキップ（{reason}）— metrics不足のため推定不可"],
             "data_points": 0,
         }
     parts = []
@@ -867,19 +947,26 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
     fund = score_fundamental(metrics, sector=sector)
     valu = score_valuation(metrics, technical, sector=sector, dcf_data=dcf_data)
     tech = score_technical(technical, sector=sector)
-    qual = score_qualitative(yuho_data)
+    qual = score_qualitative(yuho_data, metrics=metrics, sector=sector)
 
     # セクター別ベースウェイトを取得
     _, _, _, _, sector_weights = resolve_sector_profile(sector)
     weights = dict(sector_weights)
 
     # 有報データがない場合は定性分析の重みを他に再配分
+    # ただし推定値（estimated=True）がある場合は半分のウェイトを維持
     if not yuho_data or not yuho_data.get("available"):
         q_share = weights.get("qualitative", 0.25)
-        weights["fundamental"] += q_share * 0.4
-        weights["valuation"]   += q_share * 0.3
-        weights["technical"]   += q_share * 0.3
-        weights["qualitative"] = 0.00
+        if qual.get("estimated"):
+            # 推定値: 半分の重みを維持、残り半分を再配分
+            half = q_share * 0.5
+            weights["fundamental"] += half * 0.4
+            weights["valuation"]   += half * 0.3
+            weights["technical"]   += half * 0.3
+            weights["qualitative"] = q_share * 0.5  # 推定値に半分の重み
+        else:
+            weights["technical"]   += q_share * 0.3
+            weights["qualitative"] = 0.00
 
     # マクロ環境による重み補正 (v1.2)
     regime_label = ""
@@ -962,8 +1049,8 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
         f"📊 Fundamental (地力):     {fund['score']}/10  [データ{fund['data_points']}件]",
         f"💰 Valuation (割安度):     {valu['score']}/10  [データ{valu['data_points']}件]",
         f"⏱️  Technical (タイミング): {tech['score']}/10  [データ{tech['data_points']}件]",
-        f"📋 Qualitative (定性):     {'N/A':>4}      [データなし]" if qual['data_points'] == 0
-            else f"📋 Qualitative (定性):     {qual['score']}/10  [データ{qual['data_points']}件]",
+        f"📋 Qualitative (定性):     {'N/A':>4}      [データなし]" if qual['data_points'] == 0 and not qual.get('estimated')
+            else f"📋 Qualitative (定性):     {qual['score']}/10  [{'推定' if qual.get('estimated') else 'データ'}{qual['data_points']}件]{'  ⚠️推定値' if qual.get('estimated') else ''}",
         f"",
         f"🔢 総合スコア: {total}/10 → 🎯 {signal}",
     ]
@@ -974,7 +1061,28 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
     elif yuho_data and yuho_data.get("available"):
         lines.append(f"(重み: {weight_str})")
     else:
-        lines.append(f"(重み: 地力{weights['fundamental']*100:.0f}%/割安{weights['valuation']*100:.0f}%/技術{weights['technical']*100:.0f}% — 有報なし)")
+        extra = "推定値" if qual.get("estimated") else "有報なし"
+        lines.append(f"(重み: {weight_str} — {extra})")
+
+    # 確信度レベル計算
+    has_yuho = bool(yuho_data and yuho_data.get("available"))
+    is_estimated = bool(qual.get("estimated"))
+    fund_bull = fund["score"] >= 5.5
+    tech_bull  = tech["score"] >= 5.5
+    signals_aligned = (fund_bull == tech_bull)
+
+    if has_yuho and signals_aligned:
+        confidence_level = "HIGH"
+        confidence_score = 0.80
+    elif has_yuho and not signals_aligned:
+        confidence_level = "MED"
+        confidence_score = 0.65
+    elif is_estimated and signals_aligned:
+        confidence_level = "LOW"
+        confidence_score = 0.48
+    else:
+        confidence_level = "VERY_LOW"
+        confidence_score = 0.38
 
     return {
         "fundamental":  fund,
@@ -986,6 +1094,8 @@ def generate_scorecard(metrics: dict, technical: dict, yuho_data: dict = None,
         "gatekeeper_note": gatekeeper_note,
         "summary_text": "\n".join(lines),
         "weights":      weights,
+        "confidence_level": confidence_level,
+        "confidence_score": confidence_score,
     }
 
 
