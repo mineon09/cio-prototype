@@ -25,6 +25,11 @@ _ITEM_PATTERNS = {
         r"item\s+7\.?\s*[\-–—:]?\s*management.{0,30}discussion",
         re.IGNORECASE,
     ),
+    # "Item 7:" の後に "management discussion" が続かない形式（目次後の本文など）用
+    "7_start_fallback": re.compile(
+        r"management.{0,15}discussion\s+and\s+analysis",
+        re.IGNORECASE,
+    ),
     "7_end": re.compile(
         r"item\s+7a[\.\s:\-–—]|item\s+8[\.\s:\-–—]",
         re.IGNORECASE,
@@ -33,6 +38,9 @@ _ITEM_PATTERNS = {
 
 # 目次エントリの最大長（これより短い候補は目次と判断してスキップ）
 _MIN_SECTION_LENGTH = 1000
+
+# Item 7 の最低保証文字数（これを下回るとフォールバックパターンを試みる）
+_MIN_ITEM7_CHARS = 3_000
 
 # セクションごとのデフォルト文字数上限
 _DEFAULT_MAX_1A = 8_000
@@ -93,6 +101,19 @@ def extract_sections(
         max_chars=max_7,
         fallback_max=30_000,
     )
+    # Item 7 が短すぎる場合（目次エントリのみにマッチした可能性）、
+    # "Management's Discussion and Analysis" 単独ヘッダーで再試行する
+    if len(result["7"]) < _MIN_ITEM7_CHARS:
+        if result["7"]:
+            print(f"  ⚠️  Item 7 が短すぎます ({len(result['7'])}文字) "
+                  f"— フォールバックパターンで再試行します")
+        result["7"] = _extract_between(
+            full_text, text_lower,
+            _ITEM_PATTERNS["7_start_fallback"],
+            _ITEM_PATTERNS["7_end"],
+            max_chars=max_7,
+            fallback_max=30_000,
+        )
     if result["7"]:
         result["sections_found"].append("7")
 

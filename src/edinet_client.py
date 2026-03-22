@@ -239,7 +239,7 @@ def ticker_to_sec_code(ticker: str) -> str | None:
     """
     if not is_japanese_stock(ticker):
         return None
-    code = ticker.replace('.T', '').strip()
+    code = ticker.upper().replace('.T', '').strip()
     if not code.isdigit() or len(code) != 4:
         return None
     return code + "0"
@@ -444,9 +444,6 @@ def extract_yuho_data(ticker: str) -> dict:
     """
     if not is_japanese_stock(ticker):
         return {"available": False, "reason": "非日本株のためEDINET対象外"}
-
-    if not _get_edinet_key():
-        return {"available": False, "reason": "EDINET_API_KEY未設定"}
 
     sec_code = ticker_to_sec_code(ticker)
     if not sec_code:

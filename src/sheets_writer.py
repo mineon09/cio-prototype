@@ -39,7 +39,7 @@ def get_sheets_client():
                             'https://www.googleapis.com/auth/drive'])
                 print(f"✅ Google Sheets 認証: JSON文字列を使用 ({sa_info.get('client_email')})")
             except Exception as e:
-                print(f"⚠️ JSON文字列からの認証失敗: {e}")
+                print(f"⚠️ JSON文字列からの認証失敗: {type(e).__name__}")
                 creds = None
 
         # 2. JSON ファイルパスからロード (JSON文字列がない場合、または失敗した場合)
@@ -57,7 +57,7 @@ def get_sheets_client():
         gc = gspread.authorize(creds)
         return gc
     except Exception as e:
-        print(f"⚠️ Sheets認証失敗（出力なしで続行）: {e}")
+        print(f"⚠️ Sheets認証失敗（出力なしで続行）: {type(e).__name__}")
         return None
 
 def _sanitize_for_sheets(value):
@@ -111,7 +111,7 @@ def write_to_sheets(gc, target_ticker: str, target_data: dict,
         sname = CONFIG['sheets']['output']
         try:
             sheet = sp.worksheet(sname)
-        except:
+        except Exception:
             sheet = sp.add_worksheet(sname, rows=1000, cols=13)
             sheet.append_row([
                 "日付", "銘柄", "価格", "シグナル", "総合スコア",

@@ -39,7 +39,7 @@ except Exception:
     pass  # st.secrets が使えない場合（ローカル）はスキップ
 
 from src.data_fetcher import fetch_stock_data, select_competitors, call_gemini
-from src.analyzers import generate_scorecard, format_yuho_for_prompt
+from src.analyzers import generate_scorecard
 from src.edinet_client import extract_yuho_data, is_japanese_stock
 
 try:
@@ -183,7 +183,7 @@ with st.sidebar:
                     messages=[{'role':'user','content':'Say hello in Japanese'}],
                     max_tokens=20
                 )
-                st.success(f"✅ Groq接続OK: {r.choices[0].message.content}")
+                st.success(f"✅ Groq接続OK: {r.choices[0].message.content if r.choices else '(no content)'}")
             except Exception as e:
                 st.error(f"❌ Groq接続テスト失敗: {e}")
 

@@ -76,7 +76,7 @@ def write_to_notion(ticker: str, target_data: dict, report: str, scorecard: dict
                                 break
             if found_db:
                 db_id = found_db
-        except:
+        except Exception:
             pass
 
         # 2. データの構成

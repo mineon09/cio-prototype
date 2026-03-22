@@ -69,6 +69,8 @@ def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b
             response_format={"type": "json_object"} if parse_json else None
         )
         
+        if not completion.choices:
+            raise ValueError("Groq API returned empty choices")
         text = completion.choices[0].message.content
         used_model = completion.model # 実際に使われたモデル名
         
@@ -225,7 +227,7 @@ def call_gemini(prompt: str, parse_json: bool = False, max_retries: int = 5,
                 text = response.text or ""
             except Exception:
                 pass
-            if not text and hasattr(response, 'candidates') and response.candidates:
+            if not text and hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
                 for part in response.candidates[0].content.parts:
                     if hasattr(part, 'text') and part.text:
                         text += part.text

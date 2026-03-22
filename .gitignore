@@ -22,6 +22,8 @@ data/reports/
 # Debug and Logs
 debug_*
 *.log
+*.bak
+*.htm
 verification_output.txt
 short_verification.txt
 test_*.txt

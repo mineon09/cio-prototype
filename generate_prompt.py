@@ -160,6 +160,23 @@ def _regime_context(regime: str, sector: str) -> str:
     )
 
 
+def _peer_set(sector: str, ticker: str) -> str:
+    """セクター別の代表ピア銘柄セットを返す"""
+    s = (sector or "").lower()
+    is_jp = ticker.upper().endswith('.T')
+    if any(k in s for k in ["financial", "bank", "insurance"]):
+        return "8316.T（三井住友FG）, 8411.T（みずほFG）, 8309.T（三菱UFJ信託）" if is_jp else "JPM, BAC, WFC"
+    if any(k in s for k in ["technology", "software", "semiconductor"]):
+        return "6861.T（キーエンス）, 8035.T（東京エレク）, 6857.T（アドバンテスト）" if is_jp else "MSFT, AAPL, NVDA"
+    if any(k in s for k in ["energy", "oil", "gas"]):
+        return "5019.T（出光興産）, 5020.T（ENEOS）, 1605.T（INPEX）" if is_jp else "XOM, CVX, COP"
+    if any(k in s for k in ["consumer", "retail", "auto"]):
+        return "7203.T（トヨタ）, 7267.T（ホンダ）, 7201.T（日産）" if is_jp else "GM, F, TSLA"
+    if any(k in s for k in ["health", "pharma", "medical", "biotech"]):
+        return "4502.T（武田薬品）, 4568.T（第一三共）, 4519.T（中外製薬）" if is_jp else "JNJ, UNH, PFE"
+    return "（公開情報からセクター同業3〜5社を特定せよ）"
+
+
 def build_high_quality_prompt(
     ticker: str,
     company_name: str,
@@ -212,6 +229,13 @@ def build_high_quality_prompt(
     yuho_section = yuho_summary if yuho_summary else "（有報データ未取得）"
     sector_ctx   = _sector_context(sector)
     regime_ctx   = _regime_context(regime, sector)
+    peer_set     = _peer_set(sector, ticker)
+
+    # ピア比較テーブル用メトリクス
+    roe       = metrics.get('roe', 'N/A')
+    pbr       = metrics.get('pbr', 'N/A')
+    op_margin = metrics.get('op_margin', 'N/A')
+    div_yield = metrics.get('dividend_yield', 'N/A')
 
     # 有報なし時の補足注記
     yuho_missing_note = ""
@@ -266,7 +290,7 @@ def build_high_quality_prompt(
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 6. 分析タスク
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-以下の 3 点について詳細に論じてください。
+以下の 6 点について詳細に論じてください。
 
 (1) スコアの背後にある定性・定量の整合性判定
     - 財務指標（ROE・PBR・営業利益率）と総合スコアの間に矛盾はないか。
@@ -284,6 +308,39 @@ def build_high_quality_prompt(
     - ダウンサイド: 投資を回避すべき最優先リスク 2〜3 件（トリガー条件・影響度を明示）。
     - ベースケース株価レンジ（現在価格比±%）を示せ。
 
+(4) ピア比較テーブル（同業比較）
+    ピアセット: {peer_set}
+    上記ピア銘柄と以下の指標を比較し、対象銘柄の相対的な優劣を判定せよ。
+    データが入手不能な場合は「比較不能」と明記し、自社の過去5年トレンドで代替せよ。
+
+    | 指標     | {ticker} | 業界中央値 | 判定       |
+    |---------|---------|-----------|-----------|
+    | ROE     | {roe}%  | ?%        | 上位/下位  |
+    | PBR     | {pbr}倍 | ?倍        | 割高/割安  |
+    | 営業利益率 | {op_margin}% | ?% | 優位/劣位 |
+    | 配当利回り | {div_yield}% | ?% | 高/低    |
+
+(5) マクロ感応度テーブル
+    以下の各マクロ変数が±1標準偏差変化したとき、この銘柄の業績・株価への影響を推定せよ。
+    推定困難な項目は「感応度不明」と記載し、理由を述べよ。
+
+    | マクロ変数   | 現状 | +1σ変化時の影響            | 感応度     |
+    |-----------|-----|--------------------------|----------|
+    | 日/米10年金利 | -   | 業績±X% → 株価±X%予想      | 高/中/低  |
+    | USD/JPY   | -   | 海外収益・輸出コスト±X%      | 高/中/低  |
+    | VIX指数    | -   | センチメント変化 → 株価±X%   | 高/中/低  |
+    | 原油価格    | -   | コスト・収益への影響±X%      | 高/中/低  |
+
+(6) リスク定量化
+    「経営リスク」または「ダウンサイドシナリオ」から主要リスク2〜3件を選び、以下の形式で定量化せよ。
+    推定困難な場合も「推定不能（理由）」と必ず記載すること。
+
+    リスクX: [リスク名]
+      トリガー条件 : （例：信用スプレッド+50bp超、円急騰 ¥130割れ）
+      EPS 影響推定  : -X〜-X%（根拠: 貸倒引当金+X億円想定 等）
+      株価影響推定 : -X〜-X%
+      発生確率推定 : X%（現レジーム・マクロ環境下）
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 7. 出力形式
 ━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -291,7 +348,7 @@ def build_high_quality_prompt(
   投資すべきか否かの結論と核心的理由を 1 段落で。
 
 ■ 深掘り分析（各項目 300〜500 文字程度）
-  上記タスク (1)(2)(3) の論述。データ数値を引用して根拠を示すこと。
+  上記タスク (1)〜(6) の論述。データ数値を引用して根拠を示すこと。
 
 ■ 出口戦略・監視ポイント
   - 損切り条件（価格・指標トリガー）
@@ -302,7 +359,35 @@ def build_high_quality_prompt(
   [強く推奨 / 推奨 / 中立 / 回避] と 12 ヶ月目標株価レンジ（ベース / ブル / ベア）。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-8. JSON 出力（必須）
+8. 出力前セルフチェック【必須 — JSON 出力前に必ず確認】
+━━━━━━━━━━━━━━━━━━━━━━━━━
+JSON を出力する前に以下をすべて確認し、矛盾があれば該当箇所を修正してから出力せよ。
+
+□ signal と最終レーティングは一致しているか
+    BUY   ↔ [強く推奨 / 推奨]
+    WATCH ↔ [中立]
+    SELL  ↔ [回避]
+
+□ score と confidence の整合性
+    score < 5.0 かつ confidence > 0.7 → 矛盾（confidence を引き下げよ）
+    有報なし かつ confidence > 0.6   → 矛盾（confidence を引き下げよ）
+
+□ 価格設定の整合性
+    stop_loss  < entry_price であること（stop_loss ≥ entry_price は設定ミス）
+    take_profit > entry_price であること（take_profit ≤ entry_price は設定ミス）
+
+□ position_size の整合性
+    SELL シグナル → position_size = 0.0 であること
+    WATCH かつ score < 5.0 → position_size ≤ 0.05 であること
+    合計ポートフォリオ配分（既存保有 + 本銘柄）が 100% を超えないよう配慮すること
+
+□ コア・ピッチの結論と signal は一致しているか
+    「回避」「慎重」等の表現が本文にある → signal が BUY では矛盾
+
+矛盾が1件でも検出された場合は、JSON 出力前に当該フィールドを修正すること。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+9. JSON 出力（必須）
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 分析の最後に、以下の JSON を **コードブロック内** に出力してください。
 フィールドの説明に従い、数値・文字列の型を厳守してください。
@@ -531,7 +616,7 @@ def copy_to_clipboard(text: str) -> bool:
         import pyperclip
         pyperclip.copy(text)
         return True
-    except:
+    except Exception:
         return False
 
 
@@ -553,10 +638,12 @@ def main():
                        default='groq', help='対象モデル')
 
     args = parser.parse_args()
+    args.ticker = args.ticker.upper()  # 大文字正規化: 8306.t → 8306.T (endswith('.T') は大文字小文字を区別するため必須)
 
     print(f"🔍 プロンプト生成中：{args.ticker}")
 
     # プロンプト生成
+    data = None  # --simple モード時は未定義にならないよう初期化
     if args.simple:
         prompt = build_simple_prompt(args.ticker)
         api_calls = 0

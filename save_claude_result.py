@@ -65,16 +65,25 @@ def read_response(args) -> str:
         sys.exit(1)
 
 
+VALID_SIGNALS = {"BUY", "WATCH", "SELL"}
+
+
 def extract_json_from_response(text: str) -> dict:
-    """Claude の回答テキストから JSON ブロックを抽出"""
-    # ```json ... ``` パターン
-    match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-    if match:
+    """Claude の回答テキストから JSON ブロックを抽出。4パターンに対応。"""
+    # パターン1: ```json ... ```
+    m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
+
+    # パターン2: ``` ... ``` (言語指定なし)
+    if not m:
+        m = re.search(r'```\s*(\{.*?\})\s*```', text, re.DOTALL)
+
+    if m:
         try:
-            return json.loads(match.group(1))
+            return json.loads(m.group(1))
         except Exception:
             pass
-    # 最初の { から始まる JSON を探す
+
+    # パターン3 & 4: raw_decode で { から始まる最初の有効JSONを探す
     start = text.find('{')
     if start != -1:
         decoder = json.JSONDecoder()
@@ -84,7 +93,30 @@ def extract_json_from_response(text: str) -> dict:
                 return obj
         except Exception:
             pass
+
+    # パターン4: "signal" キーを含む { ... } ブロックを正規表現で探す
+    candidates = list(re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL))
+    for c in candidates:
+        if '"signal"' in c.group():
+            try:
+                return json.loads(c.group())
+            except Exception:
+                continue
+
     return {}
+
+
+def normalize_signal(data: dict) -> dict:
+    """非標準シグナル (HOLD 等) を正規化する。"""
+    signal = (data.get("signal") or "WATCH").upper()
+    if signal == "HOLD":
+        print(f"  ⚠️  signal='HOLD' を 'WATCH' に正規化しました")
+        signal = "WATCH"
+    if signal not in VALID_SIGNALS:
+        print(f"  ⚠️  不正なsignal '{signal}' → 'WATCH' にフォールバック")
+        signal = "WATCH"
+    data["signal"] = signal
+    return data
 
 
 def save_to_dashboard(ticker: str, context: dict, report: str,
@@ -93,9 +125,13 @@ def save_to_dashboard(ticker: str, context: dict, report: str,
     scorecard = context.get('scorecard', {})
 
     # signal: Claude の判断を優先、なければスコアカードの signal
+    if claude_json and isinstance(claude_json, dict):
+        claude_json = normalize_signal(claude_json)
+    else:
+        claude_json = {}
     signal_raw = claude_json.get('signal', scorecard.get('signal', 'WATCH'))
     signal = (signal_raw or 'WATCH').upper()
-    if signal not in ('BUY', 'WATCH', 'SELL'):
+    if signal not in VALID_SIGNALS:
         signal = 'WATCH'
 
     position_size = float(claude_json.get('position_size', 0.10))
@@ -121,7 +157,9 @@ def save_to_dashboard(ticker: str, context: dict, report: str,
 
     # Claude 固有フィールド（あれば追加）
     for field in ("entry_price", "stop_loss", "take_profit",
-                  "confidence", "holding_period", "risks", "catalysts"):
+                  "confidence", "holding_period", "risks", "catalysts",
+                  "exit_strategy", "watch_points", "peer_comparison",
+                  "macro_sensitivity", "risk_quantification"):
         if field in claude_json:
             new_entry[field] = claude_json[field]
 
@@ -240,6 +278,7 @@ def main():
     print(f"🔍 JSON 抽出中...")
     claude_json = extract_json_from_response(response_text)
     if claude_json:
+        print(f"   ✅ JSON 抽出成功")
         print(f"   signal={claude_json.get('signal', 'N/A')}, "
               f"score={claude_json.get('score', 'N/A')}, "
               f"confidence={claude_json.get('confidence', 'N/A')}")

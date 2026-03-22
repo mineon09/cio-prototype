@@ -230,7 +230,7 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
             full_hist = stock.history(start=hist_start, end=hist_end)
             if full_hist.index.tz is not None:
                 full_hist.index = full_hist.index.tz_localize(None)
-        except:
+        except Exception:
              full_hist = pd.DataFrame()
 
         for i in range(duration_months + 1):
@@ -290,7 +290,7 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
 
     try:
         bm_data = yf.Ticker(default_bm).history(start=start_date, end=end_date)
-    except:
+    except Exception:
         bm_data = pd.DataFrame()
 
     perf = calculate_performance(results, strategy_name=strategy, benchmark_data=bm_data, daily_data=full_hist, config=config)
@@ -377,7 +377,7 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
     p_df['dd'] = (p_df['value'] - p_df['value'].cummax()) / p_df['value'].cummax() * 100
     
     market_return = (benchmark_data['Close'].iloc[-1] - benchmark_data['Close'].iloc[0]) / benchmark_data['Close'].iloc[0] * 100 if benchmark_data is not None and not benchmark_data.empty else 0
-    stock_return = (df['price'].iloc[-1] - df['price'].iloc[0]) / df['price'].iloc[0] * 100
+    stock_return = (df['price'].iloc[-1] - df['price'].iloc[0]) / df['price'].iloc[0] * 100 if len(df) > 1 and df['price'].iloc[0] != 0 else 0
 
     # Advanced Metrics
     daily_returns = p_df['value'].pct_change().dropna()

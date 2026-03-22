@@ -546,23 +546,24 @@ class TechnicalAnalyzer:
         self.df = daily_df
 
     def get_latest(self):
+        if self.df.empty:
+            return None
         return self.df.iloc[-1]
 
     def check_rsi_condition(self, threshold: float, period: int = 9, condition: str = "below") -> bool:
         """RSIが閾値以下(below)か以上(above)かを判定"""
-        # RSI計算はデータフェッチャー側で行われている前提だが、期間が違う場合再計算が必要
-        # ここでは簡易的に既存の 'RSI' カラムがあればそれを使うが、
-        # period=9指定などで厳密にやるなら再計算ロジックが必要。
-        # v1.4では data_fetcher.py で RSI(9) も計算するようにするか、ここで計算する。
-        # ここでは計算済みと仮定し、カラム名が 'RSI_9' などでない場合は 'RSI' (通常14) を使う妥協案か、
-        # talib等で再計算する。依存関係を減らすため、pandasで簡易計算する。
-        
+        if len(self.df) < period + 1:
+            return False
+
         delta = self.df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+        loss = loss.clip(lower=1e-10)  # ゼロ除算防止
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
-        
+
+        if rsi.empty or pd.isna(rsi.iloc[-1]):
+            return False
         current_rsi = rsi.iloc[-1]
         if condition == "below":
             return current_rsi < threshold
@@ -572,6 +573,8 @@ class TechnicalAnalyzer:
 
     def check_bollinger_touch(self, sigma: float = 2.0, period: int = 20) -> tuple:
         """株価がボリンジャーバンド下限以下か、位置(%)を返す"""
+        if len(self.df) < period:
+            return False, 0.5
         close = self.df['Close']
         ma = close.rolling(window=period).mean()
         std = close.rolling(window=period).std()

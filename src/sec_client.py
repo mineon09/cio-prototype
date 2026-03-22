@@ -109,6 +109,8 @@ def _get_latest_filing(cik: str, form_type: str = "10-K") -> dict | None:
 
         for i, form in enumerate(forms):
             if form == form_type:
+                if i >= len(dates) or i >= len(accessions) or i >= len(primary_docs):
+                    continue
                 report_date = report_dates[i] if i < len(report_dates) else ''
                 return {
                     'form': form,
@@ -184,7 +186,7 @@ def _download_filing_text(filing: dict, max_chars: int = 80000) -> str | None:
         # Use lxml if available for speed and robustness with huge documents
         try:
             soup = BeautifulSoup(text, 'lxml')
-        except:
+        except Exception:
             soup = BeautifulSoup(text, 'html.parser')
         
         # Remove scripts, styles, and empty structures safely
@@ -499,6 +501,7 @@ def extract_sec_data(ticker: str, no_cache: bool = False) -> dict:
 
     # AI解析: キャッシュ確認 → Gemini → Groq セクション抽出＋単発解析フォールバック
     chunking_meta = None
+    sections = {}  # HAS_SEC_PARSER が False の場合の初期値
 
     # Groq フォールバック用にセクション抽出済みテキストを準備
     groq_fallback_text = text
@@ -518,6 +521,14 @@ def extract_sec_data(ticker: str, no_cache: bool = False) -> dict:
             print(f"  ✅ 10-K 解析キャッシュ使用: {ticker}_{filing_date}")
             analysis_result = cached.get("analysis", {})
             chunking_meta = cached.get("meta")
+            # section_extraction でテキストが抽出されていれば古いチャンク警告を上書き
+            if sections.get("extraction_success"):
+                chunking_meta = {
+                    "chunk_count": 1,
+                    "total_chars": sections.get("total_chars", 0),
+                    "truncated": False,
+                    "method": "section_extraction",
+                }
         else:
             analysis_result = _analyze_sec_with_gemini(text, ticker)
             if not analysis_result:
