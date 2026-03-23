@@ -288,6 +288,26 @@ def main():
     print(f"💾 ダッシュボードに保存中...")
     save_to_dashboard(args.ticker, context, response_text, claude_json, args.model)
 
+    # Notion にも保存（NOTION_API_KEY が設定されていれば）
+    try:
+        from src.notion_writer import write_to_notion
+        target_data = {
+            "name":     context.get("name", args.ticker),
+            "currency": context.get("currency", "JPY" if args.ticker.endswith('.T') else "USD"),
+            "technical": context.get("technical", {}),
+        }
+        scorecard = context.get("scorecard", {}).copy()
+        # Claude の判断を優先してシグナル・スコアを上書き
+        if claude_json:
+            if "signal" in claude_json:
+                scorecard["signal"] = claude_json["signal"]
+            if "score" in claude_json:
+                scorecard["total_score"] = claude_json["score"]
+        print(f"📤 Notion に保存中...")
+        write_to_notion(args.ticker, target_data, response_text, scorecard)
+    except Exception as e:
+        print(f"⚠️ Notion 保存スキップ: {e}")
+
 
 if __name__ == '__main__':
     main()

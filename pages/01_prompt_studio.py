@@ -27,20 +27,25 @@ def get_python_cmd() -> str:
     return str(venv_py) if venv_py.exists() else sys.executable
 
 
-try:
-    import pyperclip
-    HAS_PYPERCLIP = True
-except ImportError:
-    HAS_PYPERCLIP = False
+import base64
 
 
-def copy_to_clipboard(text: str):
-    """pyperclip でクリップボードにコピー"""
-    try:
-        pyperclip.copy(text)
-        st.toast("📋 クリップボードにコピーしました")
-    except Exception as e:
-        st.warning(f"コピー失敗: {e}")
+def render_copy_button(text: str, key: str = "copy_btn"):
+    """JavaScript navigator.clipboard API でクリップボードにコピーするボタンを描画。
+    pyperclip 不要・Linux/Wayland/X11 環境でも動作する。"""
+    encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    html = f"""
+    <button id="{key}" onclick="
+        const txt = new TextDecoder().decode(Uint8Array.from(atob('{encoded}'), c => c.charCodeAt(0)));
+        navigator.clipboard.writeText(txt)
+            .then(() => {{ document.getElementById('{key}').innerText = '✅ コピー完了'; }})
+            .catch(() => {{ document.getElementById('{key}').innerText = '❌ コピー失敗（手動コピーしてください）'; }});
+    " style="padding:8px 16px; background:#FF4B4B; color:white; border:none; border-radius:4px;
+             cursor:pointer; font-size:14px; font-family:sans-serif;">
+        📋 クリップボードにコピー
+    </button>
+    """
+    st.components.v1.html(html, height=50)
 
 
 def validate_ticker(ticker: str) -> bool:
@@ -198,6 +203,7 @@ with col_left:
             prompt_text = extract_prompt_text(result.stdout)
             st.session_state["generated_prompt"] = prompt_text
             st.session_state["last_ticker"] = ticker_gen_upper
+            st.session_state["save_ticker"] = ticker_gen_upper  # STEP3フィールドを自動入力
             st.success("✅ プロンプト生成完了")
         else:
             st.error(f"❌ 生成失敗: {result.stderr[:200] if result.stderr else '（エラーなし）'}")
@@ -215,15 +221,7 @@ with col_left:
             key="prompt_display",
         )
 
-        if HAS_PYPERCLIP:
-            st.button(
-                "📋 クリップボードにコピー",
-                on_click=copy_to_clipboard,
-                args=(prompt_text,),
-                key="copy_btn",
-            )
-        else:
-            st.info("上のテキストエリアを選択して手動コピーしてください")
+        render_copy_button(prompt_text, key="copy_btn")
 
         # コンテキストJSON 確認（simple=False の場合のみ）
         if not st.session_state.get("gen_simple", False):
