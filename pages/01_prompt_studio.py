@@ -6,9 +6,12 @@ STEP 3: Claude 回答を貼り付け → save_claude_result.py 経由で results
 """
 
 import os
+import queue as queue_module
 import re
 import sys
 import subprocess
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -43,6 +46,58 @@ def copy_to_clipboard(text: str):
 def validate_ticker(ticker: str) -> bool:
     """英数字・ドット・ハイフンのみ許可（最大20文字）"""
     return bool(re.match(r'^[A-Za-z0-9.\-]{1,20}$', ticker))
+
+
+_GEN_TIMEOUT = 300  # プロンプト生成の最大待機秒数
+
+
+def _run_cmd_in_thread(cmd: list, cwd: str, result_queue):
+    """バックグラウンドスレッドでサブプロセスを実行し結果をキューに入れる"""
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        result_queue.put(("ok", result))
+    except Exception as e:
+        result_queue.put(("error", str(e)))
+
+
+def run_with_progress(cmd: list, cwd: str, timeout: int = _GEN_TIMEOUT):
+    """
+    サブプロセスをバックグラウンドスレッドで実行し、
+    経過時間をリアルタイム表示する。
+    Returns: subprocess.CompletedProcess | None（タイムアウト/エラー時）
+    """
+    rq = queue_module.Queue()
+    thread = threading.Thread(
+        target=_run_cmd_in_thread, args=(cmd, cwd, rq), daemon=True
+    )
+    thread.start()
+
+    status_text = st.empty()
+    progress_bar = st.progress(0.0)
+    start = time.time()
+
+    while thread.is_alive():
+        elapsed = int(time.time() - start)
+        if elapsed >= timeout:
+            status_text.empty()
+            progress_bar.empty()
+            return None  # タイムアウト
+        status_text.caption(f"⏳ データ取得中... {elapsed}秒経過（最大 {timeout}秒）")
+        progress_bar.progress(min(elapsed / timeout, 0.95))
+        time.sleep(1)
+
+    status_text.empty()
+    progress_bar.empty()
+
+    try:
+        status, result = rq.get_nowait()
+    except queue_module.Empty:
+        return None
+
+    if status == "ok":
+        return result
+    st.error(f"実行エラー: {result}")
+    return None
 
 
 def extract_prompt_text(stdout: str) -> str:
@@ -131,16 +186,12 @@ with col_left:
             cmd.append("--simple")
 
         with st.spinner("プロンプト生成中..."):
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                    cwd=str(Path(__file__).parent.parent),
+            result = run_with_progress(cmd, str(Path(__file__).parent.parent))
+            if result is None:
+                st.error(
+                    f"⏰ タイムアウト（{_GEN_TIMEOUT}秒）: データ取得に時間がかかりすぎました。\n"
+                    "「シンプルモード」をオンにして再試行してください。"
                 )
-            except subprocess.TimeoutExpired:
-                st.error("タイムアウト（120秒）: データ取得に失敗しました")
                 st.stop()
 
         if result.returncode == 0:
@@ -255,22 +306,12 @@ with col_right:
         ]
 
         with st.spinner("ダッシュボードに保存中..."):
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                    cwd=str(Path(__file__).parent.parent),
-                )
-            except subprocess.TimeoutExpired:
+            result = run_with_progress(cmd, str(Path(__file__).parent.parent), timeout=60)
+            if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
-                st.error("タイムアウト（120秒）: 保存に失敗しました")
+            if result is None:
+                st.error("⏰ タイムアウト（60秒）: 保存に失敗しました")
                 st.stop()
-            finally:
-                # 一時ファイル削除
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
 
         if result.returncode == 0:
             stdout = result.stdout

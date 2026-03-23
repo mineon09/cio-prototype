@@ -137,8 +137,8 @@ def _get_edinet_metadata(target_date: str) -> list:
             resp = requests.get(url, params=params, timeout=30)
             
             if resp.status_code == 429:
-                print(f"    ⏳ EDINET レート制限 (List) — 65秒待機... ({attempt+1}/2)")
-                time.sleep(65)
+                print(f"    ⏳ EDINET レート制限 (List) — 35秒待機... ({attempt+1}/2)")
+                time.sleep(35)
                 continue
 
             if resp.status_code != 200:

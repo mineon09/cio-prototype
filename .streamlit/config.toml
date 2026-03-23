@@ -7,3 +7,10 @@ font = "sans serif"
 
 [server]
 headless = true
+maxUploadSize = 50
+# スマホなど低速回線でのタイムアウト対策
+enableXsrfProtection = false
+
+[runner]
+# 長時間処理中にスクリプトの再実行を抑制
+fastReruns = false
