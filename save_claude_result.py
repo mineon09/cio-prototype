@@ -155,11 +155,14 @@ def save_to_dashboard(ticker: str, context: dict, report: str,
         "ai_model":     model_name,
     }
 
-    # Claude 固有フィールド（あれば追加）
+    # Claude 固有フィールド（あれば追加）—— 旧形式・新形式の両方に対応
     for field in ("entry_price", "stop_loss", "take_profit",
                   "confidence", "holding_period", "risks", "catalysts",
                   "exit_strategy", "watch_points", "peer_comparison",
-                  "macro_sensitivity", "risk_quantification"):
+                  "macro_sensitivity", "risk_quantification",
+                  # 旧形式（build_enhanced_prompt_with_data）のフィールド
+                  "industry_outlook", "competitive_position", "time_horizon",
+                  "key_catalysts", "key_risks", "scenario_analysis", "esg_factors"):
         if field in claude_json:
             new_entry[field] = claude_json[field]
 
