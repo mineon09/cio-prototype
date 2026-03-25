@@ -495,6 +495,10 @@ def build_enhanced_prompt_with_data(
     """
     name = company_name or ticker
     current_date = datetime.now().strftime("%Y年%m月%d日")
+    current_year = datetime.now().year
+    current_quarter_num = (datetime.now().month - 1) // 3 + 1
+    next_q_num = current_quarter_num + 1 if current_quarter_num < 4 else 1
+    next_q_year = current_year if current_quarter_num < 4 else current_year + 1
 
     sections = []
 
@@ -658,13 +662,13 @@ def build_enhanced_prompt_with_data(
     "key_catalysts": [
         {{
             "event": "次四半期決算発表",
-            "expected_timing": "2026Q2",
+            "expected_timing": "{current_year}Q{next_q_num}",
             "impact": "high",
             "probability": 0.8
         }},
         {{
             "event": "新製品発表",
-            "expected_timing": "2026Q3",
+            "expected_timing": "{next_q_year}Q{(next_q_num % 4) + 1}",
             "impact": "medium",
             "probability": 0.6
         }}

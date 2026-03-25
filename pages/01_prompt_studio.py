@@ -144,6 +144,8 @@ if "generated_prompt" not in st.session_state:
     st.session_state["generated_prompt"] = ""
 if "last_ticker" not in st.session_state:
     st.session_state["last_ticker"] = ""
+if "save_ticker" not in st.session_state:
+    st.session_state["save_ticker"] = ""
 
 st.title("🧠 Prompt Studio")
 st.caption("STEP 1 でプロンプトを生成し、Claude に貼り付けた後、STEP 3 で結果を保存します。")
@@ -243,7 +245,6 @@ with col_right:
         "ティッカーコード",
         key="save_ticker",
         placeholder="STEP 1 と同じコードを入力",
-        value=st.session_state.get("last_ticker", ""),
     )
     model_name = st.text_input(
         "使用モデル名（任意）",
