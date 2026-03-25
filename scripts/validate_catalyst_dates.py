@@ -12,6 +12,7 @@ from datetime import datetime
 
 sys.path.append(".")
 from src.data_fetcher import fetch_stock_data
+from src.industry_trends import fetch_all_industry_data
 
 
 def validate_ticker(ticker: str) -> dict:
@@ -19,13 +20,14 @@ def validate_ticker(ticker: str) -> dict:
     current_year = today.year
     current_quarter_num = (today.month - 1) // 3 + 1
 
+    # fetch base data to get sector/name
     data = fetch_stock_data(ticker)
-    # catalysts may live under different keys depending on data shape
-    catalysts = (
-        data.get("catalysts", [])
-        or data.get("qualitative", {}).get("catalysts", [])
-        or data.get("industry", {}).get("catalysts", {}).get("catalysts", [])
-    )
+    sector = data.get("sector", "Technology")
+    company_name = data.get("name", ticker)
+
+    # fetch industry data which contains catalysts
+    industry_data = fetch_all_industry_data(ticker, sector=sector, company_name=company_name)
+    catalysts = industry_data.get("catalysts", {}).get("catalysts", [])
 
     results = {
         "ticker": ticker,

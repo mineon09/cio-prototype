@@ -140,6 +140,15 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
                 yuho_data: dict = None, scorecard: dict = None,
                 macro_data: dict = None, dcf_data: dict = None,
                 engine: str = "gemini") -> tuple[str, str, str]:
+    _today = datetime.now()
+    _current_year = _today.year
+    _current_quarter = f"{_current_year}Q{(_today.month - 1) // 3 + 1}"
+    _next_q_num = (_today.month - 1) // 3 + 2
+    _next_quarter = (
+        f"{_current_year}Q{_next_q_num}" if _next_q_num <= 4
+        else f"{_current_year + 1}Q1"
+    )
+
     labels = {
         'op_margin':     '営業利益率(%)',
         'net_margin':    '純利益率(%)',
@@ -276,6 +285,13 @@ def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
 あなたは外資系ヘッジファンドのCIOです。
 以下のデータをすべて使い、投資レポートを日本語で1つのレスポンスとして完成させてください。
 
+【分析基準日】{_today.strftime('%Y-%m-%d')}（今日）
+【TEMPORAL CONSTRAINTS（厳守）】
+- 本日は {_today.strftime('%Y-%m-%d')} です。カレントクォーターは {_current_quarter} です。
+- カタリスト（📅）に記載するイベント・日付は **必ず {_current_year} 年以降** にしてください。
+- {_current_year - 1} 年以前の日付は絶対に出力禁止。過去イベントはカタリストに含めないこと。
+- 日付が不明な場合は "{_current_year}H2" や "{_next_quarter}" など範囲表記を使うこと。
+
 【比較の文脈】{competitors.get('reasoning', '')}
 
 {port_constraint_text}
@@ -328,7 +344,7 @@ PBR: 低いほど割安。1倍割れは資産価値以下。
 📰 センチメント: [ポジティブ/中立/ネガティブ] 強度[高/中/低] [根拠2行]
 📈 テクニカル: [過熱/適正/割安] [根拠2行]
 ⚠️ 指標の矛盾: [あれば記載、なければ「矛盾なし」]
-📅 カタリスト: [具体的イベント・日付]
+📅 カタリスト: [具体的イベント・日付（{_current_year}年以降のみ）]
 ⏱️ タイミングスコア: X/10
 {layer3_format}
 ━━━ ✅ 最終投資判断 ━━━
