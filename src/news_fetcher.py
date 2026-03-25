@@ -1,12 +1,17 @@
 """
 news_fetcher.py - ニュース・センチメント取得モジュール
 =====================================================
-yfinance ニュースと Google 検索を組み合わせ、
-銘柄に関する最新ニュースと市場センチメントを取得する。
+Finnhub API と yfinance からリアルニュースを取得し、
+Gemini で分析・アノテーションを行う。
+
+設計方針：
+- ニュースの「取得」（Finnhub / yfinance）と「分析」（Gemini）を分離
+- Gemini はニュースの検索・生成を行わない（ハルシネーション防止）
+- すべてのニュースに data_source タグを付与してトレーサビリティを確保
 
 キャッシュシステム：
 - 日付別でニュースをキャッシュ（7 日間保持）
-- 複数日のニュースを統合して最新情報を提供
+- キャッシュ書き込み時に日付バリデーションを実施
 """
 
 import os
@@ -39,6 +44,46 @@ def _get_news_cache_file(ticker: str, date: datetime) -> str:
     return os.path.join(_get_news_cache_dir(), f"{ticker}_{date.strftime('%Y%m%d')}.json")
 
 
+def _validate_news_date(news_item: Dict, max_age_days: int = 14) -> bool:
+    """
+    ニュースアイテムの日付が有効範囲内かを検証する
+
+    Parameters
+    ----------
+    news_item     : ニュースアイテム（published_at フィールド必須）
+    max_age_days  : 許容する最大経過日数（デフォルト 14 日）
+
+    Returns
+    -------
+    True: 日付が有効（過去 max_age_days 以内、かつ未来日でない）
+    False: 日付が無効・欠損・パース不可
+    """
+    published_at = news_item.get("published_at", "")
+    if not published_at or not isinstance(published_at, str):
+        return False
+
+    try:
+        date_str = published_at.strip()
+        if len(date_str) >= 16:
+            parsed = datetime.strptime(date_str[:16], "%Y-%m-%d %H:%M")
+        elif len(date_str) >= 10:
+            parsed = datetime.strptime(date_str[:10], "%Y-%m-%d")
+        else:
+            return False
+    except (ValueError, TypeError):
+        return False
+
+    now = datetime.now()
+    # 未来日を拒否（1日の猶予を許容：タイムゾーン差）
+    if parsed > now + timedelta(days=1):
+        return False
+    # max_age_days より古いものを拒否
+    if parsed < now - timedelta(days=max_age_days):
+        return False
+
+    return True
+
+
 def _load_cached_news(ticker: str, days: int = 7) -> List[Dict]:
     """
     過去 N 日分のキャッシュからニュースを読み込む
@@ -68,6 +113,8 @@ def _load_cached_news(ticker: str, days: int = 7) -> List[Dict]:
                     title = item.get('title', '')
                     if title and title not in seen_titles:
                         seen_titles.add(title)
+                        if "data_source" not in item:
+                            item["data_source"] = "cache"
                         all_news.append(item)
             except Exception:
                 pass
@@ -77,8 +124,8 @@ def _load_cached_news(ticker: str, days: int = 7) -> List[Dict]:
 
 def _save_news_cache(ticker: str, news: List[Dict]) -> None:
     """
-    ニュースを当日のキャッシュファイルに保存
-    
+    ニュースを当日のキャッシュファイルに保存（日付バリデーション付き）
+
     Parameters
     ----------
     ticker : 銘柄コード
@@ -86,10 +133,22 @@ def _save_news_cache(ticker: str, news: List[Dict]) -> None:
     """
     today = datetime.now()
     cache_file = _get_news_cache_file(ticker, today)
-    
+
+    # 日付バリデーションでフィルタ
+    valid_news = []
+    rejected = 0
+    for item in news:
+        if _validate_news_date(item):
+            valid_news.append(item)
+        else:
+            rejected += 1
+
+    if rejected > 0:
+        print(f"  ⚠️ 日付不正のニュースを{rejected}件除外")
+
     try:
         with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(news, f, ensure_ascii=False, indent=2)
+            json.dump(valid_news, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"  ⚠️ キャッシュ保存エラー：{e}")
 
@@ -143,13 +202,39 @@ def fetch_yf_news(ticker: str, limit: int = 10) -> List[Dict]:
 
         news_list = []
         for item in news_data[:limit]:
+            # yfinance の新レスポンス構造（content ネスト）と旧構造の両方に対応
+            content = item.get("content", {})
+            if content:
+                title = content.get("title", "")
+                publisher = content.get("provider", {}).get("displayName", "")
+                link = (content.get("canonicalUrl") or content.get("clickThroughUrl") or {}).get("url", "")
+                pub_date_raw = content.get("pubDate", "") or content.get("displayTime", "")
+                # "2026-03-25T11:48:30Z" → "2026-03-25 11:48"
+                published_at = pub_date_raw.replace("T", " ").replace("Z", "")[:16] if pub_date_raw else ""
+                thumbnail_url = ""
+                thumb = content.get("thumbnail", {})
+                if thumb:
+                    resolutions = thumb.get("resolutions", [])
+                    thumbnail_url = resolutions[0].get("url", "") if resolutions else thumb.get("originalUrl", "")
+                item_type = content.get("contentType", "STORY")
+            else:
+                # 旧構造フォールバック
+                title = item.get("title", "")
+                publisher = item.get("publisher", "")
+                link = item.get("link", "")
+                ts = item.get("providerPublishTime", 0)
+                published_at = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+                thumbnail_url = item.get("thumbnail", {}).get("resolutions", [{}])[0].get("url", "") if item.get("thumbnail") else ""
+                item_type = item.get("type", "STORY")
+
             news_list.append({
-                "title": item.get("title", ""),
-                "publisher": item.get("publisher", ""),
-                "link": item.get("link", ""),
-                "published_at": datetime.fromtimestamp(item.get("providerPublishTime", 0)).strftime("%Y-%m-%d %H:%M") if item.get("providerPublishTime") else "",
-                "type": item.get("type", "STORY"),
-                "thumbnail": item.get("thumbnail", {}).get("resolutions", [{}])[0].get("url", "") if item.get("thumbnail") else "",
+                "title": title,
+                "publisher": publisher,
+                "link": link,
+                "published_at": published_at,
+                "type": item_type,
+                "thumbnail": thumbnail_url,
+                "data_source": "yfinance",
             })
 
         return news_list
@@ -158,88 +243,168 @@ def fetch_yf_news(ticker: str, limit: int = 10) -> List[Dict]:
         return []
 
 
-def fetch_google_news(ticker: str, company_name: str = None, limit: int = 10, days: int = 14) -> List[Dict]:
+def fetch_finnhub_news(ticker: str, days: int = 14, limit: int = 10) -> List[Dict]:
     """
-    Gemini 検索機能で Google ニュースから関連記事を取得（強化版）
-    複数クエリで網羅性向上
+    Finnhub API から銘柄の最新ニュースを取得（プライマリソース）
 
     Parameters
     ----------
-    ticker        : 銘柄コード
-    company_name  : 会社名（オプション）
-    limit         : 取得件数
-    days          : 過去何日分のニュースを取得するか
+    ticker : 銘柄コード（例: AAPL, MSFT）
+    days   : 過去何日分のニュースを取得するか
+    limit  : 最大取得件数
 
     Returns
     -------
-    ニュースリスト
+    ニュースリスト（data_source: "finnhub" 付き）
+    FINNHUB_API_KEY 未設定時は空リストを返す（グレースフルデグレード）
     """
+    api_key = os.getenv("FINNHUB_API_KEY", "")
+    if not api_key:
+        return []
+
+    try:
+        import finnhub
+        client = finnhub.Client(api_key=api_key)
+
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+
+        raw_news = client.company_news(
+            ticker,
+            _from=start_date.strftime("%Y-%m-%d"),
+            to=end_date.strftime("%Y-%m-%d"),
+        )
+
+        if not raw_news:
+            return []
+
+        news_list = []
+        cutoff = datetime.now() - timedelta(days=days)
+
+        for item in raw_news:
+            ts = item.get("datetime", 0)
+            if ts:
+                pub_dt = datetime.fromtimestamp(ts)
+            else:
+                continue
+
+            if pub_dt < cutoff:
+                continue
+
+            news_list.append({
+                "title": item.get("headline", ""),
+                "publisher": item.get("source", ""),
+                "link": item.get("url", ""),
+                "published_at": pub_dt.strftime("%Y-%m-%d %H:%M"),
+                "type": item.get("category", "STORY"),
+                "thumbnail": item.get("image", ""),
+                "data_source": "finnhub",
+            })
+
+        news_list.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+        return news_list[:limit]
+
+    except Exception as e:
+        print(f"  ⚠️ Finnhub ニュース取得エラー：{e}")
+        return []
+
+
+def fetch_gemini_news_analysis(
+    ticker: str,
+    real_news_list: List[Dict],
+    company_name: str = None,
+) -> List[Dict]:
+    """
+    Gemini を使って実ニュースにセンチメント・カテゴリ等をアノテーションする
+
+    Gemini は新しいニュースを生成しない。提供されたニュースのみをアノテーションする。
+
+    Parameters
+    ----------
+    ticker          : 銘柄コード
+    real_news_list  : Finnhub / yfinance から取得した実ニュースのリスト
+    company_name    : 会社名（オプション）
+
+    Returns
+    -------
+    アノテーション付きニュースリスト（入力と同数、追加なし）
+    """
+    if not real_news_list:
+        return []
+
     name = company_name or ticker
-    
-    # 複数クエリで網羅性向上
-    queries = [
-        f"{name} ({ticker}) 決算 業績 予想",
-        f"{name} ({ticker}) M&A 提携 買収",
-        f"{name} ({ticker}) 新製品 技術 発表",
-        f"{name} ({ticker}) アナリスト 格付け 目標株価",
-        f"{name} ({ticker}) リスク 規制 訴訟",
-    ]
+    n = len(real_news_list)
 
-    all_news = []
-    seen_titles = set()
+    # Gemini に渡す簡易ニュースリスト（インデックス付き）
+    news_for_prompt = []
+    for i, item in enumerate(real_news_list):
+        news_for_prompt.append({
+            "index": i,
+            "title": item.get("title", ""),
+            "publisher": item.get("publisher", ""),
+            "published_at": item.get("published_at", ""),
+        })
 
-    for i, query in enumerate(queries):
-        prompt = f"""
-You are a financial research assistant specializing in Japanese stock market news.
-Search for news about: {query}
+    prompt = f"""You are annotating news items for {name} ({ticker}).
 
-Find news articles from the past {days} days and return up to {max(3, limit // len(queries))} relevant items.
+You are annotating ONLY the following {n} news items.
+Do NOT add, invent, or hallucinate additional news items.
+Return EXACTLY {n} items, one for each input item, in the same order.
 
-Return a JSON array with the following structure:
-[
-  {{
-    "title": "ニュースタイトル（日本語）",
-    "source": "情報源（例：ロイター、ブルームバーグ、日経、Reuters など）",
-    "published_date": "YYYY-MM-DD",
-    "summary": "要約（日本語 50-100 文字）",
-    "sentiment": "positive/neutral/negative",
-    "relevance": "high/medium/low",
-    "category": "earnings/M&A/product/analyst/risk/other"
-  }}
-]
+【Input news items】
+{json.dumps(news_for_prompt, ensure_ascii=False)}
 
-IMPORTANT:
-- Focus on material news: earnings, M&A, product launches, regulatory changes, analyst ratings
-- Exclude generic market commentary or unrelated articles
-- Only include news from the past {days} days
-- Output ONLY valid JSON array, no additional text
-- If no relevant news found, return empty array []
+【Task】
+For each item, add:
+- "sentiment": "positive" / "neutral" / "negative"
+- "relevance": "high" / "medium" / "low"
+- "category": "earnings" / "M&A" / "product" / "analyst" / "risk" / "other"
+- "summary_ja": 日本語の要約（50〜80文字）
+
+【Output format】
+Return a JSON array of {n} objects. Each object must include ALL original fields
+(index, title, publisher, published_at) plus the 4 new annotation fields.
+Output ONLY valid JSON array, no additional text.
 """
 
-        try:
-            result, model = call_gemini(prompt, parse_json=True, use_search=True)
+    try:
+        result, _ = call_gemini(prompt, parse_json=True)
 
-            if isinstance(result, list):
-                for item in result:
-                    title = item.get("title", "")
-                    if title and title not in seen_titles:
-                        seen_titles.add(title)
-                        all_news.append(item)
-            elif isinstance(result, dict) and "news" in result:
-                for item in result["news"]:
-                    title = item.get("title", "")
-                    if title and title not in seen_titles:
-                        seen_titles.add(title)
-                        all_news.append(item)
-        except Exception as e:
-            print(f"  ⚠️ Google ニュース検索エラー（クエリ {i+1}/{len(queries)}）: {e}")
-            continue
+        if not isinstance(result, list):
+            return real_news_list
 
-    # 関連度でソート（high > medium > low）
-    relevance_order = {"high": 0, "medium": 1, "low": 2, "other": 3}
-    all_news.sort(key=lambda x: relevance_order.get(x.get("relevance", "other"), 3))
+        # アノテーション結果を元のリストにマージ
+        annotated = []
+        for i, original in enumerate(real_news_list):
+            item = original.copy()
+            # 対応するアノテーションを探す（インデックスまたは順序で）
+            annotation = None
+            if i < len(result):
+                annotation = result[i]
+            else:
+                for r in result:
+                    if r.get("index") == i:
+                        annotation = r
+                        break
 
-    return all_news[:limit]
+            if annotation:
+                item["sentiment"] = annotation.get("sentiment", "neutral")
+                item["relevance"] = annotation.get("relevance", "medium")
+                item["category"] = annotation.get("category", "other")
+                item["summary"] = annotation.get("summary_ja", "")
+            else:
+                item.setdefault("sentiment", "neutral")
+                item.setdefault("relevance", "medium")
+                item.setdefault("category", "other")
+                item.setdefault("summary", "")
+
+            annotated.append(item)
+
+        return annotated
+
+    except Exception as e:
+        print(f"  ⚠️ Gemini ニュース分析エラー：{e}")
+        return real_news_list
 
 
 def analyze_news_sentiment(news_list: List[Dict]) -> Dict:
@@ -336,14 +501,22 @@ def fetch_all_news(
     """
     全てのニュースソースから情報を収集（キャッシュ対応）
 
+    フロー：
+    1. yfinance → 日付バリデーション
+    2. Finnhub → 日付フィルタ済み
+    3. マージ＋重複排除
+    4. Gemini でアノテーション（センチメント・カテゴリ等）
+    5. 総合センチメント分析
+    6. キャッシュ保存（バリデーション付き）
+
     Parameters
     ----------
     ticker        : 銘柄コード
     company_name  : 会社名
-    include_google: Google 検索を含むか
+    include_google: Gemini 分析を含むか（後方互換性のため維持）
     yf_limit      : yfinance 取得件数
-    google_limit  : Google ニュース取得件数
-    google_days   : Google ニュース検索期間（日）
+    google_limit  : Finnhub 取得件数（後方互換パラメータ名）
+    google_days   : ニュース検索期間（日）
     use_cache     : キャッシュを使用するか
     cache_days    : キャッシュ保持日数
 
@@ -353,58 +526,66 @@ def fetch_all_news(
     """
     print(f"  📰 {ticker} のニュース収集中...")
 
-    # キャッシュから読み込み（use_cache=True の場合）
+    # ── Step 1: yfinance ニュース取得＋日付フィルタ ──
+    yf_news_raw = fetch_yf_news(ticker, limit=yf_limit)
+    yf_news = [n for n in yf_news_raw if _validate_news_date(n, max_age_days=google_days)]
+    if len(yf_news_raw) != len(yf_news):
+        print(f"    ✓ yfinance: {len(yf_news)} 件（{len(yf_news_raw) - len(yf_news)}件を日付フィルタで除外）")
+    else:
+        print(f"    ✓ yfinance: {len(yf_news)} 件")
+
+    # ── Step 2: Finnhub ニュース取得（既に日付フィルタ済み） ──
+    finnhub_news = fetch_finnhub_news(ticker, days=google_days, limit=google_limit)
+    if finnhub_news:
+        print(f"    ✓ Finnhub: {len(finnhub_news)} 件")
+    else:
+        api_key = os.getenv("FINNHUB_API_KEY", "")
+        if not api_key:
+            print(f"    ⚠️ Finnhub: APIキー未設定（FINNHUB_API_KEY）→ yfinance のみで継続")
+        else:
+            print(f"    ⚠️ Finnhub: 0 件")
+
+    # ── Step 3: マージ＋重複排除 ──
+    merged_news = []
+    seen_titles = set()
+
+    for item in yf_news:
+        title = item.get("title", "")
+        if title and title not in seen_titles:
+            seen_titles.add(title)
+            merged_news.append(item)
+
+    for item in finnhub_news:
+        title = item.get("title", "")
+        if title and title not in seen_titles:
+            seen_titles.add(title)
+            merged_news.append(item)
+
+    # キャッシュからも補完
     cached_news = []
     if use_cache:
         cached_news = _load_cached_news(ticker, days=cache_days)
+        for item in cached_news:
+            title = item.get("title", "")
+            if title and title not in seen_titles and _validate_news_date(item, max_age_days=google_days):
+                seen_titles.add(title)
+                merged_news.append(item)
         if cached_news:
-            print(f"    ✓ キャッシュ：{len(cached_news)} 件（過去{cache_days}日分）")
+            print(f"    ✓ キャッシュ補完：{len(cached_news)} 件から有効分を追加")
 
-    # yfinance ニュース
-    yf_news = fetch_yf_news(ticker, limit=yf_limit)
-    print(f"    ✓ yfinance: {len(yf_news)} 件")
+    print(f"    → マージ後：{len(merged_news)} 件")
 
-    # Google ニュース（キャッシュが十分にある場合はスキップ）
-    google_news = []
-    if include_google:
-        # キャッシュが 5 件未満の場合は新規取得
-        if len(cached_news) < 5:
-            google_news = fetch_google_news(ticker, company_name, limit=google_limit, days=google_days)
-            print(f"    ✓ Google News: {len(google_news)} 件")
-            
-            # キャッシュに保存
-            if google_news:
-                _save_news_cache(ticker, google_news)
-                _cleanup_old_cache(ticker, keep_days=cache_days)
-        else:
-            print(f"    ✓ Google News: キャッシュ使用（{len(cached_news)}件）")
-            google_news = cached_news
+    # ── Step 4: ニュースが少ない場合の警告 ──
+    if len(merged_news) < 3:
+        print(f"    ⚠️ ニュースが{len(merged_news)}件のみ（Finnhub APIキーの確認を推奨）")
 
-    # 統合（キャッシュ＋新規）
-    all_news = yf_news.copy()
-
-    # キャッシュニュースを追加（重複チェック付き）
-    existing_titles = {n["title"] for n in yf_news}
-    for cn in cached_news:
-        if cn.get("title") not in existing_titles:
-            all_news.append(cn)
-            existing_titles.add(cn.get("title", ""))
-
-    # Google ニュースを追加（重複チェック付き）
-    for gn in google_news:
-        if gn.get("title") not in existing_titles:
-            all_news.append({
-                "title": gn.get("title", ""),
-                "publisher": gn.get("source", ""),
-                "link": gn.get("link", ""),
-                "published_at": gn.get("published_date", ""),
-                "type": "GOOGLE_NEWS",
-                "thumbnail": "",
-                "summary": gn.get("summary", ""),
-                "sentiment": gn.get("sentiment", "neutral"),
-                "relevance": gn.get("relevance", "medium"),
-            })
-            existing_titles.add(gn.get("title", ""))
+    # ── Step 5: Gemini アノテーション（センチメント・カテゴリ付与） ──
+    annotated_news = merged_news
+    if include_google and merged_news:
+        annotated_news = fetch_gemini_news_analysis(
+            ticker, merged_news, company_name=company_name
+        )
+        print(f"    ✓ Gemini アノテーション完了")
 
     # 日付でソート（新しい順）
     def get_date_key(news):
@@ -412,17 +593,22 @@ def fetch_all_news(
         if isinstance(published_at, str) and len(published_at) >= 10:
             return published_at[:10]
         return '0000-00-00'
-    
-    all_news.sort(key=get_date_key, reverse=True)
 
-    # センチメント分析
-    sentiment = analyze_news_sentiment(all_news)
+    annotated_news.sort(key=get_date_key, reverse=True)
+
+    # ── Step 6: 総合センチメント分析 ──
+    sentiment = analyze_news_sentiment(annotated_news)
+
+    # ── Step 7: キャッシュ保存（バリデーション付き） ──
+    if annotated_news:
+        _save_news_cache(ticker, annotated_news)
+        _cleanup_old_cache(ticker, keep_days=cache_days)
 
     return {
         "available": True,
         "yf_news": yf_news,
-        "google_news": google_news,
-        "all_news": all_news[:15],  # 最大 15 件に制限
+        "finnhub_news": finnhub_news,
+        "all_news": annotated_news[:15],
         "sentiment": sentiment,
         "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -489,7 +675,11 @@ def format_news_for_prompt(news_data: Dict, max_items: int = 5) -> str:
             source_info = f"[{publisher}] " if publisher else ""
             date_info = f"({date})" if date else ""
 
-            lines.append(f"  {i}. {sentiment_mark} {source_info}{title} {date_info}")
+            # data_source タグ
+            ds = news.get("data_source", "")
+            ds_tag = f" [{ds}]" if ds else ""
+
+            lines.append(f"  {i}. {sentiment_mark} {source_info}{title} {date_info}{ds_tag}")
 
     return "\n".join(lines)
 
@@ -503,7 +693,16 @@ if __name__ == "__main__":
     ticker = sys.argv[1] if len(sys.argv) > 1 else "AMAT"
 
     print(f"🧪 News Fetcher テスト：{ticker}")
+    print(f"  FINNHUB_API_KEY: {'設定済み' if os.getenv('FINNHUB_API_KEY') else '未設定'}")
     result = fetch_all_news(ticker, include_google=True)
-    print("\n" + "="*60)
+
+    print("\n" + "=" * 60)
     print(format_news_for_prompt(result))
-    print("="*60)
+    print("=" * 60)
+
+    # data_source 分布を表示
+    sources = {}
+    for item in result.get("all_news", []):
+        src = item.get("data_source", "unknown")
+        sources[src] = sources.get(src, 0) + 1
+    print(f"\n📊 データソース分布: {sources}")
