@@ -221,6 +221,45 @@ Output in Japanese.
         return {"available": False, "error": str(e)}
 
 
+def _validate_and_fix_catalysts(catalysts: list, reference_date: datetime = None) -> list:
+    """
+    カタリストの日付バリデーションと自動修正
+
+    過去日付のカタリストを検出し除外する。
+    """
+    import re
+
+    if reference_date is None:
+        reference_date = datetime.now()
+
+    current_year = reference_date.year
+    current_quarter_num = (reference_date.month - 1) // 3 + 1
+
+    validated = []
+    for cat in catalysts:
+        timing = (
+            cat.get("expected_date", "")
+            or cat.get("expected_timing", "")
+            or cat.get("timing", "")
+            or cat.get("date", "")
+        )
+        year_match = re.search(r"(20\d{2})", str(timing))
+        if year_match:
+            year = int(year_match.group(1))
+            if year < current_year:
+                print(
+                    f"  ⚠️ 過去カタリストを除外: {timing} → {str(cat.get('event', ''))[:30]}"
+                )
+                continue
+            if year == current_year:
+                q_match = re.search(r"Q(\d)", str(timing), re.IGNORECASE)
+                if q_match and int(q_match.group(1)) < current_quarter_num:
+                    print(f"  ⚠️ 過去四半期カタリストを除外: {timing}")
+                    continue
+        validated.append(cat)
+    return validated
+
+
 def fetch_catalyst_calendar(ticker: str, company_name: str = None) -> Dict:
     """
     今後のカタリスト（予定）を収集
@@ -235,8 +274,26 @@ def fetch_catalyst_calendar(ticker: str, company_name: str = None) -> Dict:
     カタリストカレンダー
     """
     name = company_name or ticker
-    
+    today = datetime.now()
+    current_year = today.year
+    current_quarter = f"{current_year}Q{(today.month - 1) // 3 + 1}"
+    next_quarter_num = (today.month - 1) // 3 + 2
+    next_quarter = (
+        f"{current_year}Q{next_quarter_num}"
+        if next_quarter_num <= 4
+        else f"{current_year + 1}Q1"
+    )
+
     prompt = f"""
+Today's date: {today.strftime('%Y-%m-%d')}
+Current quarter: {current_quarter}
+
+CRITICAL TEMPORAL CONSTRAINTS:
+- You are writing for an investor reading this on {today.strftime('%Y-%m-%d')}.
+- All dates you output MUST be {current_year} or later. NEVER output any date before {today.strftime('%Y-%m-%d')}.
+- Use {current_quarter} as the current quarter, {next_quarter} as the next quarter.
+- If a specific date is uncertain, use "{current_year}H1" or "{current_year}H2" or "{current_year + 1}" rather than guessing a past date.
+
 You are an investment research assistant.
 Identify upcoming catalysts for {name} ({ticker}).
 
@@ -263,22 +320,24 @@ Return a JSON array of upcoming catalysts:
   }}
 ]
 
-Focus on the next 12 months. Output in Japanese.
-If specific dates are unknown, provide estimates based on historical patterns.
+Focus on the next 12 months from today ({today.strftime('%Y-%m-%d')}). Output in Japanese.
+If specific dates are unknown, provide estimates based on historical patterns but always use {current_year} or {current_year + 1}.
 """
     
     try:
         result, _ = call_groq(prompt, parse_json=True)
         
         if isinstance(result, list):
+            validated = _validate_and_fix_catalysts(result)
             return {
                 "available": True,
-                "catalysts": result[:5],  # 最大 5 件
+                "catalysts": validated[:5],  # 最大 5 件
             }
         elif isinstance(result, dict) and "catalysts" in result:
+            validated = _validate_and_fix_catalysts(result["catalysts"])
             return {
                 "available": True,
-                "catalysts": result["catalysts"][:5],
+                "catalysts": validated[:5],
             }
         else:
             return {"available": False}
@@ -311,8 +370,28 @@ def fetch_all_industry_data(
     name = company_name or ticker
     peers_context = f"特に以下の競合他社と比較：{', '.join(peers[:5])}" if peers else ""
 
+    today = datetime.now()
+    current_year = today.year
+    current_quarter = f"{current_year}Q{(today.month - 1) // 3 + 1}"
+    next_quarter_num = (today.month - 1) // 3 + 2
+    next_quarter = (
+        f"{current_year}Q{next_quarter_num}"
+        if next_quarter_num <= 4
+        else f"{current_year + 1}Q1"
+    )
+
     # ── 3つのプロンプトを1つに統合（use_search=True で最新情報を取得） ──
     prompt = f"""
+Today's date: {today.strftime('%Y-%m-%d')}
+Current quarter: {current_quarter}
+
+CRITICAL TEMPORAL CONSTRAINTS (strictly enforced):
+- You are writing for an investor reading this on {today.strftime('%Y-%m-%d')}.
+- All future events in "catalysts" MUST be dated {current_year} or later.
+- NEVER output any catalyst date before {today.strftime('%Y-%m-%d')}.
+- Use {current_quarter} as the current quarter, {next_quarter} as the next quarter.
+- If a specific date is uncertain, use "{current_year}H1", "{current_year}H2", or "{current_year + 1}" instead of guessing a past date.
+
 You are a senior investment analyst. Analyze {name} ({ticker}) and its industry ({sector_name_jp}).
 Use the latest available data (past 3 months) via search.
 
@@ -364,7 +443,7 @@ Return a SINGLE JSON object with the following three sections:
 Rules:
 - growth_drivers: top 3-5 items
 - risks: top 3-5 items
-- catalysts: next 12 months, up to 5 items
+- catalysts: next 12 months from {today.strftime('%Y-%m-%d')}, up to 5 items, ALL dated {current_year} or {current_year + 1}
 - All text fields must be in Japanese
 - Output ONLY valid JSON. No markdown, no explanation.
 """
@@ -384,7 +463,9 @@ Rules:
         overview = {"available": bool(overview_raw), **overview_raw,
                     "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         peer_comparison = {"available": bool(peer_raw), **peer_raw}
-        catalysts_list = catalysts_raw if isinstance(catalysts_raw, list) else []
+        catalysts_list = _validate_and_fix_catalysts(
+            catalysts_raw if isinstance(catalysts_raw, list) else []
+        )
         catalysts = {"available": bool(catalysts_list), "catalysts": catalysts_list[:5]}
 
         return {
