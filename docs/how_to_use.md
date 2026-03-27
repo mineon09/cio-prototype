@@ -467,9 +467,9 @@ print(f"判断：{result['signal']}")
 
 ---
 
-## 4. Claude 回答のダッシュボード保存（save_claude_result.py）
+## 4. Claude 回答のダッシュボード＆Notion保存（save_claude_result.py）
 
-`generate_prompt.py` で生成したプロンプトを Claude（Web UI / API）に送信した後、その回答を `save_claude_result.py` でダッシュボード（`data/results.json`）に取り込みます。
+`generate_prompt.py` で生成したプロンプトを Claude（Web UI / API）に送信した後、その回答を `save_claude_result.py` でダッシュボード（`data/results.json`）および Notion のデータベースに取り込みます。
 
 ### エンドツーエンドのフロー
 
@@ -483,6 +483,7 @@ print(f"判断：{result['signal']}")
 
 [3] save_claude_result.py 7203.T --from-clipboard
         ↓ data/results.json に保存（ダッシュボード反映）
+        ↓ Notion データベースに保存
 ```
 
 ### コマンド例
@@ -558,11 +559,12 @@ cat response.txt | ./venv/bin/python3 save_claude_result.py 7203.T
 🔍 JSON 抽出中...
    signal=BUY, score=7.5, confidence=0.8
 💾 ダッシュボードに保存中...
+📤 Notion に保存中...
 ✅ ダッシュボード保存完了：7203.T (履歴 3 件)
    シグナル  : BUY
    総合スコア: 6.5
    エントリー: 2850  損切: 2700  利確: 3100
-   保存先    : data/results.json
+   保存先    : data/results.json (および Notion)
 ```
 
 ### 注意事項
@@ -667,4 +669,6 @@ python3 -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplie
 - **デュアルエンジン**: 両方の結果を比較して、より信頼性の高い判断を得たい場合
 
 ---
-*Last Updated: 2026-03-27 (v2.4.1 --engine オプション追記・architecture.md / system_design.md 全面刷新)*
+---
+*Last Updated: 2026-03-27 (v2.4.1 --engine オプション追記・Notion保存機能追記・architecture / system_design 全面刷新)*
+
