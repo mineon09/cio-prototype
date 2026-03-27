@@ -3,7 +3,7 @@
 外資との「対戦表」を自動生成し、**市場が気づいていない本質的価値のバグ**を発見するAI投資分析システム。
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue)](https://python.org)
-[![Gemini](https://img.shields.io/badge/Gemini-3--flash-orange)](https://ai.google.dev)
+[![Gemini](https://img.shields.io/badge/Gemini-2.5--flash-orange)](https://ai.google.dev)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
@@ -12,50 +12,58 @@
 
 銘柄コードを1つ入力するだけで、以下を自動実行：
 
-```
+```plaintext
 入力: "7203.T"（トヨタ）
         ↓
 ① yfinanceで財務・テクニカル・ニュースを取得
         ↓
-② GeminiAPIが最適な比較対象を自動選定
+② GeminiAPIが最適な比較対象を自動選定（API節約のためルールベース補完）
    直接競合: TSLA, BYD, F
    機能代替: UBER, LYFT
    資本効率ベンチマーク: AAPL, MSFT
         ↓
-③ (日本株) EDINET有価証券報告書をGeminiで解析
+③ (日本株) EDINET有価証券報告書 / (米国株) SEC 10-K をGeminiで解析
    リスクTOP3 / 堀(Moat) / R&D / 経営陣トーン
         ↓
-④ 4軸スコアカードを算出（セクター別閾値）
+④ 4軸スコアカードを算出（セクター別閾値 + DCF + マクロ補正）
    Fundamental / Valuation / Technical / Qualitative
         ↓
 ⑤ 最終判断: BUY / WATCH / SELL
-   → Google Sheets + Webダッシュボードに出力
+   → Notion + Streamlit ダッシュボードに出力
 ```
 
 ---
 
 ## 📦 ファイル構成
 
-```
+```plaintext
 .
-├── main.py                    # オーケストレーション＆分析ロジック（Gemini 自動分析）
-├── analyze.py                 # GitHub Models API 版（追加 API キー不要）
+├── main.py                    # オーケストレーター（CLIエントリポイント）
+├── app.py                     # Streamlit ダッシュボード
 ├── generate_prompt.py         # プロンプト生成 → Claude 等に手動貼り付け用
 ├── save_claude_result.py      # Claude 回答をダッシュボードに取り込む
-├── config.json                # 設定（閾値・セクタープロファイル）
+├── config.json                # 設定（閾値・セクタープロファイル・戦略パラメータ）
 ├── data/
-│   └── results.json           # 分析結果（自動生成）
-├── prompts/                   # 生成されたプロンプト・コンテキスト保存先
-│   ├── 7203_T_YYYYMMDD.txt    # 生成プロンプト
-│   └── 7203_T_context.json    # スコアカード等コンテキスト（save_claude_result.py が参照）
+│   ├── results.json           # 分析結果（自動生成・履歴蓄積・filelock排他制御）
+│   └── reports/               # Markdown レポート保存先
+├── prompts/                   # 生成プロンプト・コンテキスト JSON 保存先
 ├── src/                       # コアモジュール群
 │   ├── data_fetcher.py        # 株価・財務データ取得 + Gemini/Groq API 呼び出し
-│   ├── analyzers.py           # 4軸スコアカード生成
+│   ├── analyzers.py           # 4軸スコアカード生成（セクター別閾値）
+│   ├── strategies.py          # BounceStrategy / BreakoutStrategy
+│   ├── macro_regime.py        # マクロ環境レジーム判定（TTLキャッシュ）
+│   ├── dcf_model.py           # DCF理論株価（正式WACC・PITフィルタ）
 │   ├── edinet_client.py       # EDINET 有報取得（日本株）
 │   ├── sec_client.py          # SEC 10-K/10-Q 取得（米国株）
-│   ├── macro_regime.py        # マクロ環境レジーム判定
-│   └── copilot_client.py      # GitHub Models API クライアント
-├── web/                       # ダッシュボード UI
+│   ├── news_fetcher.py        # ニュース取得（yfinance + Gemini google_search）
+│   ├── investment_judgment.py # API / ツールベース投資判断エンジン
+│   ├── backtester.py          # バックテスト（PIT・モンテカルロ・ローリング）
+│   ├── portfolio.py           # ポジションサイジング・セクター集中度チェック
+│   ├── notion_writer.py       # Notion API 書き込み
+│   ├── copilot_client.py      # GitHub Models API クライアント（GPT-4o）
+│   └── parallel_utils.py      # 複数銘柄並列データ取得
+├── scripts/                   # 検証・デバッグスクリプト
+├── tests/                     # 単体テスト（pytest）
 ├── requirements.txt
 ├── .env.example
 └── AGENTS.md                  # エージェント作業ルール
@@ -68,6 +76,7 @@
 ### 1. 依存パッケージをインストール
 
 ```bash
+python3 -m venv venv
 pip install -r requirements.txt
 ```
 
@@ -82,6 +91,9 @@ cp .env.example .env
 ```bash
 GEMINI_API_KEY=your_gemini_api_key
 EDINET_API_KEY=your_edinet_subscription_key
+NOTION_TOKEN=your_notion_integration_token
+NOTION_DATABASE_ID=your_notion_database_id
+# Google Sheets（任意）
 SPREADSHEET_ID=your_spreadsheet_id
 GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
 ```
@@ -90,13 +102,32 @@ GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
 |------|--------|
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) |
 | `EDINET_API_KEY` | [EDINET API](https://disclosure2dl.edinet-fsa.go.jp/) |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | [Google Cloud Console](https://console.cloud.google.com/) |
+| `NOTION_TOKEN` | [Notion Integrations](https://www.notion.so/my-integrations) |
 
 ---
 
 ## 💻 使い方
 
-### 🥇 推奨: Claude Sonnet で分析（高精度・半自動）
+### 🤖 完全自動: Gemini で分析（推奨）
+
+```bash
+# 基本（デフォルト: Gemini 2.5 Flash）
+./venv/bin/python3 main.py 7203.T
+
+# 複数銘柄
+./venv/bin/python3 main.py 7203.T 8306.T AAPL
+
+# スイング戦略で分析（bounce: 逆張り / breakout: 順張り）
+./venv/bin/python3 main.py 7203.T --strategy bounce
+./venv/bin/python3 main.py AAPL --strategy breakout
+
+# エンジン指定（GitHub Models GPT-4o を使用）
+./venv/bin/python3 main.py AAPL --engine copilot
+```
+
+---
+
+### 🥇 高精度: Claude Sonnet で分析（半自動）
 
 データ収集・プロンプト生成・結果保存は自動。Claude への貼り付けのみ手動。
 
@@ -105,105 +136,34 @@ GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
 ./venv/bin/python3 generate_prompt.py 7203.T --copy
 # → プロンプトがクリップボードにコピー、prompts/7203_T_context.json も自動保存
 
-# Step 2: 【手動】Claude Sonnet (copilot.github.com 等) に貼り付け → 回答全体をコピー
+# Step 2: 【手動】Claude Sonnet に貼り付け → 回答全体をコピー
 
 # Step 3: 回答をダッシュボードに自動保存
 ./venv/bin/python3 save_claude_result.py 7203.T --from-clipboard
 # → data/results.json に追記（signal / entry / stop / take_profit / risks 等）
 ```
 
-**オプション:**
+---
+
+### 📊 Streamlit ダッシュボードを表示
 
 ```bash
-# 最新データで再取得（キャッシュ無効）
-./venv/bin/python3 generate_prompt.py 7203.T --copy --no-cache
-
-# 回答をファイルから読み込む
-./venv/bin/python3 save_claude_result.py 7203.T --from-file response.txt
-
-# モデル名を記録（デフォルト: claude-sonnet）
-./venv/bin/python3 save_claude_result.py 7203.T --from-clipboard --model claude-sonnet-4-5
+streamlit run app.py
 ```
+
+ブラウザが自動で `http://localhost:8501` を開きます。
 
 ---
 
-### 🤖 完全自動: Gemini / Groq で分析
+### 🔄 バックテスト
 
 ```bash
-# Gemini 使用（デフォルト）
-./venv/bin/python3 main.py 7203.T
+# 例: トヨタ (7203.T) を 2024年1月から12ヶ月シミュレーション
+python3 -m src.backtester --ticker 7203.T --start 2024-01-01 --months 12
 
-# 複数銘柄
-./venv/bin/python3 main.py 7203.T 8306.T AAPL
+# ローリングバックテスト（Walk-Forward）
+python3 -m src.backtester --ticker 7203.T --start 2023-01-01 --months 24 --rolling --window-months 12
 ```
-
----
-
-### 🆕 analyze.py（GitHub Models API 版 — 追加 API キー不要）
-
-`gh auth login` で GitHub にログイン済みであれば、追加の API キーなしで実行できます。
-
-```bash
-# 基本（gpt-4o で分析）
-./venv/bin/python3 analyze.py AMAT
-
-# 日本株
-./venv/bin/python3 analyze.py 7203.T
-
-# 高速モード（gpt-4o-mini）
-./venv/bin/python3 analyze.py XOM --model gpt-4o-mini
-
-# キャッシュなし（最新データ）
-./venv/bin/python3 analyze.py NVDA --no-cache
-
-# レポートのコピー先を指定
-./venv/bin/python3 analyze.py AMAT -o ~/Desktop/amat_report.md
-```
-
-レポートは `data/reports/YYYYMM/TICKER_date.md` に自動保存されます。
-
-**利用可能モデル（`--model`）:**
-
-| 略称 | 正式名称 | 特徴 |
-|------|---------|------|
-| `gpt-4o` | GPT-4o | 高品質・推奨（デフォルト） |
-| `gpt-4o-mini` | GPT-4o-mini | 高速・低コスト |
-| `llama405b` | Meta-Llama-3.1-405B-Instruct | オープンソース高性能 |
-| `llama70b` | Meta-Llama-3.1-70B-Instruct | バランス型 |
-| `mistral` | Mistral-large-2407 | Mistral 系 |
-
-> **注意**: GitHub Models API では現時点で Claude Sonnet は利用不可。
-> プロンプトのみ生成して手動でコピペする場合は `generate_prompt.py` を使用。
-
-### プロンプト生成のみ（手動貼り付け用・旧フロー）
-
-```bash
-# プロンプト生成 → ファイル保存
-./venv/bin/python3 generate_prompt.py AMAT -o prompt.txt
-```
-
-> **推奨**: `--copy` フラグ + `save_claude_result.py` を使う新フローの方がシステマチック（上記参照）。
-
-### main.py（Gemini / GitHub Models 切り替え版）
-
-```bash
-# Gemini 使用（デフォルト）
-./venv/bin/python3 main.py 7203.T
-
-# GitHub Models (gpt-4o) に切り替え
-./venv/bin/python3 main.py AMAT --engine copilot
-
-# 複数銘柄
-./venv/bin/python3 main.py 7203.T 8306.T AAPL
-```
-
-### ダッシュボードを表示
-
-```bash
-python serve.py
-```
-
-ブラウザが自動で `http://localhost:8080` を開きます。
 
 ---
 
@@ -212,11 +172,11 @@ python serve.py
 | 軸 | 内容 | 主要指標 |
 |----|------|----------|
 | **Fundamental** | 企業の地力 | ROE, 営業利益率, 自己資本比率 |
-| **Valuation** | 割安度 | PER, PBR, 配当利回り, 目標株価乖離 |
+| **Valuation** | 割安度 | PER, PBR, 配当利回り, DCF乖離率 |
 | **Technical** | タイミング | RSI, MA乖離率, BB位置, ボラティリティ |
 | **Qualitative** | 定性分析 | 有報リスク, 堀(Moat), R&D, 経営陣トーン |
 
-スコアはセクター別に閾値が自動調整されます（High-Growth / Value / Financial）。
+スコアはセクター別・マクロレジーム別に閾値が自動調整されます（High-Growth / Value / Financial 等）。
 
 ---
 
@@ -227,8 +187,8 @@ python serve.py
 ```json
 {
   "signals": {
-    "BUY":   {"min_score": 7},
-    "SELL":  {"max_score": 3}
+    "BUY":  {"min_score": 6.5},
+    "SELL": {"max_score": 3}
   },
   "sector_profiles": {
     "high_growth": {
@@ -236,20 +196,37 @@ python serve.py
       "fundamental": {"roe_good": 15},
       "valuation": {"per_cheap": 25}
     }
+  },
+  "strategies": {
+    "bounce": {"rsi_threshold": 30},
+    "breakout": {"volume_multiplier": 1.5}
   }
 }
 ```
 
 ---
 
-## 🔒 GitHub Secretsの設定
+## 🔒 GitHub Secrets の設定
 
 | Secret名 | 内容 |
 |----------|------|
-| `GEMINI_API_KEY` | Gemini APIキー |
-| `EDINET_API_KEY` | EDINET APIキー |
-| `SPREADSHEET_ID` | Google SheetsのID |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | サービスアカウントJSON |
+| `GEMINI_API_KEY` | Gemini API キー |
+| `EDINET_API_KEY` | EDINET API キー |
+| `NOTION_TOKEN` | Notion インテグレーショントークン |
+| `NOTION_DATABASE_ID` | Notion データベース ID |
+| `SPREADSHEET_ID` | Google Sheets の ID（任意） |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | サービスアカウント JSON（任意） |
+
+---
+
+## 📖 ドキュメント
+
+| ドキュメント | 内容 |
+|---|---|
+| [`docs/how_to_use.md`](docs/how_to_use.md) | 詳細な操作マニュアル（CLI・バックテスト・投資判断エンジン） |
+| [`docs/architecture.md`](docs/architecture.md) | システムアーキテクチャ・モジュール一覧 |
+| [`docs/system_design.md`](docs/system_design.md) | 主要ロジックの設計詳細 |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | バージョン別変更履歴 |
 
 ---
 
