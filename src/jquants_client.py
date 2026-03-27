@@ -2,13 +2,13 @@
 jquants_client.py - J-Quants V2 API クライアント
 =================================================
 J-Quants API (api.jquants.com/v2) を使用して東証上場銘柄の
-OHLC 株価データを取得する。dexter-jp の stock-price.ts の
-Python 移植版。
+OHLC 株価データを取得する。
 
 設計方針:
 - JQUANTS_API_KEY 未設定時は空リストを返してメインフローを止めない
-- cache/ ディレクトリに TTL 付きキャッシュ（1時間）
+- .jquants_cache/ ディレクトリに TTL 付きキャッシュ（1時間）
 - ティッカー変換: 7203.T → 7203 → 72030 (J-Quants は5桁コード)
+- 日次OHLC エンドポイント: GET /v2/prices/daily_quotes
 """
 
 import os
@@ -91,7 +91,14 @@ def _get(endpoint: str, params: dict, ttl_hours: float = 1.0) -> dict:
         _save_cache(cache, data)
         return data
     except requests.exceptions.HTTPError as e:
-        print(f"  ⚠️ [J-Quants] HTTP エラー {endpoint}: {e}")
+        status = getattr(e.response, "status_code", None)
+        if status == 403:
+            print(
+                f"  ⚠️ [J-Quants] プランの制限により株価データを取得できません。"
+                f"Free プランでは {endpoint} は利用不可です。yfinance にフォールバックします。"
+            )
+        else:
+            print(f"  ⚠️ [J-Quants] HTTP エラー {endpoint}: {e}")
         return {}
     except Exception as e:
         print(f"  ⚠️ [J-Quants] リクエスト失敗 {endpoint}: {e}")
@@ -170,20 +177,22 @@ def get_stock_price(
         "to": to_date,
     }
 
-    resp = _get("/equities/bars/daily", params, ttl_hours=1.0)
-    bars = resp.get("data", [])
+    resp = _get("/prices/daily_quotes", params, ttl_hours=1.0)
+    bars = resp.get("daily_quotes", [])
 
     if not bars:
         return []
 
-    # レスポンスフィールドは V2 略称: O/H/L/C/Vo または AdjO/AdjH/AdjL/AdjC/AdjVo
+    # J-Quants V2 /prices/daily_quotes のフィールド:
+    # AdjustmentClose / AdjustmentOpen / AdjustmentHigh / AdjustmentLow / AdjustmentVolume
+    # 調整前は Close / Open / High / Low / Volume
     result = []
     for bar in bars:
-        open_  = bar.get("AdjO") or bar.get("O") or bar.get("open") or 0
-        high   = bar.get("AdjH") or bar.get("H") or bar.get("high") or 0
-        low    = bar.get("AdjL") or bar.get("L") or bar.get("low") or 0
-        close  = bar.get("AdjC") or bar.get("C") or bar.get("close") or 0
-        volume = bar.get("AdjVo") or bar.get("Vo") or bar.get("volume") or 0
+        open_  = bar.get("AdjustmentOpen")  or bar.get("Open")  or 0
+        high   = bar.get("AdjustmentHigh")  or bar.get("High")  or 0
+        low    = bar.get("AdjustmentLow")   or bar.get("Low")   or 0
+        close  = bar.get("AdjustmentClose") or bar.get("Close") or 0
+        volume = bar.get("AdjustmentVolume") or bar.get("Volume") or 0
 
         raw_date = bar.get("Date") or bar.get("date") or ""
         # "20240101" → "2024-01-01"

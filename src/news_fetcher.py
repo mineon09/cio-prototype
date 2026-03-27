@@ -70,6 +70,16 @@ def _clean_web_content(text: str, max_chars: int = 200) -> str:
         re.compile(r"前日比[+\-−\d.]+\("),                      # "前日比+20(+0.59%)"
         re.compile(r"^\s*[\d,]+\s*$"),                          # 数字のみの行
         re.compile(r"Toyota Motor Corporation\s*$"),
+        # Yahoo Finance / Reuters ナビゲーション
+        re.compile(r"ポートフォリオに追加"),
+        re.compile(r"リアルタイム株価"),
+        re.compile(r"関連ニュース"),
+        re.compile(r"適時開示"),
+        re.compile(r"株つぶやき"),
+        re.compile(r"^\s*\d{2}/\d{2}\s*[-–]\s*(リアルタイム|ポートフォリオ|関連)"),  # "03/13 - リアルタイム..."
+        re.compile(r"S&P\s*500[^\d]*[\d,]+\.\d{2}"),            # "S&P500種 6,624.70"
+        re.compile(r"Market Closed"),
+        re.compile(r"Add to a list"),
     ]
 
     # 文字列レベルで除去するパターン
@@ -82,6 +92,8 @@ def _clean_web_content(text: str, max_chars: int = 200) -> str:
         r"\d+\.\d+%\s*(ネガティブ|ポジティブ)",
         r"- トップ\s*-\s*日本株[^\n]*",
         r"\(\d{3,}(\.\d+)?ドル\)[^\n]*",
+        r"値上がり\s+ポジティブ[^\n]*",
+        r"値下がり\s+ネガティブ[^\n]*",
     ]
 
     # 行ごとに処理
@@ -350,73 +362,85 @@ def fetch_google_news_rss(
     import xml.etree.ElementTree as ET
     from urllib.parse import quote
 
-    query = company_name or ticker.split(".")[0]
-    url = (
-        f"https://news.google.com/rss/search"
-        f"?q={quote(query)}&hl=ja&gl=JP&ceid=JP:ja"
-    )
+    # クエリ候補（企業名ベース → ティッカーコードベースの順で試行）
+    ticker_base = ticker.split(".")[0]
+    query_candidates: List[str] = []
+    if company_name:
+        query_candidates.append(f"{company_name} 株")
+        query_candidates.append(company_name)
+    query_candidates.append(f"{ticker_base} 決算")
+    query_candidates.append(ticker_base)
 
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; stock_analyze/1.0)"},
+    cutoff = datetime.now() - timedelta(days=days)
+
+    for query in query_candidates:
+        url = (
+            f"https://news.google.com/rss/search"
+            f"?q={quote(query)}&hl=ja&gl=JP&ceid=JP:ja"
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            xml_data = resp.read()
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; stock_analyze/1.0)"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                xml_data = resp.read()
 
-        root = ET.fromstring(xml_data)
-        channel = root.find("channel")
-        if channel is None:
-            return []
-
-        cutoff = datetime.now() - timedelta(days=days)
-        news_list = []
-
-        for item in channel.findall("item"):
-            title = (item.findtext("title") or "").strip()
-            link = item.findtext("link") or ""
-            pub_str = item.findtext("pubDate") or ""
-            source_el = item.find("source")
-            publisher = source_el.text if source_el is not None else ""
-
-            if not title:
+            root = ET.fromstring(xml_data)
+            channel = root.find("channel")
+            if channel is None:
                 continue
 
-            pub_dt = None
-            if pub_str:
-                for fmt in (
-                    "%a, %d %b %Y %H:%M:%S %Z",
-                    "%a, %d %b %Y %H:%M:%S %z",
-                ):
-                    try:
-                        pub_dt = datetime.strptime(pub_str, fmt)
-                        if pub_dt.tzinfo is not None:
-                            pub_dt = pub_dt.replace(tzinfo=None)
-                        break
-                    except ValueError:
-                        continue
+            news_list = []
 
-            if pub_dt and pub_dt < cutoff:
-                continue
+            for item in channel.findall("item"):
+                title = (item.findtext("title") or "").strip()
+                link = item.findtext("link") or ""
+                pub_str = item.findtext("pubDate") or ""
+                source_el = item.find("source")
+                publisher = source_el.text if source_el is not None else ""
 
-            news_list.append({
-                "title": title,
-                "publisher": publisher,
-                "link": link,
-                "published_at": pub_dt.strftime("%Y-%m-%d %H:%M") if pub_dt else "",
-                "type": "STORY",
-                "thumbnail": "",
-                "data_source": "google_rss",
-            })
+                if not title:
+                    continue
 
-            if len(news_list) >= limit:
-                break
+                pub_dt = None
+                if pub_str:
+                    for fmt in (
+                        "%a, %d %b %Y %H:%M:%S %Z",
+                        "%a, %d %b %Y %H:%M:%S %z",
+                    ):
+                        try:
+                            pub_dt = datetime.strptime(pub_str, fmt)
+                            if pub_dt.tzinfo is not None:
+                                pub_dt = pub_dt.replace(tzinfo=None)
+                            break
+                        except ValueError:
+                            continue
 
-        return news_list
+                if pub_dt and pub_dt < cutoff:
+                    continue
 
-    except Exception as e:
-        print(f"  ⚠️ Google News RSS 取得エラー：{e}")
-        return []
+                news_list.append({
+                    "title": title,
+                    "publisher": publisher,
+                    "link": link,
+                    "published_at": pub_dt.strftime("%Y-%m-%d %H:%M") if pub_dt else "",
+                    "type": "STORY",
+                    "thumbnail": "",
+                    "data_source": "google_rss",
+                })
+
+                if len(news_list) >= limit:
+                    break
+
+            if news_list:
+                return news_list
+
+        except Exception as e:
+            print(f"  ⚠️ Google News RSS 取得エラー（クエリ: {query}）：{e}")
+            continue
+
+    return []
 
 
 def fetch_finnhub_news(ticker: str, days: int = 14, limit: int = 10) -> List[Dict]:
@@ -665,6 +689,99 @@ Consider:
         }
 
 
+def fetch_tdnet_news(sec_code: str, days: int = 30) -> List[Dict]:
+    """
+    東証適時開示 TDnet から指定銘柄のニュースを取得する（無料・APIキー不要）。
+
+    Parameters
+    ----------
+    sec_code : 証券コード（例: "6326" または "6326.T"）
+    days     : 遡る日数（最大30日）
+
+    Returns
+    -------
+    ニュースリスト（data_source: "tdnet" 付き）
+    失敗時は空リストを返す（グレースフルデグレード）
+    """
+    import urllib.request
+    import urllib.error
+
+    code = sec_code.split(".")[0].zfill(4)
+    results: List[Dict] = []
+    seen_titles: set = set()
+
+    row_re = re.compile(r'<tr[^>]*>(.*?)</tr>', re.DOTALL | re.IGNORECASE)
+    td_re = re.compile(r'<td[^>]*>(.*?)</td>', re.DOTALL | re.IGNORECASE)
+    a_re = re.compile(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL | re.IGNORECASE)
+    tag_re = re.compile(r'<[^>]+>')
+
+    for i in range(min(days, 30)):
+        date_obj = datetime.now() - timedelta(days=i)
+        date_str = date_obj.strftime("%Y%m%d")
+        date_fmt = date_obj.strftime("%Y-%m-%d")
+        url = f"https://www.release.tdnet.info/inbs/I_list_001_{date_str}.html"
+
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; stock_analyze/1.0)"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read()
+
+            try:
+                html = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                html = raw.decode("shift_jis", errors="replace")
+
+            for row_m in row_re.finditer(html):
+                row_html = row_m.group(1)
+                tds = list(td_re.finditer(row_html))
+                if len(tds) < 4:
+                    continue
+
+                row_code = tag_re.sub("", tds[1].group(1)).strip()
+                if row_code != code:
+                    continue
+
+                title_td_html = tds[3].group(1)
+                title = tag_re.sub("", title_td_html).strip()
+
+                link = ""
+                a_m = a_re.search(title_td_html)
+                if a_m:
+                    href = a_m.group(1).strip()
+                    link_title = tag_re.sub("", a_m.group(2)).strip()
+                    if link_title:
+                        title = link_title
+                    link = href if href.startswith("http") else f"https://www.release.tdnet.info{href}"
+
+                if not title or title in seen_titles:
+                    continue
+                seen_titles.add(title)
+
+                time_str = tag_re.sub("", tds[0].group(1)).strip()
+                published_at = f"{date_fmt} {time_str}" if time_str else date_fmt
+
+                results.append({
+                    "title": title,
+                    "publisher": "TDnet（適時開示）",
+                    "link": link,
+                    "published_at": published_at,
+                    "type": "IR",
+                    "thumbnail": "",
+                    "data_source": "tdnet",
+                })
+
+        except urllib.error.HTTPError:
+            continue  # 非営業日等で404になる場合
+        except Exception as e:
+            print(f"    ⚠️ TDnet {date_str}: {e}")
+            continue
+
+    return results
+
+
 def fetch_all_news(
     ticker: str,
     company_name: str = None,
@@ -703,9 +820,27 @@ def fetch_all_news(
     """
     print(f"  📰 {ticker} のニュース収集中...")
 
+    # ── 日本株判定（各ステップで共用） ──
+    is_jp_stock = ticker.upper().endswith(".T") or ticker.upper().endswith(".OS")
+
     # ── Step 1: yfinance ニュース取得＋日付フィルタ＋関連性フィルタ ──
+    # 日本株は英語記事が少ないため30日まで範囲を拡張
+    yf_max_age = 30 if is_jp_stock else google_days
     yf_news_raw = fetch_yf_news(ticker, limit=yf_limit)
-    yf_news = [n for n in yf_news_raw if _validate_news_date(n, max_age_days=google_days)]
+    yf_news = [n for n in yf_news_raw if _validate_news_date(n, max_age_days=yf_max_age)]
+
+    # 日本株: google_days より古い記事に「古いニュース」ラベルを付与
+    if is_jp_stock:
+        old_cutoff = datetime.now() - timedelta(days=google_days)
+        for item in yf_news:
+            pub = item.get("published_at", "")
+            if len(pub) >= 10:
+                try:
+                    pub_dt = datetime.strptime(pub[:10], "%Y-%m-%d")
+                    if pub_dt < old_cutoff:
+                        item["title"] = item.get("title", "") + "（※古いニュース）"
+                except ValueError:
+                    pass
 
     # 銘柄コード・会社名を含まない無関係記事を除外
     ticker_base = ticker.split(".")[0].upper()
@@ -735,7 +870,6 @@ def fetch_all_news(
         print(f"    ✓ yfinance: {len(yf_news)} 件")
 
     # ── Step 2: ニュース取得（日本株: Google News RSS / 米株: Finnhub） ──
-    is_jp_stock = ticker.upper().endswith(".T") or ticker.upper().endswith(".OS")
     finnhub_news: List[Dict] = []
 
     if is_jp_stock:
@@ -751,6 +885,12 @@ def fetch_all_news(
             finnhub_news = google_rss_news
         else:
             print(f"    ⚠️ Google News RSS: 0 件")
+
+        # TDnet 適時開示ニュース取得（APIキー不要・公式IR情報）
+        tdnet_news = fetch_tdnet_news(ticker.split(".")[0], days=google_days)
+        if tdnet_news:
+            print(f"    ✓ TDnet: {len(tdnet_news)} 件（適時開示）")
+            finnhub_news = finnhub_news + tdnet_news
     else:
         finnhub_news = fetch_finnhub_news(ticker, days=google_days, limit=google_limit)
         if finnhub_news:
@@ -879,6 +1019,9 @@ def format_news_for_prompt(news_data: Dict, max_items: int = 5) -> str:
 
     lines.append(f"【市場センチメント】 {sentiment_emoji} {sentiment.get('overall', 'neutral').upper()}")
     lines.append(f"  スコア：{sentiment.get('score', 0):.2f} (-1〜+1)")
+    total_news_count = len(news_data.get("all_news", []))
+    if total_news_count < 3:
+        lines.append(f"  ⚠️ 低信頼度（ニュース{total_news_count}件のみ）")
     lines.append(f"  要約：{sentiment.get('summary', '')}")
 
     if sentiment.get("key_themes"):

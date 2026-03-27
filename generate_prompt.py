@@ -37,6 +37,26 @@ except ImportError:
     def extract_sec_data(ticker): return {}
 
 
+def fmt_pct(v, d: int = 2) -> str:
+    """float を丸めた数値文字列に変換（None / N/A / 変換不可 は '-'）。% は呼び出し側で付与。"""
+    if v is None or v == 'N/A':
+        return "-"
+    try:
+        return str(round(float(v), d))
+    except (TypeError, ValueError):
+        return "-"
+
+
+def fmt_num(v, d: int = 2):
+    """float を丸めた値を返す（None / N/A は '-'）。"""
+    if v is None or v == 'N/A':
+        return "-"
+    try:
+        return round(float(v), d)
+    except (TypeError, ValueError):
+        return "-"
+
+
 def format_scorecard_text(scorecard: dict) -> str:
     """スコアカードをテキスト形式に整形"""
     fund = scorecard.get("fundamental", {})
@@ -206,18 +226,18 @@ def build_high_quality_prompt(
 
     metrics = financial_metrics
     fundamentals_detail = f"""
-  ROE            : {metrics.get('roe', 'N/A')}%
-  PER            : {metrics.get('per', 'N/A')}倍
-  PBR            : {metrics.get('pbr', 'N/A')}倍
-  営業利益率     : {metrics.get('op_margin', 'N/A')}%
-  自己資本比率   : {metrics.get('equity_ratio', 'N/A')}%
-  配当利回り     : {metrics.get('dividend_yield', 'N/A')}%
-  営業 CF/純利益 : {metrics.get('cf_quality', 'N/A')}
-  R&D 比率       : {metrics.get('rd_ratio', 'N/A')}%
+  ROE            : {fmt_pct(metrics.get('roe'))}%
+  PER            : {fmt_num(metrics.get('per'))}倍
+  PBR            : {fmt_num(metrics.get('pbr'))}倍
+  営業利益率     : {fmt_pct(metrics.get('op_margin'))}%
+  自己資本比率   : {fmt_pct(metrics.get('equity_ratio'))}%
+  配当利回り     : {fmt_pct(metrics.get('dividend_yield'))}%
+  営業 CF/純利益 : {fmt_num(metrics.get('cf_quality'))}
+  R&D 比率       : {fmt_pct(metrics.get('rd_ratio'))}%
 """
 
-    ma75_dev = technical_data.get('ma75_deviation', 'N/A')
-    ma75_str = f"{ma75_dev}%" if ma75_dev != 'N/A' else 'N/A'
+    ma75_dev = technical_data.get('ma75_deviation')
+    ma75_str = f"{fmt_pct(ma75_dev)}%" if ma75_dev is not None and ma75_dev != 'N/A' else 'N/A'
     tech_detail = f"""
   現在価格       : {technical_data.get('current_price', 'N/A')}
   RSI(14)        : {technical_data.get('rsi', 'N/A')}
@@ -234,10 +254,10 @@ def build_high_quality_prompt(
     peer_set     = _peer_set(sector, ticker)
 
     # ピア比較テーブル用メトリクス
-    roe       = metrics.get('roe', 'N/A')
-    pbr       = metrics.get('pbr', 'N/A')
-    op_margin = metrics.get('op_margin', 'N/A')
-    div_yield = metrics.get('dividend_yield', 'N/A')
+    roe       = fmt_pct(metrics.get('roe'))
+    pbr       = fmt_num(metrics.get('pbr'))
+    op_margin = fmt_pct(metrics.get('op_margin'))
+    div_yield = fmt_pct(metrics.get('dividend_yield'))
 
     # 有報なし時の補足注記
     yuho_missing_note = ""
@@ -494,6 +514,7 @@ def build_enhanced_prompt_with_data(
     jquants_data: list = None,
     jquants_source: str = "jquants",
     web_news_data: list = None,
+    yuho_summary: str = None,
 ) -> str:
     """
     全ての定性情報を含む完全版プロンプトを生成
@@ -522,14 +543,14 @@ def build_enhanced_prompt_with_data(
         sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【財務指標】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ROE            : {m.get('roe', 'N/A')}%
-  PER            : {m.get('per', 'N/A')}倍
-  PBR            : {m.get('pbr', 'N/A')}倍
-  営業利益率     : {m.get('op_margin', 'N/A')}%
-  自己資本比率   : {m.get('equity_ratio', 'N/A')}%
-  配当利回り     : {m.get('dividend_yield', 'N/A')}%
-  営業 CF/純利益 : {m.get('cf_quality', 'N/A')}
-  R&D 比率       : {m.get('rd_ratio', 'N/A')}%
+  ROE            : {fmt_pct(m.get('roe'))}%
+  PER            : {fmt_num(m.get('per'))}倍
+  PBR            : {fmt_num(m.get('pbr'))}倍
+  営業利益率     : {fmt_pct(m.get('op_margin'))}%
+  自己資本比率   : {fmt_pct(m.get('equity_ratio'))}%
+  配当利回り     : {fmt_pct(m.get('dividend_yield'))}%
+  営業 CF/純利益 : {fmt_num(m.get('cf_quality'))}
+  R&D 比率       : {fmt_pct(m.get('rd_ratio'))}%
 """)
 
     # 3. テクニカル指標
@@ -646,6 +667,13 @@ def build_enhanced_prompt_with_data(
     - {strengths}
   弱み             :
     - {weaknesses}
+""")
+    elif yuho_summary and not any(x in (yuho_summary or "") for x in ["未取得", "データなし", "エラー"]):
+        # EDINET DB 未設定時は有報 Gemini 解析結果で代替
+        sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【有価証券報告書 AI解析サマリー (EDINET)】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{yuho_summary}
 """)
 
     if jquants_data:
@@ -844,12 +872,24 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
     jquants_data = None
     jquants_source = "jquants"
     web_news_data = None
+    yuho_summary = None
     if ticker.endswith('.T'):
         try:
             from src.edinetdb_client import get_full_company_data
             edinetdb_data = get_full_company_data(ticker)
         except Exception as e:
             print(f"  ⚠️ EDINET DB取得エラー：{e}")
+
+        # EDINET DB 未設定時のフォールバック: 有報 Gemini 解析結果を取得
+        if not (edinetdb_data and edinetdb_data.get('available')):
+            try:
+                from src.edinet_client import extract_yuho_data
+                from src.analyzers import format_yuho_for_prompt
+                yuho_data = extract_yuho_data(ticker)
+                yuho_summary = format_yuho_for_prompt(yuho_data)
+                print(f"  ✓ EDINET 有報 Gemini 解析を取得（EDINET DB 代替）")
+            except Exception as e:
+                print(f"  ⚠️ EDINET 有報取得エラー：{e}")
             
         try:
             from src.jquants_client import get_price_history
@@ -890,6 +930,34 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
             except Exception as e:
                 print(f"  ⚠️ Web News取得エラー：{e}")
 
+            # Exa/Web検索結果を本文ニュースセクション（all_news）にもマージ
+            if web_news_data and news_data and news_data.get("available"):
+                existing_titles = {
+                    n.get("title", "").lower() for n in news_data.get("all_news", [])
+                }
+                web_merged = 0
+                for item in web_news_data:
+                    title = item.get("title", "")
+                    if not title or title.lower() in existing_titles:
+                        continue
+                    news_data["all_news"].append({
+                        "title": title,
+                        "publisher": item.get("data_source", "exa").upper(),
+                        "link": item.get("url", ""),
+                        "published_at": item.get("published_at") or "",
+                        "type": "STORY",
+                        "thumbnail": "",
+                        "data_source": item.get("data_source", "exa"),
+                    })
+                    existing_titles.add(title.lower())
+                    web_merged += 1
+                if web_merged > 0:
+                    print(f"  ✓ Web検索結果 {web_merged} 件を本文ニュースにマージ")
+                    news_data["all_news"].sort(
+                        key=lambda n: (n.get("published_at") or "")[:10] or "0000-00-00",
+                        reverse=True,
+                    )
+
     prompt = build_enhanced_prompt_with_data(
         ticker=ticker,
         company_name=data.get('name'),
@@ -903,6 +971,7 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         jquants_data=jquants_data,
         jquants_source=jquants_source,
         web_news_data=web_news_data,
+        yuho_summary=yuho_summary,
     )
 
     return prompt
