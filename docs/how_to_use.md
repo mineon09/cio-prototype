@@ -31,7 +31,7 @@ python3 main.py --ticker 7011.T --strategy breakout
 python3 main.py --ticker AAPL --engine copilot
 ```
 
-- **実行内容**: データの取得、DCF 算出（有利子負債を反映した正式な WACC 計算対応）、マクロ環境判定（自動・TTL 付きキャッシュ）、ルールベース＆AI ハイブリッドによる競合比較（API 節約対応）、AI レポート生成、Notion への自動記録、ローカル Markdown 形式およびダッシュボード用 JSON（排他制御対応）への保存。
+- **実行内容**: データの取得、DCF 算出（正式な WACC 計算対応）、マクロ環境判定（自動キャッシュ）、ルールベース＆AI ハイブリッドによる競合比較、**日本株特有の高度化（EDINET DBによる財務健全性スコア、J-Quantsによる東証公式OHLC株価、高機能AIウェブ検索によるニュース取得）**、AI レポート生成、Notion への自動記録、ローカル Markdown 形式およびダッシュボード用 JSON（排他制御対応）への保存。
 
 ### Streamlit ダッシュボード
 
@@ -644,7 +644,7 @@ python3 -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplie
 - **複数システムからの並列実行**: `results.json` へのアクセスは `filelock` により排他制御されています。GitHub Actions 等で並列実行した場合も安全に書き込みが行われます。
 - **Notion 連携時の挙動**: Notion 書き込み時にデータベースのプロパティが不足している場合、エラーを検知して動的にプロパティを追加・リトライします（Add-On-Demand 機能）。またブロックの文字数制限（2000 文字）を回避するため、長文レポートは自動で安全なサイズにチャンク分割されて保存されます。
 - **実行ログ**: ターミナルの標準出力およびローカルディレクトリ (`data/reports/`) 内の Markdown ファイルで詳細を確認できます。Notion 連携を設定している場合は、指定したデータベースにも内容が自動書き込みされます。
-- **API キーのエラー**: `.env` ファイルに API キーが正しく設定されているか確認してください。`python3 -c "import os; print(os.environ.get('GEMINI_API_KEY'))` で環境変数を確認できます。
+- **API キーのエラー**: `.env` ファイルに API キー（`GEMINI_API_KEY`, `EDINETDB_API_KEY`, `JQUANTS_API_KEY` 等）が正しく設定されているか確認してください。新機能のキー（J-Quants等）が未設定の場合は、該当セクションのみを自動でスキップして分析を継続します。
 - **投資判断エンジンのエラー**: `src/investment_judgment.py` のログ出力を確認してください。`logging` モジュールで INFO レベル以上のログが出力されます。
 
 ---
