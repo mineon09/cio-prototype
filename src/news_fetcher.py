@@ -684,6 +684,150 @@ def format_news_for_prompt(news_data: Dict, max_items: int = 5) -> str:
     return "\n".join(lines)
 
 
+def fetch_web_search_news(query: str, max_results: int = 5) -> List[Dict]:
+    """
+    ウェブ検索 API でニュースを取得する（Exa → Perplexity → Tavily フォールバック）。
+
+    Parameters
+    ----------
+    query       : 検索クエリ（例: "トヨタ 株価 最新ニュース"）
+    max_results : 取得件数
+
+    Returns
+    -------
+    [
+      {
+        "title":        str,
+        "url":          str,
+        "content":      str,
+        "published_at": str | None,
+        "data_source":  "exa" | "perplexity" | "tavily"
+      },
+      ...
+    ]
+    失敗時は []
+    """
+    import requests as _req
+
+    # ── Exa ────────────────────────────────────────────────
+    exa_key = os.getenv("EXA_API_KEY", "")
+    if exa_key:
+        try:
+            resp = _req.post(
+                "https://api.exa.ai/search",
+                headers={"x-api-key": exa_key, "Content-Type": "application/json"},
+                json={
+                    "query": query,
+                    "numResults": max_results,
+                    "useAutoprompt": True,
+                    "contents": {"text": {"maxCharacters": 500}},
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            if results:
+                news = []
+                for r in results[:max_results]:
+                    news.append({
+                        "title":        r.get("title", ""),
+                        "url":          r.get("url", ""),
+                        "content":      (r.get("text") or r.get("snippet") or "")[:500],
+                        "published_at": r.get("publishedDate") or r.get("published_date"),
+                        "data_source":  "exa",
+                    })
+                print(f"    ✓ Exa: {len(news)} 件")
+                return news
+        except Exception as e:
+            print(f"    ⚠️ Exa 失敗: {e} → Perplexity にフォールバック")
+
+    # ── Perplexity ─────────────────────────────────────────
+    perp_key = os.getenv("PERPLEXITY_API_KEY", "")
+    if perp_key:
+        try:
+            resp = _req.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {perp_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "sonar",
+                    "messages": [
+                        {"role": "system", "content": "You are a financial news assistant. Return only JSON."},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Search for the latest news about: {query}\n"
+                                f"Return a JSON array of up to {max_results} results. "
+                                "Each object must have: title (string), url (string), "
+                                "content (string, ≤500 chars), published_at (ISO date or null)."
+                            ),
+                        },
+                    ],
+                    "return_citations": True,
+                },
+                timeout=20,
+            )
+            resp.raise_for_status()
+            content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            # JSON 部分を抽出
+            import re as _re
+            m = _re.search(r"\[.*\]", content, _re.DOTALL)
+            if m:
+                items = json.loads(m.group())
+                news = []
+                for item in items[:max_results]:
+                    if isinstance(item, dict):
+                        news.append({
+                            "title":        item.get("title", ""),
+                            "url":          item.get("url", ""),
+                            "content":      str(item.get("content", ""))[:500],
+                            "published_at": item.get("published_at"),
+                            "data_source":  "perplexity",
+                        })
+                if news:
+                    print(f"    ✓ Perplexity: {len(news)} 件")
+                    return news
+        except Exception as e:
+            print(f"    ⚠️ Perplexity 失敗: {e} → Tavily にフォールバック")
+
+    # ── Tavily ─────────────────────────────────────────────
+    tavily_key = os.getenv("TAVILY_API_KEY", "")
+    if tavily_key:
+        try:
+            resp = _req.post(
+                "https://api.tavily.com/search",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "api_key": tavily_key,
+                    "query": query,
+                    "max_results": max_results,
+                    "include_raw_content": False,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            if results:
+                news = []
+                for r in results[:max_results]:
+                    news.append({
+                        "title":        r.get("title", ""),
+                        "url":          r.get("url", ""),
+                        "content":      (r.get("content") or "")[:500],
+                        "published_at": r.get("published_date"),
+                        "data_source":  "tavily",
+                    })
+                print(f"    ✓ Tavily: {len(news)} 件")
+                return news
+        except Exception as e:
+            print(f"    ⚠️ Tavily 失敗: {e}")
+
+    print(f"    ⚠️ ウェブ検索ニュース: 全 API 失敗（EXA_API_KEY, PERPLEXITY_API_KEY, TAVILY_API_KEY を確認してください）")
+    return []
+
+
 # テスト実行
 if __name__ == "__main__":
     import sys

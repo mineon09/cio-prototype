@@ -54,8 +54,10 @@
 │   ├── macro_regime.py        # マクロ環境レジーム判定（TTLキャッシュ）
 │   ├── dcf_model.py           # DCF理論株価（正式WACC・PITフィルタ）
 │   ├── edinet_client.py       # EDINET 有報取得（日本株）
+│   ├── edinetdb_client.py     # EDINET DB API（財務健全性・AI分析、日本株）
+│   ├── jquants_client.py      # J-Quants V2 東証公式OHLC株価（日本株）
 │   ├── sec_client.py          # SEC 10-K/10-Q 取得（米国株）
-│   ├── news_fetcher.py        # ニュース取得（yfinance + Gemini google_search）
+│   ├── news_fetcher.py        # ニュース取得（yfinance + Exa/Perplexity/Tavily）
 │   ├── investment_judgment.py # API / ツールベース投資判断エンジン
 │   ├── backtester.py          # バックテスト（PIT・モンテカルロ・ローリング）
 │   ├── portfolio.py           # ポジションサイジング・セクター集中度チェック
@@ -91,6 +93,12 @@ cp .env.example .env
 ```bash
 GEMINI_API_KEY=your_gemini_api_key
 EDINET_API_KEY=your_edinet_subscription_key
+# 日本株の追加データソース（任意）
+EDINETDB_API_KEY=your_edinetdb_api_key      # edinetdb.jp 財務DB + AI分析
+JQUANTS_API_KEY=your_jquants_api_key        # 東証公式株価 OHLC
+EXA_API_KEY=your_exa_api_key               # Exa ウェブ検索ニュース
+PERPLEXITY_API_KEY=your_perplexity_key     # Perplexity（Exaフォールバック）
+TAVILY_API_KEY=your_tavily_api_key         # Tavily（最終フォールバック）
 NOTION_TOKEN=your_notion_integration_token
 NOTION_DATABASE_ID=your_notion_database_id
 # Google Sheets（任意）
@@ -98,11 +106,16 @@ SPREADSHEET_ID=your_spreadsheet_id
 GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
 ```
 
-| キー | 取得先 |
-|------|--------|
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) |
-| `EDINET_API_KEY` | [EDINET API](https://disclosure2dl.edinet-fsa.go.jp/) |
-| `NOTION_TOKEN` | [Notion Integrations](https://www.notion.so/my-integrations) |
+| キー | 取得先 | 用途 |
+|------|--------|------|
+| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) | AI分析（必須） |
+| `EDINET_API_KEY` | [EDINET API](https://disclosure2dl.edinet-fsa.go.jp/) | 有価証券報告書 |
+| `EDINETDB_API_KEY` | [edinetdb.jp](https://edinetdb.jp/) | 財務健全性スコア・AI分析（任意） |
+| `JQUANTS_API_KEY` | [J-Quants](https://jpx-jquants.com/) | 東証公式OHLC株価（任意） |
+| `EXA_API_KEY` | [Exa](https://exa.ai/) | ウェブ検索ニュース（任意） |
+| `PERPLEXITY_API_KEY` | [Perplexity](https://www.perplexity.ai/settings/api) | ニュースフォールバック（任意） |
+| `TAVILY_API_KEY` | [Tavily](https://tavily.com/) | ニュースフォールバック（任意） |
+| `NOTION_TOKEN` | [Notion Integrations](https://www.notion.so/my-integrations) | Notion書き込み |
 
 ---
 

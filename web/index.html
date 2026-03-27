@@ -129,6 +129,42 @@
                         </div>
                         <div id="display-report" class="report-content"></div>
                     </section>
+
+                    <!-- EDINET DB（財務健全性・AI分析）-->
+                    <section id="edinetdb-section" class="card full-width" style="display:none;">
+                        <div class="card-header">
+                            <h3>📊 財務健全性 <small style="font-size:0.7rem;color:var(--text-muted)">(EDINET DB)</small></h3>
+                        </div>
+                        <div style="display:flex;gap:1.5rem;flex-wrap:wrap;">
+                            <!-- 健全性スコアゲージ -->
+                            <div style="min-width:180px;">
+                                <div style="margin-bottom:0.5rem;font-size:0.85rem;color:var(--text-muted)">財務健全性スコア</div>
+                                <div style="font-size:2.4rem;font-weight:700;" id="health-score-label">-</div>
+                                <div style="background:rgba(255,255,255,0.1);border-radius:4px;height:8px;margin-top:0.5rem;">
+                                    <div id="health-score-bar" style="height:100%;border-radius:4px;width:0%;transition:width 0.6s;"></div>
+                                </div>
+                                <div style="font-size:0.7rem;color:var(--text-muted);margin-top:0.3rem;">0（低）〜 100（高）</div>
+                            </div>
+                            <!-- 企業情報 -->
+                            <div style="flex:1;min-width:200px;">
+                                <div style="margin-bottom:0.5rem;font-size:0.85rem;color:var(--text-muted)">企業情報</div>
+                                <div id="edinetdb-company-info"></div>
+                            </div>
+                            <!-- AI分析 -->
+                            <div style="flex:2;min-width:260px;">
+                                <div style="margin-bottom:0.5rem;font-size:0.85rem;color:var(--text-muted)">AI分析サマリー</div>
+                                <div id="edinetdb-analysis"></div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- ウェブ検索ニュース -->
+                    <section id="web-news-section" class="card full-width" style="display:none;">
+                        <div class="card-header">
+                            <h3>🌐 ウェブ検索ニュース</h3>
+                        </div>
+                        <div id="web-news-list" style="display:flex;flex-direction:column;gap:0.75rem;"></div>
+                    </section>
                 </div>
             </div>
 

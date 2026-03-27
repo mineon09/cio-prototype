@@ -122,6 +122,12 @@ function displayTicker(ticker) {
     // Trend Chart (if history exists)
     renderTrendChart(raw);
 
+    // EDINET DB セクション（日本株のみ）
+    renderEdinetDbSection(data);
+
+    // ウェブ検索ニュース
+    renderWebNews(data);
+
     // Active highlight in sidebar
     document.querySelectorAll('.ticker-item').forEach(item => {
         item.classList.toggle('active', item.querySelector('.t-code').textContent === ticker);
@@ -305,6 +311,93 @@ function renderTrendChart(raw) {
 
     if (trendChart) trendChart.destroy();
     trendChart = new Chart(ctx.getContext('2d'), config);
+}
+
+// ===== EDINET DB セクション =====
+function renderEdinetDbSection(data) {
+    const section = document.getElementById('edinetdb-section');
+    if (!section) return;
+
+    const edb = data.edinetdb;
+    if (!edb || !edb.company_info) {
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'block';
+
+    // 健全性スコアゲージ
+    const score = edb.health_score != null ? edb.health_score : null;
+    const gaugeEl = document.getElementById('health-score-gauge');
+    const gaugeBar = document.getElementById('health-score-bar');
+    const gaugeLabel = document.getElementById('health-score-label');
+
+    if (gaugeEl && score != null) {
+        const pct = Math.max(0, Math.min(100, score));
+        const color = pct >= 70 ? '#4ade80' : pct >= 40 ? '#fbbf24' : '#f87171';
+        gaugeBar.style.width = pct + '%';
+        gaugeBar.style.background = color;
+        gaugeLabel.textContent = score.toFixed(1);
+        gaugeLabel.style.color = color;
+    }
+
+    // 企業情報サマリー
+    const ci = edb.company_info || {};
+    const infoEl = document.getElementById('edinetdb-company-info');
+    if (infoEl) {
+        const rows = [
+            ci.company_name ? `<dt>企業名</dt><dd>${ci.company_name}</dd>` : '',
+            ci.industry    ? `<dt>業種</dt><dd>${ci.industry}</dd>` : '',
+            ci.market      ? `<dt>市場</dt><dd>${ci.market}</dd>` : '',
+            ci.description ? `<dt>概要</dt><dd style="font-size:0.8rem">${ci.description.substring(0,200)}…</dd>` : '',
+        ].filter(Boolean).join('');
+        infoEl.innerHTML = rows ? `<dl class="info-dl">${rows}</dl>` : '<span style="color:var(--text-muted)">企業情報なし</span>';
+    }
+
+    // AI分析サマリー
+    const an = edb.analysis || {};
+    const analysisEl = document.getElementById('edinetdb-analysis');
+    if (analysisEl) {
+        const summary = an.summary || an.comment || '';
+        analysisEl.innerHTML = summary
+            ? `<p style="font-size:0.85rem;line-height:1.6">${summary.replace(/\n/g,'<br>')}</p>`
+            : '<span style="color:var(--text-muted)">AI分析なし</span>';
+    }
+}
+
+// ===== ウェブ検索ニュース =====
+function renderWebNews(data) {
+    const section = document.getElementById('web-news-section');
+    if (!section) return;
+
+    const news = data.web_news;
+    if (!news || news.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'block';
+    const container = document.getElementById('web-news-list');
+    if (!container) return;
+
+    const sourceIcon = { exa: '🔍', perplexity: '🤖', tavily: '🌐' };
+
+    container.innerHTML = news.map(n => {
+        const icon = sourceIcon[n.data_source] || '📰';
+        const date = n.published_at ? n.published_at.substring(0, 10) : '';
+        const title = n.title || '(タイトルなし)';
+        const content = (n.content || '').substring(0, 150);
+        return `
+            <div class="web-news-card">
+                <div class="web-news-header">
+                    <span class="web-news-source">${icon} ${n.data_source || 'web'}</span>
+                    ${date ? `<span class="web-news-date">${date}</span>` : ''}
+                </div>
+                <a class="web-news-title" href="${n.url || '#'}" target="_blank" rel="noopener">${title}</a>
+                ${content ? `<p class="web-news-content">${content}…</p>` : ''}
+            </div>
+        `;
+    }).join('');
 }
 
 // ===== Compare Mode =====
