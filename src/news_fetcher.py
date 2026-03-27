@@ -44,6 +44,67 @@ def _get_news_cache_file(ticker: str, date: datetime) -> str:
     return os.path.join(_get_news_cache_dir(), f"{ticker}_{date.strftime('%Y%m%d')}.json")
 
 
+def _clean_web_content(text: str, max_chars: int = 200) -> str:
+    """
+    ウェブ検索結果の本文からナビゲーション・株価ウィジェット等のゴミを除去し、
+    先頭から max_chars 文字に切り詰める。
+    """
+    if not text:
+        return ""
+
+    # 行レベルで不要なナビゲーション行を削除
+    noise_line_patterns = [
+        re.compile(r"^#{1,4}\s"),                              # ## マークダウンヘッダー
+        re.compile(r"^[-*]\s*(トップ|日本株|米国株|海外株)[^\n]*"),  # ナビゲーション
+        re.compile(r"お気に入り登録"),
+        re.compile(r"要ログイン"),
+        re.compile(r"^\s*\d{4}/\d{2}/\d{2}\s*更新\s*$"),       # "2026/03/16 更新"
+        re.compile(r"^\s*東証(PRM|STD|GRW|PRO)\s*$"),
+        re.compile(r"^\s*NYSE\s*$"),
+        re.compile(r"^\s*輸送用機器|^\s*電気機器|^\s*情報・通信業|^\s*小売業"),  # 業種
+        re.compile(r"^\s*時価総額[：:]\s*[\d.,兆億万]+"),
+        re.compile(r"前日比[+\-−\d.]+\("),                      # "前日比+20(+0.59%)"
+        re.compile(r"^\s*[\d,]+\s*$"),                          # 数字のみの行
+        re.compile(r"Toyota Motor Corporation\s*$"),
+    ]
+
+    # 文字列レベルで除去するパターン
+    garbage_patterns = [
+        r"(値下がり\s*){2,}",
+        r"(値上がり\s*){2,}",
+        r"(ネガティブ\s*){2,}",
+        r"(ポジティブ\s*){2,}",
+        r"[A-Z]{2,6}USD=X\s*[\d.]+%",
+        r"\d+\.\d+%\s*(ネガティブ|ポジティブ)",
+        r"- トップ\s*-\s*日本株[^\n]*",
+        r"\(\d{3,}(\.\d+)?ドル\)[^\n]*",
+    ]
+
+    # 行ごとに処理
+    lines = text.split("\n")
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            clean_lines.append("")
+            continue
+        if any(p.search(stripped) for p in noise_line_patterns):
+            continue
+        clean_lines.append(stripped)
+
+    cleaned = "\n".join(clean_lines)
+
+    # 文字列パターンを除去
+    for pattern in garbage_patterns:
+        cleaned = re.sub(pattern, " ", cleaned)
+
+    # 連続空白・改行を整理
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = cleaned.strip()
+
+    return cleaned[:max_chars] if cleaned else ""
+
 def _validate_news_date(news_item: Dict, max_age_days: int = 14) -> bool:
     """
     ニュースアイテムの日付が有効範囲内かを検証する
@@ -243,13 +304,30 @@ def fetch_yf_news(ticker: str, limit: int = 10) -> List[Dict]:
         return []
 
 
+def _to_finnhub_symbol(ticker: str) -> str:
+    """
+    yfinance 形式のティッカーを Finnhub の取引所プレフィックス付き形式に変換する。
+
+    Examples
+    --------
+    "6508.T"  → "TSE:6508"
+    "AAPL"    → "AAPL"
+    "7203.T"  → "TSE:7203"
+    """
+    if ticker.upper().endswith(".T"):
+        return f"TSE:{ticker[:-2]}"
+    if ticker.upper().endswith(".OS"):
+        return f"TSE:{ticker[:-3]}"
+    return ticker
+
+
 def fetch_finnhub_news(ticker: str, days: int = 14, limit: int = 10) -> List[Dict]:
     """
     Finnhub API から銘柄の最新ニュースを取得（プライマリソース）
 
     Parameters
     ----------
-    ticker : 銘柄コード（例: AAPL, MSFT）
+    ticker : 銘柄コード（例: AAPL, 6508.T）
     days   : 過去何日分のニュースを取得するか
     limit  : 最大取得件数
 
@@ -269,8 +347,9 @@ def fetch_finnhub_news(ticker: str, days: int = 14, limit: int = 10) -> List[Dic
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
 
+        finnhub_symbol = _to_finnhub_symbol(ticker)
         raw_news = client.company_news(
-            ticker,
+            finnhub_symbol,
             _from=start_date.strftime("%Y-%m-%d"),
             to=end_date.strftime("%Y-%m-%d"),
         )
@@ -526,11 +605,34 @@ def fetch_all_news(
     """
     print(f"  📰 {ticker} のニュース収集中...")
 
-    # ── Step 1: yfinance ニュース取得＋日付フィルタ ──
+    # ── Step 1: yfinance ニュース取得＋日付フィルタ＋関連性フィルタ ──
     yf_news_raw = fetch_yf_news(ticker, limit=yf_limit)
     yf_news = [n for n in yf_news_raw if _validate_news_date(n, max_age_days=google_days)]
-    if len(yf_news_raw) != len(yf_news):
-        print(f"    ✓ yfinance: {len(yf_news)} 件（{len(yf_news_raw) - len(yf_news)}件を日付フィルタで除外）")
+
+    # 銘柄コード・会社名を含まない無関係記事を除外
+    ticker_base = ticker.split(".")[0].upper()
+    name_keywords = []
+    if company_name:
+        # 社名の最初の単語（例: "Toyota" / "トヨタ"）をキーワードとして利用
+        name_keywords = [w for w in company_name.replace("　", " ").split() if len(w) >= 2]
+    relevant_yf_news = []
+    skipped_irrelevant = 0
+    for item in yf_news:
+        text = (item.get("title", "") + " " + item.get("summary", "")).upper()
+        if ticker_base in text:
+            relevant_yf_news.append(item)
+        elif name_keywords and any(kw.upper() in text for kw in name_keywords):
+            relevant_yf_news.append(item)
+        else:
+            skipped_irrelevant += 1
+    yf_news = relevant_yf_news
+
+    excluded_total = len(yf_news_raw) - len(yf_news) - skipped_irrelevant
+    if excluded_total > 0 or skipped_irrelevant > 0:
+        print(
+            f"    ✓ yfinance: {len(yf_news)} 件"
+            + (f"（{excluded_total}件を日付フィルタ、{skipped_irrelevant}件を無関係として除外）" if excluded_total > 0 or skipped_irrelevant > 0 else "")
+        )
     else:
         print(f"    ✓ yfinance: {len(yf_news)} 件")
 
@@ -561,23 +663,43 @@ def fetch_all_news(
             seen_titles.add(title)
             merged_news.append(item)
 
-    # キャッシュからも補完
+    # キャッシュからも補完（関連性フィルタ適用）
     cached_news = []
     if use_cache:
         cached_news = _load_cached_news(ticker, days=cache_days)
+        cache_added = 0
+        cache_skipped_irrelevant = 0
         for item in cached_news:
             title = item.get("title", "")
-            if title and title not in seen_titles and _validate_news_date(item, max_age_days=google_days):
+            if not title or title in seen_titles:
+                continue
+            if not _validate_news_date(item, max_age_days=google_days):
+                continue
+            # yfinance と同じ関連性フィルタを適用
+            text = (item.get("title", "") + " " + item.get("summary", "")).upper()
+            if ticker_base in text:
                 seen_titles.add(title)
                 merged_news.append(item)
+                cache_added += 1
+            elif name_keywords and any(kw.upper() in text for kw in name_keywords):
+                seen_titles.add(title)
+                merged_news.append(item)
+                cache_added += 1
+            else:
+                cache_skipped_irrelevant += 1
         if cached_news:
-            print(f"    ✓ キャッシュ補完：{len(cached_news)} 件から有効分を追加")
+            skip_msg = f"、{cache_skipped_irrelevant}件を無関係として除外" if cache_skipped_irrelevant > 0 else ""
+            print(f"    ✓ キャッシュ補完：{len(cached_news)} 件から {cache_added} 件を追加（有効分{skip_msg}）")
 
     print(f"    → マージ後：{len(merged_news)} 件")
 
     # ── Step 4: ニュースが少ない場合の警告 ──
     if len(merged_news) < 3:
-        print(f"    ⚠️ ニュースが{len(merged_news)}件のみ（Finnhub APIキーの確認を推奨）")
+        api_key = os.getenv("FINNHUB_API_KEY", "")
+        if api_key:
+            print(f"    ⚠️ ニュースが{len(merged_news)}件のみ（日本株は英語ニュースが少ない場合があります）")
+        else:
+            print(f"    ⚠️ ニュースが{len(merged_news)}件のみ（FINNHUB_API_KEY 未設定）")
 
     # ── Step 5: Gemini アノテーション（センチメント・カテゴリ付与） ──
     annotated_news = merged_news
@@ -729,10 +851,11 @@ def fetch_web_search_news(query: str, max_results: int = 5) -> List[Dict]:
             if results:
                 news = []
                 for r in results[:max_results]:
+                    raw_content = r.get("text") or r.get("snippet") or ""
                     news.append({
                         "title":        r.get("title", ""),
                         "url":          r.get("url", ""),
-                        "content":      (r.get("text") or r.get("snippet") or "")[:500],
+                        "content":      _clean_web_content(raw_content),
                         "published_at": r.get("publishedDate") or r.get("published_date"),
                         "data_source":  "exa",
                     })
@@ -782,7 +905,7 @@ def fetch_web_search_news(query: str, max_results: int = 5) -> List[Dict]:
                         news.append({
                             "title":        item.get("title", ""),
                             "url":          item.get("url", ""),
-                            "content":      str(item.get("content", ""))[:500],
+                            "content":      _clean_web_content(str(item.get("content", ""))),
                             "published_at": item.get("published_at"),
                             "data_source":  "perplexity",
                         })
@@ -815,7 +938,7 @@ def fetch_web_search_news(query: str, max_results: int = 5) -> List[Dict]:
                     news.append({
                         "title":        r.get("title", ""),
                         "url":          r.get("url", ""),
-                        "content":      (r.get("content") or "")[:500],
+                        "content":      _clean_web_content(r.get("content") or ""),
                         "published_at": r.get("published_date"),
                         "data_source":  "tavily",
                     })
