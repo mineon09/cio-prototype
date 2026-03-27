@@ -1,13 +1,17 @@
 """
 news_fetcher.py - ニュース・センチメント取得モジュール
 =====================================================
-Finnhub API と yfinance からリアルニュースを取得し、
+Finnhub API / Google News RSS / yfinance からリアルニュースを取得し、
 Gemini で分析・アノテーションを行う。
 
 設計方針：
-- ニュースの「取得」（Finnhub / yfinance）と「分析」（Gemini）を分離
+- ニュースの「取得」（Finnhub / Google News RSS / yfinance）と「分析」（Gemini）を分離
 - Gemini はニュースの検索・生成を行わない（ハルシネーション防止）
 - すべてのニュースに data_source タグを付与してトレーサビリティを確保
+
+取得ソースの分岐：
+- 日本株（.T / .OS）: yfinance + Google News RSS（無料・APIキー不要・日本語対応）
+- 米国株・その他:    yfinance + Finnhub（FINNHUB_API_KEY 設定時）
 
 キャッシュシステム：
 - 日付別でニュースをキャッシュ（7 日間保持）
@@ -319,6 +323,100 @@ def _to_finnhub_symbol(ticker: str) -> str:
     if ticker.upper().endswith(".OS"):
         return f"TSE:{ticker[:-3]}"
     return ticker
+
+
+def fetch_google_news_rss(
+    ticker: str,
+    company_name: str = None,
+    days: int = 14,
+    limit: int = 10,
+) -> List[Dict]:
+    """
+    Google News RSS から日本語ニュースを取得する（日本株専用・無料）。
+
+    Parameters
+    ----------
+    ticker       : 銘柄コード（例: 7203.T）
+    company_name : 会社名（クエリに使用。未指定時はティッカーコードを使用）
+    days         : 過去何日分を対象とするか
+    limit        : 最大取得件数
+
+    Returns
+    -------
+    ニュースリスト（data_source: "google_rss" 付き）
+    失敗時は空リストを返す（グレースフルデグレード）
+    """
+    import urllib.request
+    import xml.etree.ElementTree as ET
+    from urllib.parse import quote
+
+    query = company_name or ticker.split(".")[0]
+    url = (
+        f"https://news.google.com/rss/search"
+        f"?q={quote(query)}&hl=ja&gl=JP&ceid=JP:ja"
+    )
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; stock_analyze/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            xml_data = resp.read()
+
+        root = ET.fromstring(xml_data)
+        channel = root.find("channel")
+        if channel is None:
+            return []
+
+        cutoff = datetime.now() - timedelta(days=days)
+        news_list = []
+
+        for item in channel.findall("item"):
+            title = (item.findtext("title") or "").strip()
+            link = item.findtext("link") or ""
+            pub_str = item.findtext("pubDate") or ""
+            source_el = item.find("source")
+            publisher = source_el.text if source_el is not None else ""
+
+            if not title:
+                continue
+
+            pub_dt = None
+            if pub_str:
+                for fmt in (
+                    "%a, %d %b %Y %H:%M:%S %Z",
+                    "%a, %d %b %Y %H:%M:%S %z",
+                ):
+                    try:
+                        pub_dt = datetime.strptime(pub_str, fmt)
+                        if pub_dt.tzinfo is not None:
+                            pub_dt = pub_dt.replace(tzinfo=None)
+                        break
+                    except ValueError:
+                        continue
+
+            if pub_dt and pub_dt < cutoff:
+                continue
+
+            news_list.append({
+                "title": title,
+                "publisher": publisher,
+                "link": link,
+                "published_at": pub_dt.strftime("%Y-%m-%d %H:%M") if pub_dt else "",
+                "type": "STORY",
+                "thumbnail": "",
+                "data_source": "google_rss",
+            })
+
+            if len(news_list) >= limit:
+                break
+
+        return news_list
+
+    except Exception as e:
+        print(f"  ⚠️ Google News RSS 取得エラー：{e}")
+        return []
 
 
 def fetch_finnhub_news(ticker: str, days: int = 14, limit: int = 10) -> List[Dict]:
@@ -636,16 +734,33 @@ def fetch_all_news(
     else:
         print(f"    ✓ yfinance: {len(yf_news)} 件")
 
-    # ── Step 2: Finnhub ニュース取得（既に日付フィルタ済み） ──
-    finnhub_news = fetch_finnhub_news(ticker, days=google_days, limit=google_limit)
-    if finnhub_news:
-        print(f"    ✓ Finnhub: {len(finnhub_news)} 件")
-    else:
-        api_key = os.getenv("FINNHUB_API_KEY", "")
-        if not api_key:
-            print(f"    ⚠️ Finnhub: APIキー未設定（FINNHUB_API_KEY）→ yfinance のみで継続")
+    # ── Step 2: ニュース取得（日本株: Google News RSS / 米株: Finnhub） ──
+    is_jp_stock = ticker.upper().endswith(".T") or ticker.upper().endswith(".OS")
+    finnhub_news: List[Dict] = []
+
+    if is_jp_stock:
+        # Finnhub は TSE 非対応のため Google News RSS（無料・日本語）を使用
+        google_rss_news = fetch_google_news_rss(
+            ticker,
+            company_name=company_name,
+            days=google_days,
+            limit=google_limit,
+        )
+        if google_rss_news:
+            print(f"    ✓ Google News RSS: {len(google_rss_news)} 件（日本語）")
+            finnhub_news = google_rss_news
         else:
-            print(f"    ⚠️ Finnhub: 0 件")
+            print(f"    ⚠️ Google News RSS: 0 件")
+    else:
+        finnhub_news = fetch_finnhub_news(ticker, days=google_days, limit=google_limit)
+        if finnhub_news:
+            print(f"    ✓ Finnhub: {len(finnhub_news)} 件")
+        else:
+            api_key = os.getenv("FINNHUB_API_KEY", "")
+            if not api_key:
+                print(f"    ⚠️ Finnhub: APIキー未設定（FINNHUB_API_KEY）→ yfinance のみで継続")
+            else:
+                print(f"    ⚠️ Finnhub: 0 件")
 
     # ── Step 3: マージ＋重複排除 ──
     merged_news = []
@@ -960,7 +1075,7 @@ if __name__ == "__main__":
     ticker = sys.argv[1] if len(sys.argv) > 1 else "AMAT"
 
     print(f"🧪 News Fetcher テスト：{ticker}")
-    print(f"  FINNHUB_API_KEY: {'設定済み' if os.getenv('FINNHUB_API_KEY') else '未設定'}")
+    print(f"  FINNHUB_API_KEY: {'設定済み（US株専用。日本株はGoogle News RSSを使用）' if os.getenv('FINNHUB_API_KEY') else '未設定'}")
     result = fetch_all_news(ticker, include_google=True)
 
     print("\n" + "=" * 60)
