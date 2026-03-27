@@ -4,6 +4,29 @@
 
 ---
 
+## [v2.4.1] - 2026-03-27 (カタリスト日付ガード・ドキュメント全面刷新)
+
+### バグ修正
+- **カタリスト日付の過去化防止**: `main.py` の `analyze_all()` 冒頭に `TEMPORAL CONSTRAINTS` ブロックを注入
+  - `_today / _current_year / _current_quarter / _next_quarter` を計算してプロンプトに埋め込み
+  - LLMが訓練データカットオフ（2024年）でカタリストを生成するのを防止
+- **カタリスト年の動的注入**: `generate_prompt.py` の JSON テンプレートにも同様の年度注入を実装
+- **ダッシュボードのティッカー2重入力解消**: Prompt Studio ページのティッカー入力バグを修正
+
+### 改善
+- **ニュース取得**: `src/news_fetcher.py` で過去 14 日分のニュースを取得（yfinance + Gemini google_search）
+- **Notion AI 回答保存**: Copilot/Claude の回答を Notion に自動保存
+
+### ドキュメント
+- **`docs/architecture.md`**: 現在の `main.py` ベースのアーキテクチャに全面刷新。全 23 モジュールの一覧・LLM フォールバック・TEMPORAL ガードの仕組みを追記
+- **`docs/system_design.md`**: v2.4.1 まで変更履歴を更新。投資判断エンジン詳細・インフラ情報を追記
+- **`docs/how_to_use.md`**: `--engine copilot` オプションをCLI例に追記
+
+### 理由
+`industry_trends.py` は前回修正済みだったが `main.py` の `analyze_all()` 内のプロンプトには今日の日付が注入されていなかった。LLM のカットオフ依存を根本解消するため TEMPORAL CONSTRAINTS ブロックを追加。
+
+---
+
 ## [v2.4.0] - 2026-03-15 (投資判断エンジン導入)
 
 ### 新規機能

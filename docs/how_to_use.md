@@ -25,6 +25,10 @@ python3 main.py --ticker 7203.T 8306.T 9984.T
 # スイング戦略（Bounce: 逆張り / Breakout: 順張り）で分析
 python3 main.py --ticker 7203.T --strategy bounce
 python3 main.py --ticker 7011.T --strategy breakout
+
+# 分析エンジン指定（デフォルト: gemini）
+# copilot: GitHub Models API (GPT-4o) を使用
+python3 main.py --ticker AAPL --engine copilot
 ```
 
 - **実行内容**: データの取得、DCF 算出（有利子負債を反映した正式な WACC 計算対応）、マクロ環境判定（自動・TTL 付きキャッシュ）、ルールベース＆AI ハイブリッドによる競合比較（API 節約対応）、AI レポート生成、Notion への自動記録、ローカル Markdown 形式およびダッシュボード用 JSON（排他制御対応）への保存。
@@ -663,4 +667,4 @@ python3 -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplie
 - **デュアルエンジン**: 両方の結果を比較して、より信頼性の高い判断を得たい場合
 
 ---
-*Last Updated: 2026-03-18 (v2.4.1 generate_prompt.py コンテキスト JSON 自動保存・save_claude_result.py ドキュメント追加)*
+*Last Updated: 2026-03-27 (v2.4.1 --engine オプション追記・architecture.md / system_design.md 全面刷新)*
