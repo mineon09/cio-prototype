@@ -80,6 +80,12 @@ def _clean_web_content(text: str, max_chars: int = 200) -> str:
         re.compile(r"S&P\s*500[^\d]*[\d,]+\.\d{2}"),            # "S&P500種 6,624.70"
         re.compile(r"Market Closed"),
         re.compile(r"Add to a list"),
+        # みんかぶ ナビゲーション
+        re.compile(r"^- (手数料比較|ブログ|組入投信|シグナル|株主優待|時系列|企業情報|決算|配当|ニュース)$"),
+        re.compile(r"^(TOP|チャート|株価予想)$"),
+        re.compile(r"^\[ニュース\]\(https?://"),                   # マークダウンリンク行
+        re.compile(r"stock-popup#"),                               # みんかぶ JSイベント属性
+        re.compile(r"^- (TOP|株価予想|チャート|シグナル)$"),          # ダッシュ付きナビゲーション
     ]
 
     # 文字列レベルで除去するパターン
@@ -782,6 +788,65 @@ def fetch_tdnet_news(sec_code: str, days: int = 30) -> List[Dict]:
     return results
 
 
+def _analyze_sentiment_simple(news_list: List[Dict]) -> Dict:
+    """
+    キーワードベースの簡易センチメント分析（API呼び出しなし）。
+    Gemini/Groq 依存を排除した軽量実装。
+    """
+    if not news_list:
+        return {
+            "overall": "neutral",
+            "score": 0,
+            "positive_count": 0,
+            "neutral_count": 0,
+            "negative_count": 0,
+            "key_themes": [],
+            "summary": "ニュースなし",
+        }
+
+    positive_kw = [
+        "増収", "増益", "最高益", "上方修正", "好調", "黒字", "急騰", "上昇",
+        "受注", "新製品", "拡大", "成長", "配当増", "株主還元", "自社株買い",
+        "黒字転換", "大幅増", "最高", "連続増配", "増配",
+    ]
+    negative_kw = [
+        "減収", "減益", "赤字", "下方修正", "不振", "急落", "下落", "リコール",
+        "損失", "リストラ", "訴訟", "問題", "懸念", "低下", "悪化", "赤字転落",
+        "大幅減", "最安値", "減配", "無配",
+    ]
+
+    pos, neg, neu = 0, 0, 0
+    for n in news_list:
+        title = n.get("title", "")
+        if any(kw in title for kw in positive_kw):
+            pos += 1
+        elif any(kw in title for kw in negative_kw):
+            neg += 1
+        else:
+            neu += 1
+
+    total = len(news_list)
+    if pos > neg:
+        overall = "positive"
+        score = round(min(1.0, (pos - neg) / total), 2)
+    elif neg > pos:
+        overall = "negative"
+        score = round(max(-1.0, -(neg - pos) / total), 2)
+    else:
+        overall = "neutral"
+        score = 0.0
+
+    return {
+        "overall": overall,
+        "score": score,
+        "positive_count": pos,
+        "neutral_count": neu,
+        "negative_count": neg,
+        "key_themes": [],
+        "summary": f"キーワード分析: ポジティブ {pos}件 / ニュートラル {neu}件 / ネガティブ {neg}件",
+    }
+
+
 def fetch_all_news(
     ticker: str,
     company_name: str = None,
@@ -956,13 +1021,8 @@ def fetch_all_news(
         else:
             print(f"    ⚠️ ニュースが{len(merged_news)}件のみ（FINNHUB_API_KEY 未設定）")
 
-    # ── Step 5: Gemini アノテーション（センチメント・カテゴリ付与） ──
+    # ── Step 5: ニュースを日付順に並べる（Gemini アノテーションは廃止） ──
     annotated_news = merged_news
-    if include_google and merged_news:
-        annotated_news = fetch_gemini_news_analysis(
-            ticker, merged_news, company_name=company_name
-        )
-        print(f"    ✓ Gemini アノテーション完了")
 
     # 日付でソート（新しい順）
     def get_date_key(news):
@@ -973,8 +1033,8 @@ def fetch_all_news(
 
     annotated_news.sort(key=get_date_key, reverse=True)
 
-    # ── Step 6: 総合センチメント分析 ──
-    sentiment = analyze_news_sentiment(annotated_news)
+    # ── Step 6: 簡易センチメント分析（キーワードベース・API呼び出しなし） ──
+    sentiment = _analyze_sentiment_simple(annotated_news)
 
     # ── Step 7: キャッシュ保存（バリデーション付き） ──
     if annotated_news:
@@ -1009,45 +1069,13 @@ def format_news_for_prompt(news_data: Dict, max_items: int = 5) -> str:
 
     lines = []
 
-    # センチメントサマリー
-    sentiment = news_data.get("sentiment", {})
-    sentiment_emoji = {
-        "positive": "📈",
-        "neutral": "➡️",
-        "negative": "📉"
-    }.get(sentiment.get("overall", "neutral"), "➡️")
-
-    lines.append(f"【市場センチメント】 {sentiment_emoji} {sentiment.get('overall', 'neutral').upper()}")
-    lines.append(f"  スコア：{sentiment.get('score', 0):.2f} (-1〜+1)")
-    total_news_count = len(news_data.get("all_news", []))
-    if total_news_count < 3:
-        lines.append(f"  ⚠️ 低信頼度（ニュース{total_news_count}件のみ）")
-    lines.append(f"  要約：{sentiment.get('summary', '')}")
-
-    if sentiment.get("key_themes"):
-        lines.append(f"  主要テーマ：{', '.join(sentiment['key_themes'][:3])}")
-
-    # 最新ニュース
     all_news = news_data.get("all_news", [])[:max_items]
     if all_news:
-        lines.append("\n【最新ニュース】")
         for i, news in enumerate(all_news, 1):
-            sentiment_mark = ""
-            if news.get("sentiment"):
-                sentiment_mark = {
-                    "positive": "🟢",
-                    "neutral": "⚪",
-                    "negative": "🔴"
-                }.get(news.get("sentiment", "neutral"), "⚪")
-
             publisher = news.get("publisher", "") or news.get("source", "")
-            # 日付フォーマット統一 (YYYY-MM-DD または YYYY-MM-DD HH:MM)
             published_at = news.get("published_at", "")
             if published_at:
-                if isinstance(published_at, str):
-                    date = published_at[:10] if len(published_at) >= 10 else published_at
-                else:
-                    date = str(published_at)[:10]
+                date = published_at[:10] if len(published_at) >= 10 else str(published_at)
             else:
                 date = ""
 
@@ -1055,11 +1083,11 @@ def format_news_for_prompt(news_data: Dict, max_items: int = 5) -> str:
             source_info = f"[{publisher}] " if publisher else ""
             date_info = f"({date})" if date else ""
 
-            # data_source タグ
-            ds = news.get("data_source", "")
-            ds_tag = f" [{ds}]" if ds else ""
+            lines.append(f"  {i}. {source_info}{title} {date_info}")
+    else:
+        lines.append("  （ニュースなし）")
 
-            lines.append(f"  {i}. {sentiment_mark} {source_info}{title} {date_info}{ds_tag}")
+    lines.append("\n  ※センチメント判断は上記ニュースからあなた自身が行ってください")
 
     return "\n".join(lines)
 

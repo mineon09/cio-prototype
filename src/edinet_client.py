@@ -436,7 +436,7 @@ def _analyze_yuho_with_gemini(text: str, filer_name: str) -> dict:
 # 統合関数: ティッカーから有報データを取得
 # ==========================================
 
-def extract_yuho_data(ticker: str) -> dict:
+def extract_yuho_data(ticker: str, skip_ai: bool = False) -> dict:
     """
     メインフローから呼ばれるエントリーポイント。
     日本株ティッカーから有報メタデータを取得する（AI解析は最終レポートで一括）。
@@ -502,7 +502,10 @@ def extract_yuho_data(ticker: str) -> dict:
         raw_text_extract = _extract_text_from_pdf_bytes(pdf_bytes)
         if raw_text_extract:
             print(f"  ✅ テキスト抽出完了 ({len(raw_text_extract)}文字)")
-            analysis_result = _analyze_yuho_with_gemini(raw_text_extract, doc_info.get('filer_name', ''))
+            if not skip_ai:
+                analysis_result = _analyze_yuho_with_gemini(raw_text_extract, doc_info.get('filer_name', ''))
+            else:
+                print("  ℹ️ AI解析スキップ（skip_ai=True）—生テキストのみ使用")
         else:
             print("  ⚠️ テキスト抽出失敗または空（画像PDF・スキャンPDFの可能性）")
             failure_reason = "PDFテキスト抽出失敗（画像PDF等）"

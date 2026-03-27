@@ -37,22 +37,28 @@ except ImportError:
     def extract_sec_data(ticker): return {}
 
 
-def fmt_pct(v, d: int = 2) -> str:
-    """float を丸めた数値文字列に変換（None / N/A / 変換不可 は '-'）。% は呼び出し側で付与。"""
+def fmt_pct(v, d: int = 2, zero_as_na: bool = False) -> str:
+    """float を "X.XX%" 形式の文字列に変換（None / N/A / 変換不可 は '-'）。"""
     if v is None or v == 'N/A':
         return "-"
     try:
-        return str(round(float(v), d))
+        fv = float(v)
+        if zero_as_na and fv == 0.0:
+            return "-"
+        return f"{round(fv, d)}%"
     except (TypeError, ValueError):
         return "-"
 
 
-def fmt_num(v, d: int = 2):
+def fmt_num(v, d: int = 2, zero_as_na: bool = False):
     """float を丸めた値を返す（None / N/A は '-'）。"""
     if v is None or v == 'N/A':
         return "-"
     try:
-        return round(float(v), d)
+        fv = round(float(v), d)
+        if zero_as_na and fv == 0.0:
+            return "-"
+        return fv
     except (TypeError, ValueError):
         return "-"
 
@@ -88,6 +94,77 @@ def format_scorecard_text(scorecard: dict) -> str:
                     lines.append(f"    {k}: {v}")
 
     return "\n".join(lines)
+
+
+def _extract_yuho_sections(raw_text: str, max_chars: int = 15000) -> str:
+    """
+    有報生テキストから投資判断に有用なセクションのみを抽出する。
+
+    優先セクション（この順で最大 max_chars 文字）:
+    1. 経営方針、経営環境及び対処すべき課題等
+    2. 事業等のリスク
+    3. 経営者による財政状態、経営成績及びキャッシュ・フローの状況の分析
+    """
+    import re as _re
+
+    target_keywords = [
+        "経営方針、経営環境及び対処すべき課題等",
+        "事業等のリスク",
+        "経営者による財政状態",
+    ]
+
+    # 次のセクション境界を示す見出しパターン
+    boundary_re = _re.compile(
+        r"(?m)^(?:第[１２３４５一二三四五]\s|"
+        r"経営方針|事業等のリスク|経営者による財政|"
+        r"設備の状況|提出会社の状況|経理の状況|"
+        r"株式の状況|配当政策|コーポレート・ガバナンス|監査報告|"
+        r"関係会社の状況|従業員の状況|沿革)"
+    )
+
+    extracted_parts: list = []
+    total_chars = 0
+
+    for keyword in target_keywords:
+        if total_chars >= max_chars:
+            break
+
+        idx = raw_text.find(keyword)
+        if idx == -1:
+            continue
+
+        # セクション開始（キーワード行の先頭）
+        line_start = raw_text.rfind('\n', 0, idx)
+        start = line_start + 1 if line_start != -1 else idx
+
+        # 次のセクション境界を探す（キーワード後50文字以降）
+        search_from = idx + len(keyword) + 50
+        end = len(raw_text)
+        for m in boundary_re.finditer(raw_text, search_from):
+            if m.start() > search_from:
+                end = m.start()
+                break
+
+        section_text = raw_text[start:end].strip()
+        if not section_text:
+            continue
+
+        remaining = max_chars - total_chars
+        part = section_text[:remaining]
+        extracted_parts.append(f"【{keyword}】\n{part}")
+        total_chars += len(part)
+
+    if not extracted_parts:
+        # フォールバック: 表紙・沿革を飛ばして「事業の状況」以降を返す
+        best_start = 0
+        for marker in ["経営方針", "事業等のリスク", "事業の状況"]:
+            idx = raw_text.find(marker)
+            if idx > 0:
+                best_start = max(0, idx - 100)
+                break
+        return raw_text[best_start: best_start + max_chars]
+
+    return "\n\n".join(extracted_parts)
 
 
 def _sector_context(sector: str) -> str:
@@ -226,18 +303,18 @@ def build_high_quality_prompt(
 
     metrics = financial_metrics
     fundamentals_detail = f"""
-  ROE            : {fmt_pct(metrics.get('roe'))}%
-  PER            : {fmt_num(metrics.get('per'))}倍
-  PBR            : {fmt_num(metrics.get('pbr'))}倍
-  営業利益率     : {fmt_pct(metrics.get('op_margin'))}%
-  自己資本比率   : {fmt_pct(metrics.get('equity_ratio'))}%
-  配当利回り     : {fmt_pct(metrics.get('dividend_yield'))}%
+  ROE            : {fmt_pct(metrics.get('roe'), zero_as_na=True)}
+  PER            : {fmt_num(metrics.get('per'), zero_as_na=True)}倍
+  PBR            : {fmt_num(metrics.get('pbr'), zero_as_na=True)}倍
+  営業利益率     : {fmt_pct(metrics.get('op_margin'))}
+  自己資本比率   : {fmt_pct(metrics.get('equity_ratio'))}
+  配当利回り     : {fmt_pct(metrics.get('dividend_yield'))}
   営業 CF/純利益 : {fmt_num(metrics.get('cf_quality'))}
-  R&D 比率       : {fmt_pct(metrics.get('rd_ratio'))}%
+  R&D 比率       : {fmt_pct(metrics.get('rd_ratio'))}
 """
 
     ma75_dev = technical_data.get('ma75_deviation')
-    ma75_str = f"{fmt_pct(ma75_dev)}%" if ma75_dev is not None and ma75_dev != 'N/A' else 'N/A'
+    ma75_str = fmt_pct(ma75_dev) if ma75_dev is not None and ma75_dev != 'N/A' else 'N/A'
     tech_detail = f"""
   現在価格       : {technical_data.get('current_price', 'N/A')}
   RSI(14)        : {technical_data.get('rsi', 'N/A')}
@@ -254,8 +331,8 @@ def build_high_quality_prompt(
     peer_set     = _peer_set(sector, ticker)
 
     # ピア比較テーブル用メトリクス
-    roe       = fmt_pct(metrics.get('roe'))
-    pbr       = fmt_num(metrics.get('pbr'))
+    roe       = fmt_pct(metrics.get('roe'), zero_as_na=True)
+    pbr       = fmt_num(metrics.get('pbr'), zero_as_na=True)
     op_margin = fmt_pct(metrics.get('op_margin'))
     div_yield = fmt_pct(metrics.get('dividend_yield'))
 
@@ -337,10 +414,10 @@ def build_high_quality_prompt(
 
     | 指標     | {ticker} | 業界中央値 | 判定       |
     |---------|---------|-----------|-----------|
-    | ROE     | {roe}%  | ?%        | 上位/下位  |
+    | ROE     | {roe}  | ?%        | 上位/下位  |
     | PBR     | {pbr}倍 | ?倍        | 割高/割安  |
-    | 営業利益率 | {op_margin}% | ?% | 優位/劣位 |
-    | 配当利回り | {div_yield}% | ?% | 高/低    |
+    | 営業利益率 | {op_margin} | ?% | 優位/劣位 |
+    | 配当利回り | {div_yield} | ?% | 高/低    |
 
 (5) マクロ感応度テーブル
     以下の各マクロ変数が±1標準偏差変化したとき、この銘柄の業績・株価への影響を推定せよ。
@@ -543,14 +620,14 @@ def build_enhanced_prompt_with_data(
         sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【財務指標】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ROE            : {fmt_pct(m.get('roe'))}%
-  PER            : {fmt_num(m.get('per'))}倍
-  PBR            : {fmt_num(m.get('pbr'))}倍
-  営業利益率     : {fmt_pct(m.get('op_margin'))}%
-  自己資本比率   : {fmt_pct(m.get('equity_ratio'))}%
-  配当利回り     : {fmt_pct(m.get('dividend_yield'))}%
+  ROE            : {fmt_pct(m.get('roe'), zero_as_na=True)}
+  PER            : {fmt_num(m.get('per'), zero_as_na=True)}倍
+  PBR            : {fmt_num(m.get('pbr'), zero_as_na=True)}倍
+  営業利益率     : {fmt_pct(m.get('op_margin'))}
+  自己資本比率   : {fmt_pct(m.get('equity_ratio'))}
+  配当利回り     : {fmt_pct(m.get('dividend_yield'))}
   営業 CF/純利益 : {fmt_num(m.get('cf_quality'))}
-  R&D 比率       : {fmt_pct(m.get('rd_ratio'))}%
+  R&D 比率       : {fmt_pct(m.get('rd_ratio'))}
 """)
 
     # 3. テクニカル指標
@@ -567,17 +644,13 @@ def build_enhanced_prompt_with_data(
   Perfect Order  : {t.get('perfect_order', 'N/A')}
 """)
 
-    # 4. ニュース・センチメント
+    # 4. ニュース（生データ）
     if news_data and news_data.get('available'):
         from src.news_fetcher import format_news_for_prompt
-        sentiment = news_data.get('sentiment', {})
-        sentiment_score = sentiment.get('score', 0)
-        sentiment_overall = sentiment.get('overall', 'neutral')
-
         news_section = format_news_for_prompt(news_data)
 
         sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【ニュース・市場センチメント】
+【ニュース（生データ）】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {news_section}
 """)
@@ -628,21 +701,14 @@ def build_enhanced_prompt_with_data(
 {analyst_section}
 """)
 
-    # 6. 業界動向
-    if industry_data and industry_data.get('available'):
-        from src.industry_trends import format_industry_for_prompt
-        overview = industry_data.get('overview', {})
-        peer_comp = industry_data.get('peer_comparison', {})
-
-        industry_section = format_industry_for_prompt(industry_data)
-
-        cagr = overview.get('growth_rate_cagr', 'N/A')
-        positioning = peer_comp.get('competitive_positioning', '')
-
+    # 6. 業界・競合分析タスク（Groq生成を廃止→Claudeに直接依頼）
+    if sector:
         sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【業界動向・競合比較】
+【業界・競合分析タスク】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{industry_section}
+  セクター: {sector}
+  ※{sector}セクターにおける競合比較と業界展望を、上記データを元にあなた自身が分析してください。
+  （主要競合との財務比較・競争優位性・成長ドライバー・構造的リスクを含めること）
 """)
 
     # 6.5 EDINET DB と J-Quants (日本株限定の高精度データ)
@@ -669,10 +735,12 @@ def build_enhanced_prompt_with_data(
     - {weaknesses}
 """)
     elif yuho_summary and not any(x in (yuho_summary or "") for x in ["未取得", "データなし", "エラー"]):
-        # EDINET DB 未設定時は有報 Gemini 解析結果で代替
+        # EDINET DB 未設定時は有報生テキスト抜粋を直接埋め込む
         sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【有価証券報告書 AI解析サマリー (EDINET)】
+【有価証券報告書 抜粋（生テキスト）】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+※以下の有報テキストを分析し、リスク・競争優位性・経営課題を抽出してください。
+
 {yuho_summary}
 """)
 
@@ -857,15 +925,8 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         except Exception as e:
             print(f"  ⚠️ アナリスト評価取得エラー：{e}")
 
-        try:
-            from src.industry_trends import fetch_all_industry_data
-            industry_data = fetch_all_industry_data(
-                ticker,
-                sector=data.get('sector', 'Technology'),
-                company_name=data.get('name'),
-            )
-        except Exception as e:
-            print(f"  ⚠️ 業界動向取得エラー：{e}")
+        # 業界動向取得は廃止（Groq呼び出し排除）→ Claudeが直接分析
+        # industry_data は None のまま（build_enhanced_prompt_with_data に sector のみ渡す）
 
     # 日本株専用：新規統合API群の取得
     edinetdb_data = None
@@ -880,14 +941,15 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         except Exception as e:
             print(f"  ⚠️ EDINET DB取得エラー：{e}")
 
-        # EDINET DB 未設定時のフォールバック: 有報 Gemini 解析結果を取得
+        # EDINET DB 未設定時のフォールバック: 有報生テキスト抜粋を取得（AI解析なし）
         if not (edinetdb_data and edinetdb_data.get('available')):
             try:
                 from src.edinet_client import extract_yuho_data
-                from src.analyzers import format_yuho_for_prompt
-                yuho_data = extract_yuho_data(ticker)
-                yuho_summary = format_yuho_for_prompt(yuho_data)
-                print(f"  ✓ EDINET 有報 Gemini 解析を取得（EDINET DB 代替）")
+                yuho_data = extract_yuho_data(ticker, skip_ai=True)
+                raw_text = yuho_data.get("raw_text", "")
+                if raw_text:
+                    yuho_summary = _extract_yuho_sections(raw_text)
+                    print(f"  ✓ EDINET 有報生テキスト取得（{len(raw_text)}文字 → 有効セクション抽出）")
             except Exception as e:
                 print(f"  ⚠️ EDINET 有報取得エラー：{e}")
             
@@ -1044,9 +1106,9 @@ def collect_data_minimal(ticker: str, use_cache: bool = True) -> tuple:
         if ticker.endswith('.T'):
             try:
                 from src.edinet_client import extract_yuho_data
-                from src.analyzers import format_yuho_for_prompt
-                yuho_data = extract_yuho_data(ticker)
-                yuho_summary = format_yuho_for_prompt(yuho_data)
+                yuho_data = extract_yuho_data(ticker, skip_ai=True)
+                raw_text = yuho_data.get("raw_text", "")
+                yuho_summary = _extract_yuho_sections(raw_text) if raw_text else "（有報テキスト未取得）"
             except Exception as e:
                 yuho_summary = f"（有報データ取得エラー: {e}）"
         elif HAS_SEC and is_us_stock(ticker):
