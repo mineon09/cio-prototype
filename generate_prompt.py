@@ -489,6 +489,9 @@ def build_enhanced_prompt_with_data(
     news_data: Dict = None,
     analyst_data: Dict = None,
     industry_data: Dict = None,
+    edinetdb_data: Dict = None,
+    jquants_data: list = None,
+    web_news_data: list = None,
 ) -> str:
     """
     全ての定性情報を含む完全版プロンプトを生成
@@ -562,6 +565,21 @@ def build_enhanced_prompt_with_data(
 - 材料織り込み度：株価が既にニュースを織り込んでいるか否かを判断
 """)
 
+    # 4.5 高機能ウェブ検索ニュース（Exa / Perplexity 等）
+    if web_news_data:
+        lines = []
+        for n in web_news_data:
+            title = n.get('title', '')
+            source = n.get('source', 'Web')
+            content = n.get('content', n.get('snippet', ''))[:150]
+            lines.append(f"- 【{source}】 {title}\n  {content}...")
+        news_str = "\n".join(lines)
+        sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【AI高機能ウェブ検索ニュース (ディープサーチ)】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{news_str}
+""")
+
     # 5. アナリスト評価
     if analyst_data and analyst_data.get('available'):
         from src.analyst_ratings import format_analyst_for_prompt
@@ -607,6 +625,38 @@ def build_enhanced_prompt_with_data(
 - 注目点：業界の成長ドライバーと企業の強みの整合性
 - バリュエーション比較：同業他社との PER/PBR 比較で割安・割高を判断
 """)
+
+    # 6.5 EDINET DB と J-Quants (日本株限定の高精度データ)
+    if edinetdb_data and edinetdb_data.get('available'):
+        score = edinetdb_data.get('health_score', 'N/A')
+        ai_summary = edinetdb_data.get('analysis', {}).get('overall_summary', '')
+        s_list = edinetdb_data.get('analysis', {}).get('strengths', [])
+        w_list = edinetdb_data.get('analysis', {}).get('weaknesses', [])
+        strengths = "\n    - ".join(s_list) if s_list else "なし"
+        weaknesses = "\n    - ".join(w_list) if w_list else "なし"
+        
+        sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【EDINET DB 財務健全性＆AI分析（日本株公式データ）】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  財務健全性スコア : {score} / 100
+  AIサマリー       : {ai_summary}
+  強み             :
+    - {strengths}
+  弱み             :
+    - {weaknesses}
+""")
+
+    if jquants_data:
+        try:
+            recent_prices = [f"  {row.get('Date', '')[5:]}: {row.get('Close', 0):.1f}円 (Vol: {row.get('Volume', 0)})" for row in jquants_data[-5:]]
+            price_str = "\n".join(recent_prices)
+            sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【J-Quants 直近株価推移 (東証公式OHLC)】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{price_str}
+""")
+        except Exception:
+            pass
 
     # 7. 分析タスク
     sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -779,6 +829,31 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         except Exception as e:
             print(f"  ⚠️ 業界動向取得エラー：{e}")
 
+    # 日本株専用：新規統合API群の取得
+    edinetdb_data = None
+    jquants_data = None
+    web_news_data = None
+    if ticker.endswith('.T'):
+        try:
+            from src.edinetdb_client import get_full_company_data
+            edinetdb_data = get_full_company_data(ticker)
+        except Exception as e:
+            print(f"  ⚠️ EDINET DB取得エラー：{e}")
+            
+        try:
+            from src.jquants_client import get_price_history
+            jquants_data = get_price_history(ticker, days=5)
+        except Exception as e:
+            print(f"  ⚠️ J-Quants取得エラー：{e}")
+            
+        if include_qualitative:
+            try:
+                from src.news_fetcher import fetch_web_search_news
+                query = f"{data.get('name', ticker)} 株価 業績 ニュース"
+                web_news_data = fetch_web_search_news(query, max_results=5)
+            except Exception as e:
+                print(f"  ⚠️ Web News取得エラー：{e}")
+
     prompt = build_enhanced_prompt_with_data(
         ticker=ticker,
         company_name=data.get('name'),
@@ -788,6 +863,9 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         news_data=news_data,
         analyst_data=analyst_data,
         industry_data=industry_data,
+        edinetdb_data=edinetdb_data,
+        jquants_data=jquants_data,
+        web_news_data=web_news_data,
     )
 
     return prompt
