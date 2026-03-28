@@ -481,10 +481,10 @@ elif view_ticker and view_ticker in results:
         st.subheader("📊 Key Metrics")
         m_cols = st.columns(3)
         items = [
-            ("ROE", f"{metrics.get('roe', '-')}%"),
+            ("ROE", f"{metrics['roe']}%" if metrics.get('roe') is not None else "-"),
             ("PER", f"{float(metrics.get('per', 0)):.1f}x" if metrics.get('per') else "-"),
             ("PBR", f"{float(metrics.get('pbr', 0)):.2f}x" if metrics.get('pbr') else "-"),
-            ("営業利益率", f"{metrics.get('op_margin', '-')}%"),
+            ("営業利益率", f"{metrics['op_margin']}%" if metrics.get('op_margin') is not None else "-"),
             ("RSI", f"{float(tech.get('rsi', 0)):.1f}" if tech.get('rsi') else "-"),
             ("株価", f"${float(tech.get('current_price', 0)):,.0f}" if tech.get('current_price') else "-"),
         ]
