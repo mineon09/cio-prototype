@@ -68,7 +68,8 @@ class LongStrategy(BaseStrategy):
         # Premium Quality Override
         pq_cfg = self.config.get("signals", {}).get("BUY", {}).get("premium_quality_override", {})
         min_score = self.get_buy_threshold(row.get('regime', 'NEUTRAL'))
-        fund_score = row.get("fundamental", 0)
+        fund_val = row.get("fundamental", 0)
+        fund_score = float(fund_val) if isinstance(fund_val, (int, float)) else fund_val.get('score', 0) if isinstance(fund_val, dict) else 0
         
         entry_min_score = min_score
         is_premium = False

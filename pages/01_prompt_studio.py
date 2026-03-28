@@ -343,6 +343,15 @@ with tab2:
             m2.metric("スコア", f"{score_val}/10" if score_val != "N/A" else "N/A")
             m3.metric("エントリー価格", entry_val)
 
+            # Notion 保存結果を表示
+            notion_url_match = re.search(r'Notionに保存完了[:：]\s*(https://\S+)', stdout)
+            notion_skip_match = re.search(r'Notion\s*保存スキップ[:：]\s*(.+)', stdout)
+            if notion_url_match:
+                notion_url = notion_url_match.group(1).strip()
+                st.markdown(f"📝 [Notion に保存済み]({notion_url})")
+            elif notion_skip_match:
+                st.warning(f"⚠️ Notion 保存スキップ: {notion_skip_match.group(1).strip()}")
+
             st.balloons()
 
             # confirm_no_json フラグをリセット
