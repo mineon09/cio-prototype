@@ -12,6 +12,7 @@ import sys
 import json
 import re
 import time
+import pandas as pd
 import streamlit as st
 from datetime import datetime
 
@@ -69,7 +70,7 @@ from main import analyze_all, save_to_dashboard_json, run_strategy_analysis
 st.set_page_config(
     page_title="CIO インテリジェンス分析",
     page_icon="📊",
-    layout="wide",
+    layout="centered",
     initial_sidebar_state="expanded",
 )
 
@@ -376,7 +377,6 @@ if st.session_state.get("backtest_result") and st.session_state.get("backtest_ti
     # APP-004: 中国語 typo 修正 (资产 -> 資産)
     st.subheader("資産推移 (Equity Curve)")
     if "history" in res:
-        import pandas as pd
         hist_df = pd.DataFrame(res["history"])
         if not hist_df.empty:
             hist_df['date'] = pd.to_datetime(hist_df['date'])
@@ -532,7 +532,6 @@ elif view_ticker and view_ticker in results:
     history = raw.get("history", [])
     if len(history) >= 2:
         st.subheader("📈 スコア推移")
-        import pandas as pd
         trend_data = {
             "日付": [h.get("date", "").split(" ")[0] for h in history],
             "総合": [h.get("total_score", 0) for h in history],
@@ -576,7 +575,6 @@ else:
             "履歴": len(raw.get("history", [])),
         })
 
-    import pandas as pd
     df = pd.DataFrame(rows)
 
     # st.dataframe の selection 機能を使用 (Streamlit 1.35+)

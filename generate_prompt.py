@@ -315,6 +315,13 @@ def build_high_quality_prompt(
 
     ma75_dev = technical_data.get('ma75_deviation')
     ma75_str = fmt_pct(ma75_dev) if ma75_dev is not None and ma75_dev != 'N/A' else 'N/A'
+
+    # 流動性データ（ポジションサイズ判断に使用）
+    mkt_cap_raw = technical_data.get('market_cap')
+    avg_vol_raw = technical_data.get('avg_daily_volume')
+    mkt_cap_str = f"{mkt_cap_raw / 1e8:.0f}億円" if isinstance(mkt_cap_raw, (int, float)) else str(mkt_cap_raw or 'N/A')
+    avg_vol_str = f"{avg_vol_raw:,.0f}株" if isinstance(avg_vol_raw, (int, float)) else str(avg_vol_raw or 'N/A')
+
     tech_detail = f"""
   現在価格       : {technical_data.get('current_price', 'N/A')}
   RSI(14)        : {technical_data.get('rsi', 'N/A')}
@@ -323,6 +330,9 @@ def build_high_quality_prompt(
   BB 位置        : {technical_data.get('bb_position', 'N/A')}%
   出来高比率     : {technical_data.get('volume_ratio', 'N/A')}
   Perfect Order  : {technical_data.get('perfect_order', 'N/A')}
+    （定義: MA5 > MA25 > MA75 > MA200 = 強気アライメント／逆順 = 弱気アライメント）
+  時価総額       : {mkt_cap_str}
+  平均出来高(20日): {avg_vol_str}
 """
 
     yuho_section = yuho_summary if yuho_summary else "（有報データ未取得）"
@@ -342,8 +352,13 @@ def build_high_quality_prompt(
         yuho_missing_note = (
             "\n⚠️ 【定性データ未取得の影響】\n"
             "  有報が取得できていないため Qualitative スコアは中立値（5.0）で固定されています。\n"
-            "  定性面（経営リスク・競争優位性・経営陣の質）については公知情報・業界知識から\n"
-            "  合理的な推定を行い、confidence（信頼度）を低めに設定してください。\n"
+            "  定性面（経営リスク・競争優位性・経営陣の質）については以下の代替情報源を参照し\n"
+            "  合理的な推定を行ってください：\n"
+            "    - IR資料・決算説明会スライド（直近2期分）\n"
+            "    - アナリストコンセンサスレポート（カバレッジ3名以上の場合は信頼度向上）\n"
+            "    - 直近のプレスリリース・経営者インタビュー\n"
+            "  アナリストカバレッジが3名以上ある場合は confidence を最大 0.7 まで許容します。\n"
+            "  それ以外の場合は confidence を 0.6 以下に設定してください。\n"
         )
 
     prompt = f"""あなたはシニア・エクイティ・アナリストです。
@@ -419,6 +434,12 @@ def build_high_quality_prompt(
     | 営業利益率 | {op_margin} | ?% | 優位/劣位 |
     | 配当利回り | {div_yield} | ?% | 高/低    |
 
+    さらに、以下の方法でファンダメンタルズに基づく目標株価を算出し、
+    entry_price・take_profit・stop_loss の設定根拠として使用すること：
+    ① PER目標法: セクター中央値PER × 今期EPS予想 = 目標株価（ベースケース）
+    ② PBR目標法: セクター中央値PBR × BPS（1株純資産） = 目標株価（バリュー下限）
+    時価総額が小型株（1,000億円未満）の場合は position_size を最大 0.05 に制限すること。
+
 (5) マクロ感応度テーブル
     以下の各マクロ変数が±1標準偏差変化したとき、この銘柄の業績・株価への影響を推定せよ。
     推定困難な項目は「感応度不明」と記載し、理由を述べよ。
@@ -469,7 +490,8 @@ JSON を出力する前に以下をすべて確認し、矛盾があれば該当
 
 □ score と confidence の整合性
     score < 5.0 かつ confidence > 0.7 → 矛盾（confidence を引き下げよ）
-    有報なし かつ confidence > 0.6   → 矛盾（confidence を引き下げよ）
+    有報なし かつ アナリストカバレッジ < 3名 かつ confidence > 0.6 → 矛盾（confidence を 0.6 以下にせよ）
+    有報なし かつ アナリストカバレッジ ≥ 3名 → confidence は最大 0.7 まで許容
 
 □ 価格設定の整合性
     stop_loss  < entry_price であること（stop_loss ≥ entry_price は設定ミス）
@@ -512,11 +534,12 @@ JSON を出力する前に以下をすべて確認し、矛盾があれば該当
 【JSON フィールド制約】
 - signal    : "BUY" / "WATCH" / "SELL" の 3 値のみ。"HOLD" は使用禁止。
 - score     : 0.0〜10.0（スコアカードの総合スコアと整合させること）
-- confidence: 0.0〜1.0（有報なし・レジーム不確実性が高い場合は 0.6 以下を推奨）
+- confidence: 0.0〜1.0（有報なし・アナリスト3名未満の場合は 0.6 以下推奨。有報なしでもアナリスト3名以上なら最大 0.7 まで許容）
 - entry_price / stop_loss / take_profit: 現在の市場価格を基準に現実的な数値で設定
 - stop_loss : entry_price の -5〜-15% が目安（ボラティリティに応じて調整）
 - take_profit: entry_price の +10〜+30% が目安（スコアと holding_period に応じて調整）
 - position_size: BUY かつ score≥7.0 → 0.10〜0.20、WATCH → 0.03〜0.08、SELL → 0.0
+    小型株（時価総額1,000億円未満）の場合は上記から-0.05し最大 0.05 とする
 - holding_period: "short"（〜4週）/ "medium"（1〜6ヶ月）/ "long"（6ヶ月〜）
 - risks / catalysts: 各 2〜4 件、具体的なイベント名・数値を含めること
 """

@@ -10,6 +10,7 @@ import queue as queue_module
 import re
 import sys
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -31,21 +32,40 @@ import base64
 
 
 def render_copy_button(text: str, key: str = "copy_btn"):
-    """JavaScript navigator.clipboard API でクリップボードにコピーするボタンを描画。
-    pyperclip 不要・Linux/Wayland/X11 環境でも動作する。"""
+    """クリップボードコピーボタン。
+    navigator.clipboard（HTTPS必須）が使えない場合は textarea を全選択して
+    手動コピーしやすくするフォールバックを提供する（iOS Safari 対応）。"""
     encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    fallback_id = f"{key}_fallback"
     html = f"""
     <button id="{key}" onclick="
         const txt = new TextDecoder().decode(Uint8Array.from(atob('{encoded}'), c => c.charCodeAt(0)));
-        navigator.clipboard.writeText(txt)
-            .then(() => {{ document.getElementById('{key}').innerText = '✅ コピー完了'; }})
-            .catch(() => {{ document.getElementById('{key}').innerText = '❌ コピー失敗（手動コピーしてください）'; }});
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+            navigator.clipboard.writeText(txt)
+                .then(() => {{
+                    document.getElementById('{key}').innerText = '✅ コピー完了';
+                    document.getElementById('{fallback_id}').style.display = 'none';
+                }})
+                .catch(() => {{
+                    document.getElementById('{key}').innerText = '❌ コピー失敗 — 下のテキストを全選択してコピー';
+                    document.getElementById('{fallback_id}').style.display = 'block';
+                    document.getElementById('{fallback_id}').select();
+                }});
+        }} else {{
+            document.getElementById('{key}').innerText = '❌ コピー不可 — 下のテキストを全選択してコピー';
+            document.getElementById('{fallback_id}').style.display = 'block';
+            document.getElementById('{fallback_id}').select();
+        }}
     " style="padding:8px 16px; background:#FF4B4B; color:white; border:none; border-radius:4px;
              cursor:pointer; font-size:14px; font-family:sans-serif;">
         📋 クリップボードにコピー
     </button>
+    <textarea id="{fallback_id}" style="display:none; width:100%; height:60px; margin-top:8px;
+              font-size:12px; resize:none;"
+              onfocus="this.select()"
+              readonly>{text.replace('<', '&lt;').replace('>', '&gt;')}</textarea>
     """
-    st.components.v1.html(html, height=50)
+    st.components.v1.html(html, height=80)
 
 
 def validate_ticker(ticker: str) -> bool:
@@ -136,7 +156,7 @@ def extract_prompt_text(stdout: str) -> str:
 st.set_page_config(
     page_title="Prompt Studio",
     page_icon="🧠",
-    layout="wide",
+    layout="centered",
 )
 
 # セッションステートの初期化
@@ -150,23 +170,17 @@ if "save_ticker" not in st.session_state:
 st.title("🧠 Prompt Studio")
 st.caption("STEP 1 でプロンプトを生成し、Claude に貼り付けた後、STEP 3 で結果を保存します。")
 
-col_left, col_right = st.columns(2)
+tab1, tab2 = st.tabs(["📝 STEP 1 — プロンプト生成", "💾 STEP 3 — 結果保存"])
 
 # ============================================================
-# 左カラム — STEP 1: プロンプト生成
+# STEP 1: プロンプト生成
 # ============================================================
-with col_left:
-    st.subheader("📝 STEP 1 — プロンプト生成")
+with tab1:
 
     ticker_gen = st.text_input(
         "ティッカーコード",
         placeholder="例: 7203.T, AAPL",
         key="gen_ticker",
-    )
-    model_sel = st.selectbox(
-        "モデル",
-        ["claude", "gemini", "qwen", "chatgpt"],
-        key="gen_model",
     )
     simple_mode = st.checkbox(
         "シンプルモード（データ取得なし・高速）",
@@ -188,7 +202,7 @@ with col_left:
         ticker_gen_upper = ticker_gen.strip().upper()
         py_cmd = get_python_cmd()
 
-        cmd = [py_cmd, "generate_prompt.py", ticker_gen_upper, "--model", model_sel]
+        cmd = [py_cmd, "generate_prompt.py", ticker_gen_upper]
         if simple_mode:
             cmd.append("--simple")
 
@@ -236,10 +250,9 @@ with col_left:
 
 
 # ============================================================
-# 右カラム — STEP 3: 結果保存
+# STEP 3: 結果保存
 # ============================================================
-with col_right:
-    st.subheader("💾 STEP 3 — 結果保存")
+with tab2:
 
     save_ticker = st.text_input(
         "ティッカーコード",
@@ -285,12 +298,11 @@ with col_right:
                 st.stop()
 
         save_ticker_upper = save_ticker.strip().upper()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        tmp_path = f"/tmp/claude_response_{save_ticker_upper}_{timestamp}.txt"
 
-        # 一時ファイルに書き出し
+        # クロスプラットフォーム対応の一時ファイル
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt")
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                 f.write(response_text)
         except Exception as e:
             st.error(f"❌ 一時ファイル書き出し失敗: {e}")
@@ -348,10 +360,10 @@ with col_right:
 st.divider()
 st.caption("📖 使い方フロー")
 st.info(
-    "**[STEP 1]** ティッカー入力 → プロンプト生成  \n"
+    "**[STEP 1タブ]** ティッカー入力 → プロンプト生成  \n"
     "　　↓ 生成されたプロンプトをコピー  \n"
     "**[STEP 2]** Claude Web UI に貼り付けて実行  \n"
     "　　↓ 回答全体をコピー  \n"
-    "**[STEP 3]** 右カラムに貼り付け → 保存ボタン  \n"
+    "**[STEP 3タブ]** 回答を貼り付け → 保存ボタン  \n"
     "　　↓ ダッシュボードに反映"
 )

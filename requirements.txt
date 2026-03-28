@@ -16,5 +16,4 @@ pdfminer.six>=20221105
 tenacity>=8.4.1,<10.0.0
 python-dateutil>=2.8.0,<3.0.0
 filelock>=3.12.0,<4.0.0
-pyperclip
 finnhub-python>=2.4.0
