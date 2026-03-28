@@ -635,9 +635,23 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         
         # TTM が取れなければ従来の単四半期×4にフォールバック
         # net_income: 直近四半期の純利益（フォールバック用）
-        net_income = get_val(fin_latest, ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests'])
+        _ni_keys = ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests']
+        net_income = get_val(fin_latest, _ni_keys)
         if ttm_net_income is None:
             ttm_net_income = (net_income * 4) if net_income else None
+
+        # 日立等の日本株で quarterly_financials に Net Income がない場合、
+        # 年次 financials からフォールバック（過去1年分として そのまま使用）
+        if ttm_net_income is None and not as_of_date:
+            try:
+                ann_fin = stock.financials
+                if ann_fin is not None and not ann_fin.empty:
+                    ann_latest = ann_fin.iloc[:, 0]  # 最新年度
+                    ann_ni = get_val(ann_latest, _ni_keys)
+                    if ann_ni:
+                        ttm_net_income = ann_ni  # 年次純利益をそのままTTMとして使用
+            except Exception:
+                pass
 
         # equity: 自己資本（自己資本比率・ROE・BPS計算用）
         equity = get_val(bs_latest, ['Stockholders Equity', 'Total Equity Gross Minority Interest', 'Stockholders Equity Including Minority Interest', 'Common Stock Equity'])
