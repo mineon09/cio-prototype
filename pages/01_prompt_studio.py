@@ -19,6 +19,16 @@ from pathlib import Path
 import streamlit as st
 
 # ============================================================
+# Secrets Bridge: Streamlit Cloud → os.environ（サブプロセスへ継承）
+# ============================================================
+try:
+    for _key in ["NOTION_API_KEY", "NOTION_DATABASE_ID"]:
+        if _key in st.secrets and _key not in os.environ:
+            os.environ[_key] = st.secrets[_key]
+except Exception:
+    pass  # ローカル環境では st.secrets が無い場合あり
+
+# ============================================================
 # Helpers
 # ============================================================
 

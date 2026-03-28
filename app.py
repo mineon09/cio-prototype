@@ -33,7 +33,8 @@ load_dotenv(_env_path, override=True)
 try:
     for key in ["GEMINI_API_KEY", "GROQ_API_KEY", "EDINET_API_KEY", "SPREADSHEET_ID",
                  "GOOGLE_SERVICE_ACCOUNT_JSON",
-                 "LINE_CHANNEL_ACCESS_TOKEN", "LINE_USER_ID"]:
+                 "LINE_CHANNEL_ACCESS_TOKEN", "LINE_USER_ID",
+                 "NOTION_API_KEY", "NOTION_DATABASE_ID"]:
         if key in st.secrets:
             os.environ[key] = st.secrets[key]
 except Exception:

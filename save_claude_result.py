@@ -307,7 +307,9 @@ def main():
             if "score" in claude_json:
                 scorecard["total_score"] = claude_json["score"]
         print(f"📤 Notion に保存中...")
-        write_to_notion(args.ticker, target_data, response_text, scorecard)
+        ok = write_to_notion(args.ticker, target_data, response_text, scorecard)
+        if not ok:
+            print(f"⚠️ Notion 保存スキップ: NOTION_API_KEY または NOTION_DATABASE_ID が未設定です")
     except Exception as e:
         print(f"⚠️ Notion 保存スキップ: {e}")
 
