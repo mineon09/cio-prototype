@@ -69,39 +69,81 @@ VALID_SIGNALS = {"BUY", "WATCH", "SELL"}
 
 
 def extract_json_from_response(text: str) -> dict:
-    """Claude の回答テキストから JSON ブロックを抽出。4パターンに対応。"""
-    # パターン1: ```json ... ```
-    m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
+    """Claude の回答テキストから JSON ブロックを抽出。
 
-    # パターン2: ``` ... ``` (言語指定なし)
-    if not m:
-        m = re.search(r'```\s*(\{.*?\})\s*```', text, re.DOTALL)
-
-    if m:
+    入力プロンプト内にサンプル JSON が含まれる場合でも、
+    Claude の出力 JSON（signal + score + entry_price を持つ最後のブロック）
+    を確実に採用する。
+    """
+    # ─────────────────────────────────────────────────────────
+    # 優先1: ```json ... ``` フェンスブロックを全て収集し、
+    #        signal + score + entry_price を持つ最後のものを採用
+    #        （入力プロンプトのサンプルより後に Claude の出力が来るため）
+    # ─────────────────────────────────────────────────────────
+    fenced_candidates = []
+    for m in re.finditer(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL):
         try:
-            return json.loads(m.group(1))
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict) and "signal" in obj:
+                fenced_candidates.append(obj)
         except Exception:
-            pass
+            continue
 
-    # パターン3 & 4: raw_decode で { から始まる最初の有効JSONを探す
-    start = text.find('{')
-    if start != -1:
-        decoder = json.JSONDecoder()
+    if fenced_candidates:
+        # signal + score + entry_price を全て持つものを優先、なければ signal だけでも OK
+        full = [o for o in fenced_candidates
+                if "score" in o and "entry_price" in o]
+        return full[-1] if full else fenced_candidates[-1]
+
+    # 優先2: ``` ... ``` (言語指定なし)
+    fenced_plain = []
+    for m in re.finditer(r'```\s*(\{.*?\})\s*```', text, re.DOTALL):
         try:
-            obj, _ = decoder.raw_decode(text[start:])
-            if isinstance(obj, dict):
-                return obj
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict) and "signal" in obj:
+                fenced_plain.append(obj)
         except Exception:
-            pass
+            continue
 
-    # パターン4: "signal" キーを含む { ... } ブロックを正規表現で探す
-    candidates = list(re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL))
-    for c in candidates:
+    if fenced_plain:
+        full = [o for o in fenced_plain if "score" in o and "entry_price" in o]
+        return full[-1] if full else fenced_plain[-1]
+
+    # 優先3: raw_decode で { から始まる最初の有効 JSON を探す
+    #        （フェンスなし・signal キーを含むもの限定）
+    decoder = json.JSONDecoder()
+    raw_candidates = []
+    pos = 0
+    while True:
+        start = text.find('{', pos)
+        if start == -1:
+            break
+        try:
+            obj, end_pos = decoder.raw_decode(text[start:])
+            if isinstance(obj, dict) and "signal" in obj:
+                raw_candidates.append(obj)
+            pos = start + max(end_pos, 1)
+        except Exception:
+            pos = start + 1
+
+    if raw_candidates:
+        full = [o for o in raw_candidates if "score" in o and "entry_price" in o]
+        return full[-1] if full else raw_candidates[-1]
+
+    # 優先4: "signal" キーを含む { ... } ブロックを正規表現で探す
+    re_candidates = list(re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL))
+    signal_objs = []
+    for c in re_candidates:
         if '"signal"' in c.group():
             try:
-                return json.loads(c.group())
+                obj = json.loads(c.group())
+                signal_objs.append(obj)
             except Exception:
                 continue
+
+    if signal_objs:
+        full = [o for o in signal_objs if "score" in o and "entry_price" in o]
+        return full[-1] if full else signal_objs[-1]
 
     return {}
 
@@ -158,7 +200,7 @@ def save_to_dashboard(ticker: str, context: dict, report: str,
     # Claude 固有フィールド（あれば追加）—— 旧形式・新形式の両方に対応
     for field in ("entry_price", "stop_loss", "take_profit",
                   "confidence", "holding_period", "risks", "catalysts",
-                  "exit_strategy", "watch_points", "peer_comparison",
+                  "reasoning", "exit_strategy", "watch_points", "peer_comparison",
                   "macro_sensitivity", "risk_quantification",
                   # 旧形式（build_enhanced_prompt_with_data）のフィールド
                   "industry_outlook", "competitive_position", "time_horizon",
