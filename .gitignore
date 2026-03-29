@@ -53,7 +53,10 @@ debug_*.py
 .DS_Store
 Thumbs.db
 
-# Temporary verification scripts
+# Personal portfolio data (contains sensitive position info)
+data/portfolio.json
+
+
 verify_*.py
 !verify_predictions.py
 test_import.py

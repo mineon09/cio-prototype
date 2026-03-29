@@ -638,6 +638,44 @@ def build_enhanced_prompt_with_data(
 分析基準日      : {current_date}
 """)
 
+    # 1b. ポートフォリオ情報（portfolio.json が存在し、当該銘柄を保有中の場合のみ）
+    try:
+        import pathlib as _pl
+        _pf = _pl.Path(__file__).parent / "data" / "portfolio.json"
+        if _pf.exists():
+            _raw = json.loads(_pf.read_text(encoding="utf-8"))
+            _holding = {k: v for k, v in _raw.items() if not k.startswith("_")}.get(ticker)
+            if _holding:
+                _avg  = _holding.get("avg_price", 0)
+                _qty  = _holding.get("qty", 0)
+                _cur  = _holding.get("currency", "JPY")
+                # 含損益（現在価格が取得できる場合）
+                _cp = technical_data.get("current_price") if technical_data else None
+                if _avg and _cp:
+                    _pnl_pct = (_cp - _avg) / _avg * 100
+                    _pnl_str = f"{_pnl_pct:+.1f}%"
+                else:
+                    _pnl_str = "—"
+                # セクター配分（同セクターの保有比率を概算）
+                _all_holdings = {k: v for k, v in _raw.items() if not k.startswith("_")}
+                _sector_tickers = [t for t, h in _all_holdings.items()
+                                   if t != ticker and h.get("currency", "JPY") == _cur]
+                _total_positions = len(_all_holdings)
+                sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【ポートフォリオ情報】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  保有状況       : 保有中 ({_qty:g}株 @ {_cur} {_avg:,g})
+  含損益         : {_pnl_str}
+  取得日         : {_holding.get('acquired_date', '—')}
+  ポートフォリオ内保有銘柄数 : {_total_positions}銘柄
+  メモ           : {_holding.get('notes', '—')}
+
+⚠️ 既存ポジションへの追加 vs 新規エントリーの観点で分析してください。
+   取得単価 {_avg:,g} {_cur} を基準とした損益分岐点・含損益の変化も考慮してください。
+""")
+    except Exception:
+        pass  # ポートフォリオデータ取得失敗はサイレントにスキップ
+
     # 2. 財務指標
     if financial_data and financial_data.get('metrics'):
         m = financial_data['metrics']
@@ -787,6 +825,38 @@ def build_enhanced_prompt_with_data(
 """)
         except Exception:
             pass
+
+    # 6.8 前回分析との比較（同銘柄の results.json 直近3件）
+    try:
+        import pathlib as _pl
+        _rf = _pl.Path(__file__).parent / "data" / "results.json"
+        if _rf.exists():
+            _all = json.loads(_rf.read_text(encoding="utf-8"))
+            _hist = _all.get(ticker, {}).get("history", [])
+            if len(_hist) >= 2:
+                _prev_entries = _hist[-3:-1] if len(_hist) >= 3 else _hist[:-1]
+                _prev_entries = list(reversed(_prev_entries))  # 新しい順
+                lines = []
+                for _e in _prev_entries:
+                    _d   = _e.get("date", "—")[:10]
+                    _sig = _e.get("signal", "—")
+                    _sc  = _e.get("total_score", "—")
+                    _ep  = _e.get("entry_price")
+                    _ep_s = f"¥{_ep:,.0f}" if _ep else "—"
+                    lines.append(f"  {_d}: {_sig} / スコア {_sc} / エントリー {_ep_s}")
+                prev_text = "\n".join(lines)
+                latest_sig = _hist[-2].get("signal", "—") if len(_hist) >= 2 else "—"
+                now_sig    = "（今回分析）"
+                sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【前回分析との比較】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+直近の分析履歴:
+{prev_text}
+
+→ シグナルやスコアが変化していれば、その要因（マクロ・ファンダメンタルズ・テクニカルのどれが変化したか）を分析に含めてください。
+""")
+    except Exception:
+        pass  # サイレントにスキップ
 
     # 7. 分析タスク
     sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
