@@ -178,6 +178,12 @@ def save_to_dashboard(ticker: str, context: dict, report: str,
 
     position_size = float(claude_json.get('position_size', 0.10))
 
+    # total_score: Claude の score を優先し、なければローカルスコアカードの値を使用
+    # ローカルスコアカードは加重平均で算出（例: 5.7）、Claude の判断スコア（例: 7.0）と
+    # 異なる場合は Claude 側が最終判断として正しいため上書きする
+    claude_score = claude_json.get("score")
+    total_score = float(claude_score) if claude_score is not None else scorecard.get("total_score", 0)
+
     new_entry = {
         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "scores": {
@@ -190,7 +196,8 @@ def save_to_dashboard(ticker: str, context: dict, report: str,
         "signal":       signal,
         "holding":      signal == "BUY",
         "position_size": position_size,
-        "total_score":  scorecard.get("total_score", 0),
+        "total_score":  total_score,
+        "algo_score":   scorecard.get("total_score", 0),  # ローカルアルゴスコアを参照用に保存
         "metrics":      context.get("metrics", {}),
         "technical_data": context.get("technical", {}),
         "report":       report,
@@ -274,7 +281,7 @@ def save_to_dashboard(ticker: str, context: dict, report: str,
         count = len(all_results[ticker]["history"])
         print(f"✅ ダッシュボード保存完了：{ticker} (履歴 {count} 件)")
         print(f"   シグナル  : {signal}")
-        print(f"   総合スコア: {scorecard.get('total_score', 'N/A')}")
+        print(f"   総合スコア: {total_score:.1f} (アルゴ: {scorecard.get('total_score', 'N/A')})")
         if "entry_price" in new_entry:
             print(f"   エントリー: {new_entry['entry_price']}  "
                   f"損切: {new_entry.get('stop_loss', '-')}  "
