@@ -180,6 +180,83 @@ python3 -m src.backtester --ticker 7203.T --start 2023-01-01 --months 24 --rolli
 
 ---
 
+### 💼 保有銘柄台帳（ポートフォリオ管理）
+
+`data/portfolio.json` に保有銘柄を登録すると、プロンプトに「保有中: 100株 @¥2,450」が自動挿入されます。
+
+```bash
+# 銘柄を追加
+./venv/bin/python3 portfolio_manager.py add 8306.T --qty 100 --price 2450 --notes "長期保有"
+./venv/bin/python3 portfolio_manager.py add AAPL   --qty 50  --price 185.5 --currency USD
+
+# 一覧表示（現在価格・含損益付き）
+./venv/bin/python3 portfolio_manager.py list
+
+# 詳細表示 / 削除
+./venv/bin/python3 portfolio_manager.py show 8306.T
+./venv/bin/python3 portfolio_manager.py remove 8306.T
+```
+
+`data/portfolio.json` は `.gitignore` 対象です（個人情報保護）。
+
+---
+
+### 🎯 予測 vs 実績 トラッキング
+
+分析から 30/90/180 日後に実際の株価と照合して精度を測定します。
+
+```bash
+# 全銘柄・全ウィンドウを確認（書き込みあり）
+./venv/bin/python3 verify_predictions.py
+
+# 特定銘柄のみ
+./venv/bin/python3 verify_predictions.py --ticker 8306.T --window 30
+
+# 現在の精度統計を表示
+./venv/bin/python3 verify_predictions.py --stats
+
+# 書き込みなしで確認のみ
+./venv/bin/python3 verify_predictions.py --dry-run
+```
+
+ダッシュボードの銘柄詳細画面に「予測精度」セクション（勝率・平均リターン）が表示されます。
+
+---
+
+### 🔔 LINE Notify アラート
+
+損切りライン接近・シグナル変化・スコア急落を LINE Notify で通知します。
+
+**事前準備:**
+1. [LINE Notify](https://notify-bot.line.me/my/) でトークンを発行
+2. `.env` に `LINE_NOTIFY_TOKEN=<your_token>` を追記
+
+```bash
+# 手動実行（確認のみ）
+./venv/bin/python3 alert_check.py --dry-run
+
+# 実行（通知あり）
+./venv/bin/python3 alert_check.py
+
+# 特定銘柄のみ
+./venv/bin/python3 alert_check.py --ticker 8306.T
+```
+
+**cron で毎朝8時に自動実行:**
+```bash
+# crontab -e で以下を追記
+0 8 * * * cd ~/projects/stock_analyze && ./venv/bin/python3 alert_check.py >> data/alert.log 2>&1
+```
+
+**トリガー条件:**
+| トリガー | 条件 |
+|----------|------|
+| 損切りライン接近 | 現在価格が `stop_loss` の +3% 以内 |
+| シグナル変化 | 前回分析から BUY/WATCH/SELL が変化 |
+| スコア急落 | 前回比 -1.5 以上のスコア低下 |
+
+---
+
 ## 📊 4軸スコアカード
 
 | 軸 | 内容 | 主要指標 |
