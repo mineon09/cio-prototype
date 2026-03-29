@@ -55,5 +55,6 @@ Thumbs.db
 
 # Temporary verification scripts
 verify_*.py
+!verify_predictions.py
 test_import.py
 *.tmp

@@ -186,6 +186,7 @@ def save_to_dashboard(ticker: str, context: dict, report: str,
 
     new_entry = {
         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "analyzed_at": datetime.now().isoformat(),  # ISO8601（verify_predictions.py で使用）
         "scores": {
             "fundamental": scorecard.get("fundamental", {}).get("score", 0),
             "valuation":   scorecard.get("valuation",   {}).get("score", 0),

@@ -544,6 +544,29 @@ elif view_ticker and view_ticker in results:
         df = pd.DataFrame(trend_data).set_index("日付")
         st.line_chart(df, height=250)
 
+    # ── Prediction Accuracy ──
+    verified_entries = [
+        h for h in history
+        if any(f"verified_{w}d" in h for w in [30, 90, 180])
+    ]
+    if verified_entries:
+        st.subheader("🎯 予測精度")
+        for w in [30, 90, 180]:
+            key = f"verified_{w}d"
+            entries = [h for h in history if key in h]
+            if not entries:
+                continue
+            hits   = sum(1 for h in entries if h[key].get("signal_hit") is True)
+            misses = sum(1 for h in entries if h[key].get("signal_hit") is False)
+            rets   = [h[key]["price_change_pct"] for h in entries
+                      if h[key].get("price_change_pct") is not None]
+            total  = hits + misses
+            wr     = f"{hits/total*100:.0f}%" if total > 0 else "—"
+            ar     = f"{sum(rets)/len(rets):+.1f}%" if rets else "—"
+            st.markdown(
+                f"**{w}日後** — 件数: {len(entries)}  |  勝率: {wr}  |  平均リターン: {ar}"
+            )
+
     # ── Report ──
     st.subheader("📝 分析レポート")
     report_text = data.get("report", "")
