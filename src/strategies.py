@@ -175,7 +175,25 @@ class BounceStrategy(BaseStrategy):
              ma75_ok = False # Data missing -> Safety first
              details.append("Trend: Data Missing -> NG")
 
-        is_entry = rsi_ok and bb_ok and vol_ok and ma75_ok
+        # スコアリングモード: LLMが重みを提案できる構造（config で有効化）
+        # デフォルトは従来の AND 条件
+        if entry_cfg.get("scoring_mode", False):
+            weights = entry_cfg.get("scoring_weights", {
+                "rsi": 1.0, "bb": 1.5, "vol": 0.8, "ma75": 2.0
+            })
+            score = (
+                (rsi_ok * weights.get("rsi", 1.0)) +
+                (bb_ok  * weights.get("bb",  1.5)) +
+                (vol_ok * weights.get("vol", 0.8)) +
+                (ma75_ok * weights.get("ma75", 2.0))
+            )
+            threshold = entry_cfg.get("scoring_threshold", 3.5)
+            is_entry = score >= threshold
+            details.append(f"Score: {score:.2f} / Threshold: {threshold} -> {'OK' if is_entry else 'NG'}")
+            metrics["entry_score"] = score
+            metrics["score_threshold"] = threshold
+        else:
+            is_entry = rsi_ok and bb_ok and vol_ok and ma75_ok
         return {"is_entry": is_entry, "details": details, "metrics": metrics}
 
     def should_sell(self, row, past_slice, ta, ctx) -> tuple[bool, str, float]:
@@ -328,7 +346,30 @@ class BreakoutStrategy(BaseStrategy):
         # 必須: 終値ブレイクアウト + 陽線 + MA75より上 + ボラ十分(ATR%) + トレンド確認(ADX or CMF)
         # 加点(いずれか必須): 出来高スパイク もしくは 最近のGC
         bullish_filter = is_bullish if entry_cfg.get("require_bullish_close", True) else True
-        is_entry = close_break_ok and bullish_filter and ma75_ok and atr_pct_ok and (adx_ok or cmf_ok) and (vol_ok or gc_ok)
+        # スコアリングモード: LLMが重みを提案できる構造（config で有効化）
+        # デフォルトは従来の AND/OR 複合条件
+        if entry_cfg.get("scoring_mode", False):
+            weights = entry_cfg.get("scoring_weights", {
+                "close_break": 2.5, "bullish": 1.0, "ma75": 2.0,
+                "atr_pct": 1.5, "adx": 1.2, "cmf": 1.0, "vol": 0.8, "gc": 0.6
+            })
+            score = (
+                (close_break_ok  * weights.get("close_break", 2.5)) +
+                (bullish_filter  * weights.get("bullish", 1.0)) +
+                (ma75_ok         * weights.get("ma75", 2.0)) +
+                (atr_pct_ok      * weights.get("atr_pct", 1.5)) +
+                (adx_ok          * weights.get("adx", 1.2)) +
+                (cmf_ok          * weights.get("cmf", 1.0)) +
+                (vol_ok          * weights.get("vol", 0.8)) +
+                (gc_ok           * weights.get("gc", 0.6))
+            )
+            threshold = entry_cfg.get("scoring_threshold", 6.0)
+            is_entry = score >= threshold
+            details.append(f"Score: {score:.2f} / Threshold: {threshold} -> {'OK' if is_entry else 'NG'}")
+            metrics["entry_score"] = score
+            metrics["score_threshold"] = threshold
+        else:
+            is_entry = close_break_ok and bullish_filter and ma75_ok and atr_pct_ok and (adx_ok or cmf_ok) and (vol_ok or gc_ok)
         
         return {"is_entry": is_entry, "details": details, "metrics": metrics}
 

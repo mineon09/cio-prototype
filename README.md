@@ -50,7 +50,7 @@
 ├── src/                       # コアモジュール群
 │   ├── data_fetcher.py        # 株価・財務データ取得 + Gemini/Groq API 呼び出し
 │   ├── analyzers.py           # 4軸スコアカード生成（セクター別閾値）
-│   ├── strategies.py          # BounceStrategy / BreakoutStrategy
+│   ├── strategies.py          # BounceStrategy / BreakoutStrategy（スコアリングモード対応）
 │   ├── macro_regime.py        # マクロ環境レジーム判定（TTLキャッシュ）
 │   ├── dcf_model.py           # DCF理論株価（正式WACC・PITフィルタ）
 │   ├── edinet_client.py       # EDINET 有報取得（日本株）
@@ -60,11 +60,14 @@
 │   ├── news_fetcher.py        # ニュース取得（yfinance + Exa/Perplexity/Tavily）
 │   ├── investment_judgment.py # API / ツールベース投資判断エンジン
 │   ├── backtester.py          # バックテスト（PIT・モンテカルロ・ローリング）
+│   ├── backtest_reporter.py   # バックテスト結果→LLMフィードバックプロンプト生成 (P1/P2/P3)
+│   ├── llm_strategy_optimizer.py # LLMによる戦略パラメータ反復最適化
 │   ├── portfolio.py           # ポジションサイジング・セクター集中度チェック
 │   ├── notion_writer.py       # Notion API 書き込み
 │   ├── copilot_client.py      # GitHub Models API クライアント（GPT-4o）
 │   └── parallel_utils.py      # 複数銘柄並列データ取得
-├── scripts/                   # 検証・デバッグスクリプト
+├── scripts/                   # 検証・デバッグ・最適化スクリプト
+│   └── optimize_strategy.py   # LLM戦略最適化 CLI（論文フレームワーク実装）
 ├── tests/                     # 単体テスト（pytest）
 ├── requirements.txt
 ├── .env.example
@@ -177,6 +180,56 @@ python3 -m src.backtester --ticker 7203.T --start 2024-01-01 --months 12
 # ローリングバックテスト（Walk-Forward）
 python3 -m src.backtester --ticker 7203.T --start 2023-01-01 --months 24 --rolling --window-months 12
 ```
+
+---
+
+### 🤖 LLM戦略最適化（論文ベース）
+
+バックテスト結果を LLM に渡し、エントリー/エグジット条件のパラメータを反復改善します。
+論文「大規模言語モデルを用いた株式投資戦略の自動生成におけるフィードバック設計」の
+フレームワークを実装しています。
+
+**モデル性能（論文実験結果）:**
+| モデル | 平均P&L改善 | 特性 |
+|--------|------------|------|
+| Claude Sonnet | **+14.1%** | 漸進的・安定改善（推奨） |
+| Gemini | +7.3% | 探索的・高分散 |
+| GPT-4o | -0.3% | 保守的・変更少 |
+
+```bash
+# 事前確認（DRY RUN: 設定は変更されない）
+./venv/bin/python3 scripts/optimize_strategy.py \
+  --ticker 8035.T --strategy bounce --dry-run
+
+# 最適化を実行（デフォルト: Claude, P1フィードバック, 5回反復）
+./venv/bin/python3 scripts/optimize_strategy.py \
+  --ticker 8035.T --strategy bounce \
+  --start 2023-01-01 --months 12
+
+# Gemini で実行（Claude APIキーなしの場合）
+./venv/bin/python3 scripts/optimize_strategy.py \
+  --ticker 7203.T --strategy breakout --model gemini
+
+# プロット付きフィードバック（P3: レジーム適応性改善に有効）
+./venv/bin/python3 scripts/optimize_strategy.py \
+  --ticker AAPL --strategy bounce --level P3 --max-iter 5
+
+# モデル比較実験（Claude vs Gemini vs GPT-4o を同条件で比較）
+./venv/bin/python3 scripts/optimize_strategy.py \
+  --ticker 8035.T --strategy bounce --compare-models --dry-run
+```
+
+**フィードバックレベル:**
+| レベル | 内容 | 推奨場面 |
+|--------|------|--------|
+| `P1` | 基本指標（Sharpe/MDD/勝率/レジーム別損益） | 初回・通常運用 |
+| `P2` | P1 + エグジット理由別内訳 | トレード品質改善時 |
+| `P3` | P2 + 損益曲線プロット | レジーム適応性改善時 |
+
+最適化結果は `data/optimization/{ticker}_{strategy}_{date}.json` に自動保存されます。
+
+> **注意:** Claude を使う場合は `ANTHROPIC_API_KEY` を `.env` に設定してください。
+> 未設定の場合は Gemini → GitHub Models (GPT-4o) の順でフォールバックします。
 
 ---
 

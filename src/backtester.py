@@ -387,6 +387,40 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
     gross_loss = abs(sum([t['return'] for t in valid_trades if t['return'] < 0]))
     profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 999.99  # CRIT-001: JSON互換値（float('inf')はJSON仕様外）
 
+    # レジーム別パフォーマンス内訳
+    regime_breakdown = {}
+    for t in valid_trades:
+        regime = t.get("regime", "UNKNOWN")
+        if regime not in regime_breakdown:
+            regime_breakdown[regime] = {"trades": 0, "wins": 0, "total_return": 0.0}
+        regime_breakdown[regime]["trades"] += 1
+        regime_breakdown[regime]["total_return"] += t["return"]
+        if t["return"] > 0:
+            regime_breakdown[regime]["wins"] += 1
+    for regime, stats in regime_breakdown.items():
+        n = stats["trades"]
+        stats["win_rate"] = round(stats["wins"] / n * 100, 1) if n > 0 else 0.0
+        stats["avg_return"] = round(stats["total_return"] / n, 2) if n > 0 else 0.0
+        stats["total_return"] = round(stats["total_return"], 2)
+
+    # エグジット理由別内訳
+    exit_reason_breakdown = {}
+    for t in valid_trades:
+        reason = t.get("reason", "Unknown")
+        # 理由をカテゴリ化（例: "ATR Stop (x1.5)" → "ATR Stop"）
+        category = reason.split("(")[0].strip() if "(" in reason else reason
+        if category not in exit_reason_breakdown:
+            exit_reason_breakdown[category] = {"count": 0, "wins": 0, "total_return": 0.0}
+        exit_reason_breakdown[category]["count"] += 1
+        exit_reason_breakdown[category]["total_return"] += t["return"]
+        if t["return"] > 0:
+            exit_reason_breakdown[category]["wins"] += 1
+    for reason, stats in exit_reason_breakdown.items():
+        n = stats["count"]
+        stats["win_rate"] = round(stats["wins"] / n * 100, 1) if n > 0 else 0.0
+        stats["avg_return"] = round(stats["total_return"] / n, 2) if n > 0 else 0.0
+        stats["total_return"] = round(stats["total_return"], 2)
+
     return {
         "ticker": "", "period": f"{df.iloc[0]['date'].strftime('%Y-%m')} ~ {df.iloc[-1]['date'].strftime('%Y-%m')}",
         "initial_capital": initial_capital, "final_value": p_df['value'].iloc[-1],
@@ -394,7 +428,10 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
         "market_return_pct": round(market_return, 2), "alpha": round(total_return - market_return, 2),
         "win_rate_pct": round(win_rate, 1), "max_drawdown_pct": round(p_df['dd'].min(), 2),
         "sharpe_ratio": round(sharpe_ratio, 2), "profit_factor": profit_factor,
-        "trade_count": len(valid_trades), "trades": trades, "history": portfolio_values, "stock_return_pct": round(stock_return, 2)
+        "trade_count": len(valid_trades), "trades": trades, "history": portfolio_values,
+        "stock_return_pct": round(stock_return, 2),
+        "regime_breakdown": regime_breakdown,
+        "exit_reason_breakdown": exit_reason_breakdown,
     }
 
 def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float = 1000000, position_pct: float = 0.10) -> dict:
