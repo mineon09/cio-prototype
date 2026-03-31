@@ -242,7 +242,6 @@
         "bounce": {
           "enabled_regimes": [
             "RISK_ON",
-            "NEUTRAL",
             "RATE_CUT",
             "YIELD_INVERSION",
             "BOJ_HIKE",
@@ -253,8 +252,17 @@
           "entry": {
             "fundamental_min": 3.5,
             "volume_multiplier": 1.0,
-            "rsi_threshold": 40
-          }
+            "rsi_threshold": 42,
+            "bb_std": 1.6
+          },
+          "exit": {
+            "take_profit_pct": 8.0,
+            "hard_stop_pct": -4.0,
+            "atr_trailing_multiplier": 2.5,
+            "atr_trailing_activation_pct": 3.0,
+            "stop_loss_atr_multiplier": 0.0
+          },
+          "_optimization_note": "LLM-optimized (Copilot Iter6): +15.19%, Sharpe 0.72, 36M 2022-2024. Key: NEUTRAL excluded (bank stock underperforms in ambiguous regime), RSI/BB relaxed for lower-vol stock, ATR trailing 2.5x/3.0% activation."
         }
       }
     },
@@ -315,24 +323,20 @@
       "strategies": {
         "bounce": {
           "enabled_regimes": [
-            "RISK_ON",
-            "NEUTRAL",
-            "RATE_CUT",
-            "RATE_HIKE",
-            "RISK_OFF",
-            "BOJ_HIKE",
             "YEN_WEAK",
-            "YEN_STRONG",
-            "NIKKEI_BULL",
-            "YIELD_INVERSION"
+            "YEN_STRONG"
           ],
           "entry": {
-            "rsi_threshold": 30,
+            "rsi_threshold": 42,
+            "bb_std": 1.6,
             "volume_multiplier": 1.3
           },
           "exit": {
-            "stop_loss_atr_multiplier": 1.5
-          }
+            "take_profit_pct": 10.0,
+            "hard_stop_pct": -3.5,
+            "stop_loss_atr_multiplier": 0.0
+          },
+          "_optimization_note": "LLM-optimized (Copilot): +8.72%, Sharpe 0.69, 36M 2022-2024. Key: YEN regime focus (Toyota yen-sensitive exporter), TP=10% captures full ~10.6% MFE. ATR trailing not needed (lower-vol stock). NIKKEI_BULL excluded (momentum regime adds noise for bounce strategy)."
         }
       }
     }

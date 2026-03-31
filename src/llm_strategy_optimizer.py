@@ -83,10 +83,23 @@ PARAM_BOUNDS: dict[str, dict[str, tuple]] = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# 過学習防止ガードレール（全イテレーション共通）
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# LLMクライアント取得（フォールバックチェーン）
-# ---------------------------------------------------------------------------
+GUARD_PROMPT = """
+### Overfitting Prevention Constraints (MUST FOLLOW)
+1. Change at most 2 parameters per iteration.
+2. Keep each parameter change within ±50% of its current value.
+3. Do not push entry conditions so strict that expected annual trade count falls below 3.
+4. Always provide a specific reason for each parameter change (citing regime/exit data above).
+5. If the latest iteration performed WORSE than the previous, prioritize diagnosing the cause
+   and propose at most 1 parameter change to investigate.
+6. Do not reverse a change made in the immediately prior iteration unless you explicitly state
+   why the original direction was wrong.
+"""
+
+
 
 def _get_llm_caller(model: str):
     """
@@ -375,7 +388,7 @@ def optimize_strategy(
             f"MaxDD={bt_result.get('max_drawdown_pct', 0):.2f}%"
         )
 
-        # フィードバックプロンプト構築
+        # フィードバックプロンプト構築（ガードレール付加）
         prompt_text, image_b64 = build_feedback_prompt(
             backtest_result=bt_result,
             strategy=strategy,
@@ -383,6 +396,17 @@ def optimize_strategy(
             level=level,
             config=current_config,
         )
+
+        # 変更履歴をプロンプトに追記（過学習防止・コンテキスト維持）
+        if config_changes:
+            history_lines = ["### Parameter Change History (Do NOT reverse without justification)"]
+            for ch in config_changes:
+                history_lines.append(f"  Iter {ch['iteration']}: {ch['updates']}")
+                if ch.get("analysis"):
+                    history_lines.append(f"    Reason: {ch['analysis'][:120]}")
+            prompt_text = prompt_text + "\n" + "\n".join(history_lines) + "\n"
+
+        prompt_text = prompt_text + GUARD_PROMPT
 
         # LLM呼び出し
         try:
