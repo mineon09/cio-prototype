@@ -622,7 +622,37 @@ python3 -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplie
 
 ---
 
-## 6. 設定のカスタマイズ
+## 6. LLM戦略最適化（新機能）
+
+LLMを使用して、バックテスト結果に基づく戦略パラメーターの自動最適化を行います。
+論文「大規模言語モデルを用いた株式投資戦略の自動生成におけるフィードバック設計」に基づいた高度なフィードバックループを実行します。
+
+### 最適化の実行
+
+最も基本的な実行方法です。デフォルトでClaude（未設定時はGeminiに自動フォールバック）を呼び出し、複数回の反復を通じて戦略を最適化します。
+
+```bash
+# 実行（Claude → Gemini → GPT-4o フォールバック）
+./venv/bin/python3 scripts/optimize_strategy.py --ticker 8035.T --strategy bounce
+```
+
+### 事前確認とモデル比較
+
+既存の設定（`config.json`）を書き換えずに、LLMからの提案内容だけを確認したり、LLMモデル間の比較（A/Bテスト）を行うことができます。スコアリングモードの評価等にも役立ちます。
+
+```bash
+# 事前確認（DRY RUN：設定ファイルは変更されません）
+./venv/bin/python3 scripts/optimize_strategy.py --ticker 8035.T --strategy bounce --dry-run
+
+# モデル比較（複数モデルでのパラメーター提案結果の比較）
+./venv/bin/python3 scripts/optimize_strategy.py --ticker 8035.T --strategy bounce --compare-models --dry-run
+```
+
+最適化の履歴や詳細なメトリクスは、各実行後に都度 `data/optimization/` ディレクトリ配下に JSON 形式で保存されます。
+
+---
+
+## 7. 設定のカスタマイズ
 
 `config.json` を編集することで、システムの恒久的な挙動をコントロールできます。
 
@@ -636,7 +666,7 @@ python3 -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplie
 
 ---
 
-## 7. トラブルシューティング
+## 8. トラブルシューティング
 
 - **yfinance の株価仕様注意点**: バックテストにて過去の株価を参照する際、yfinance の仕様により、その後に発生した**株式分割などで調整済みの価格（現在の基準）**が過去にも遡って適用されます（当時の実際の価格ではない点に留意してください）。
 - **財務データの欠損**: yfinance 等でデータが取得できない項目は、安全側のデフォルト値（NG 判定）や通期データによる補完が自動で行われます。

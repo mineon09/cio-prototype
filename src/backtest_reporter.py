@@ -55,18 +55,61 @@ def _format_exit_reasons(exit_reason_breakdown: dict) -> str:
     return "\n".join(lines)
 
 
-def build_p1_prompt(backtest_result: dict, strategy: str, ticker: str) -> str:
+def _format_available_params(strategy: str, current_config: dict | None = None) -> str:
+    """PARAM_BOUNDS から利用可能なパラメータキーと安全範囲・現在値をフォーマットする。"""
+    from src.llm_strategy_optimizer import PARAM_BOUNDS
+    bounds = PARAM_BOUNDS.get(strategy, {})
+    if not bounds:
+        return "  (利用可能なパラメータなし)"
+
+    s_cfg = {}
+    if current_config:
+        s_cfg = current_config.get("strategies", {}).get(strategy, {})
+
+    lines = []
+    for key, (lo, hi) in bounds.items():
+        # 現在値を取得
+        parts = key.split(".")
+        cur_val = s_cfg
+        for p in parts:
+            cur_val = cur_val.get(p, {}) if isinstance(cur_val, dict) else "?"
+        if isinstance(cur_val, dict):
+            cur_val = "?"
+        lines.append(f"  {key}: range [{lo}, {hi}], current={cur_val}")
+    return "\n".join(lines)
+
+
+def _build_param_json_template(strategy: str) -> str:
+    """PARAM_BOUNDS のキーを使って param_updates の JSON テンプレートを生成する。"""
+    from src.llm_strategy_optimizer import PARAM_BOUNDS
+    bounds = PARAM_BOUNDS.get(strategy, {})
+    if not bounds:
+        return '    "entry.rsi_threshold": null'
+
+    type_hint = {
+        "exit.time_stop_bars": "integer", "entry.gc_lookback_days": "integer",
+        "exit.time_stop_bars": "integer",
+    }
+    items = []
+    for key, (lo, hi) in bounds.items():
+        hint = "integer" if isinstance(lo, int) and isinstance(hi, int) else "number"
+        items.append(f'    "{key}": <{hint} or null>')
+    return ",\n".join(items)
+
+
+def build_p1_prompt(backtest_result: dict, strategy: str, ticker: str, config: dict | None = None) -> str:
     """P1: 基本的なバックテスト指標のテキストフィードバック（論文 Prompt 1 相当）"""
     r = backtest_result
-
     regime_section = _format_regime_breakdown(r.get("regime_breakdown", {}))
+    available_params = _format_available_params(strategy, config)
+    param_template = _build_param_json_template(strategy)
 
     return f"""You are a quantitative investment strategy analyst.
 Below are the backtest results of the {strategy} strategy for {ticker} ({r.get('period', 'N/A')}).
 Based on the metrics, provide a comprehensive analysis and propose specific parameter improvements.
-Do not rewrite strategy logic — only suggest parameter value changes (thresholds, multipliers, periods).
+Do not rewrite strategy logic — only suggest parameter value changes from the Available Parameters list below.
 
-If the strategy already meets production criteria (Sharpe > 1.0, Win Rate > 50%, Max DD > -20%),
+If the strategy already meets production criteria (Sharpe > 1.0, Win Rate > 50%, Max Drawdown better than -20%),
 ONLY output "APPROVED" and nothing else.
 
 ### Backtest Metrics
@@ -82,18 +125,16 @@ ONLY output "APPROVED" and nothing else.
 ### Regime Breakdown
 {regime_section}
 
+### Available Parameters (only these keys may be changed)
+{available_params}
+
 ### Required Output Format
 Respond with a brief analysis (2-3 sentences) followed by parameter suggestions in this exact JSON block:
 ```json
 {{
   "analysis": "Brief explanation of key issues",
   "param_updates": {{
-    "entry.rsi_threshold": <number or null>,
-    "entry.volume_multiplier": <number or null>,
-    "entry.bb_std": <number or null>,
-    "exit.hard_stop_pct": <number or null>,
-    "exit.take_profit_pct": <number or null>,
-    "exit.time_stop_bars": <integer or null>
+{param_template}
   }}
 }}
 ```
@@ -107,6 +148,8 @@ def build_p2_prompt(backtest_result: dict, strategy: str, ticker: str, config: d
 
     regime_section = _format_regime_breakdown(r.get("regime_breakdown", {}))
     exit_section = _format_exit_reasons(r.get("exit_reason_breakdown", {}))
+    available_params = _format_available_params(strategy, config)
+    param_template = _build_param_json_template(strategy)
 
     # レジーム重みの設定値をテキスト化（config がある場合）
     weight_section = ""
@@ -129,9 +172,9 @@ def build_p2_prompt(backtest_result: dict, strategy: str, ticker: str, config: d
     return f"""You are a quantitative investment strategy analyst.
 Below are the backtest results of the {strategy} strategy for {ticker} ({r.get('period', 'N/A')}).
 Analyze the regime breakdown and exit reason distribution to propose targeted parameter improvements.
-Do not rewrite strategy logic — only suggest parameter value changes.
+Do not rewrite strategy logic — only suggest parameter value changes from the Available Parameters list below.
 
-If the strategy already meets production criteria (Sharpe > 1.0, Win Rate > 50%, Max DD > -20%),
+If the strategy already meets production criteria (Sharpe > 1.0, Win Rate > 50%, Max Drawdown better than -20%),
 ONLY output "APPROVED" and nothing else.
 
 ### Backtest Metrics
@@ -151,17 +194,15 @@ ONLY output "APPROVED" and nothing else.
 {exit_section}
 {weight_section}
 
+### Available Parameters (only these keys may be changed)
+{available_params}
+
 ### Required Output Format
 ```json
 {{
   "analysis": "Brief explanation focusing on regime and exit patterns",
   "param_updates": {{
-    "entry.rsi_threshold": <number or null>,
-    "entry.volume_multiplier": <number or null>,
-    "entry.bb_std": <number or null>,
-    "exit.hard_stop_pct": <number or null>,
-    "exit.take_profit_pct": <number or null>,
-    "exit.time_stop_bars": <integer or null>
+{param_template}
   }}
 }}
 ```
@@ -262,7 +303,7 @@ def build_feedback_prompt(
         strategy: 戦略名 ("bounce" / "breakout" / "long")
         ticker: 銘柄コード
         level: "P1" / "P2" / "P3"
-        config: config.json の内容（P2/P3 で使用）
+        config: config.json の内容（全レベルで使用: 現在値表示・レジーム重み取得）
 
     Returns:
         (text_prompt, base64_image_or_None)
@@ -273,7 +314,7 @@ def build_feedback_prompt(
     elif level == "P2":
         return build_p2_prompt(backtest_result, strategy, ticker, config), None
     else:
-        return build_p1_prompt(backtest_result, strategy, ticker), None
+        return build_p1_prompt(backtest_result, strategy, ticker, config), None
 
 
 # ---------------------------------------------------------------------------
@@ -295,26 +336,21 @@ def parse_param_suggestions(llm_response: str) -> dict | None:
     if stripped == "APPROVED" or stripped.startswith("APPROVED"):
         return {"approved": True, "analysis": "Strategy meets production criteria."}
 
-    # JSON ブロックを抽出（```json ... ``` または {...}）
     import re
-    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
-    if not json_match:
-        # マークダウンなしの純粋な JSON を試みる
-        json_match = re.search(r"(\{[^{}]*\"param_updates\"[^{}]*\})", stripped, re.DOTALL)
 
-    if not json_match:
-        # さらに緩やかなマッチ
-        brace_start = stripped.find("{")
-        brace_end = stripped.rfind("}") + 1
-        if brace_start >= 0 and brace_end > brace_start:
-            json_match_str = stripped[brace_start:brace_end]
-        else:
-            return None
+    # 1. マークダウンコードブロック内の JSON を抽出（最優先）
+    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
+    if json_match:
+        json_str = json_match.group(1)
     else:
-        json_match_str = json_match.group(1)
+        # 2. 最外周の {} を見つけてネストを追跡しながら抽出
+        json_str = _extract_outermost_json(stripped)
+
+    if not json_str:
+        return None
 
     try:
-        data = json.loads(json_match_str)
+        data = json.loads(json_str)
         if "param_updates" not in data:
             return None
         # null をフィルタリング
@@ -326,3 +362,19 @@ def parse_param_suggestions(llm_response: str) -> dict | None:
         }
     except (json.JSONDecodeError, KeyError):
         return None
+
+
+def _extract_outermost_json(text: str) -> str | None:
+    """ブレースのネスト深度を追跡して最外周の JSON オブジェクトを抽出する。"""
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                return text[start:i + 1]
+    return None

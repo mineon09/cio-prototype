@@ -281,6 +281,33 @@
             "take_profit_pct": 10.0,
             "take_profit_atr_multiplier": 4.0
           }
+        },
+        "bounce": {
+          "enabled_regimes": [
+            "RISK_ON",
+            "NEUTRAL",
+            "RATE_CUT",
+            "RATE_HIKE",
+            "RISK_OFF",
+            "YIELD_INVERSION",
+            "YEN_WEAK",
+            "YEN_STRONG",
+            "NIKKEI_BULL"
+          ],
+          "entry": {
+            "rsi_threshold": 42.0,
+            "bb_std": 1.6,
+            "volume_multiplier": 1.1
+          },
+          "exit": {
+            "hard_stop_pct": -3.5,
+            "take_profit_pct": 12.0,
+            "time_stop_bars": 10,
+            "atr_trailing_multiplier": 2.5,
+            "atr_trailing_activation_pct": 3.5,
+            "stop_loss_atr_multiplier": 0.0
+          },
+          "_optimization_note": "LLM-optimized 2026-03-31: Iter4, Sharpe 1.25, +16.12% (18-month 2023-01 to 2024-07)"
         }
       }
     },

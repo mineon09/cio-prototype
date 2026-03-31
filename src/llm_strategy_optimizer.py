@@ -53,8 +53,10 @@ PARAM_BOUNDS: dict[str, dict[str, tuple]] = {
         "exit.hard_stop_pct":      (-10.0, -1.0),
         "exit.take_profit_pct":    (2.0,  20.0),
         "exit.time_stop_bars":     (3,    30),
-        "exit.stop_loss_atr_multiplier": (0.5, 3.0),
+        "exit.stop_loss_atr_multiplier":   (0.5, 3.0),
         "exit.take_profit_atr_multiplier": (1.0, 5.0),
+        "exit.atr_trailing_multiplier":    (0.5, 4.0),
+        "exit.atr_trailing_activation_pct": (0.5, 5.0),
     },
     "breakout": {
         "entry.volume_multiplier": (1.1,  3.0),
@@ -322,12 +324,13 @@ def optimize_strategy(
     for iteration in range(max_iter):
         logger.info(f"\n--- 反復 {iteration + 1}/{max_iter} ---")
 
-        # バックテスト実行
+        # バックテスト実行（更新済み current_config を使用）
         bt_result = run_backtest(
             ticker=ticker,
             start_date_str=start_date,
             duration_months=months,
             strategy=strategy,
+            config_override=current_config,
         )
 
         if "error" in bt_result:
@@ -418,6 +421,7 @@ def optimize_strategy(
         start_date_str=start_date,
         duration_months=months,
         strategy=strategy,
+        config_override=current_config,
     )
 
     initial_return = (initial_perf or {}).get("total_return_pct", 0.0)

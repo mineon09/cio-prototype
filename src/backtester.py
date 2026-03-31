@@ -1,3 +1,4 @@
+import copy
 import sys
 import os
 import io
@@ -106,7 +107,7 @@ def get_buy_threshold(regime: str, config: dict) -> float:
     default = config.get("signals", {}).get("BUY", {}).get("min_score", 6.5)
     return overrides.get(regime, {}).get("min_score", default)
 
-def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, strategy: str = "long", cli_overrides: dict = None):
+def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, strategy: str = "long", cli_overrides: dict = None, config_override: dict = None):
     try:
         start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
     except ValueError:
@@ -115,8 +116,11 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
     logger.info(f"Backtest Start: {ticker} ({strategy}) from {start_date_str}")
     
     try:
-        from src.utils import load_config_with_overrides
-        config = load_config_with_overrides(ticker)
+        if config_override is not None:
+            config = copy.deepcopy(config_override)
+        else:
+            from src.utils import load_config_with_overrides
+            config = load_config_with_overrides(ticker)
     except Exception as e:
         logger.error(f"Failed to load config with overrides: {e}")
         config = {}
