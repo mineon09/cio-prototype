@@ -349,7 +349,7 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
                     if strategy_name != "long":
                          stop_loss, take_profit, mode = execute_short_entry(price, date, daily_data, config, strategy_name)
                     
-                    ctx = {'buy_price': buy_price, 'entry_date': date, 'entry_atr': entry_atr, 'trailing_high': price, 'low_score_months': 0}
+                    ctx = {'buy_price': buy_price, 'entry_date': date, 'entry_atr': entry_atr, 'trailing_high': price, 'low_score_months': 0, 'mfe': 0.0, 'mae': 0.0}
                     trades.append({
                         "date": date, 
                         "type": "BUY", 
@@ -361,14 +361,19 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
         
         else:
             ctx['trailing_high'] = max(ctx['trailing_high'], row.get('high', price))
+            buy_p = ctx['buy_price']
+            ctx['mfe'] = max(ctx['mfe'], (row.get('high', price) - buy_p) / buy_p * 100)
+            ctx['mae'] = min(ctx['mae'], (row.get('low', price) - buy_p) / buy_p * 100)
             should_sell, reason, exit_price = strategy.should_sell(row, past_slice, ta, ctx)
             if not should_sell and i == len(df) - 1: should_sell, reason, exit_price = True, "End of Period", price
 
             if should_sell:
                 cash = holdings * exit_price * (1 - cost_rate)
                 holdings, last_sell_date, last_sell_reason = 0, date, reason
-                trades[-1].update({"sell_date": date, "sell_price": exit_price, "reason": reason, "return": (exit_price - buy_price) / buy_price * 100})
-                logger.info(f"  ⚖️ SELL: {exit_price:,.0f} ({reason}) Return: {trades[-1]['return']:.2f}%")
+                ret = (exit_price - buy_price) / buy_price * 100
+                trades[-1].update({"sell_date": date, "sell_price": exit_price, "reason": reason, "return": ret,
+                                   "mfe": round(ctx['mfe'], 3), "mae": round(ctx['mae'], 3)})
+                logger.info(f"  ⚖️ SELL: {exit_price:,.0f} ({reason}) Return: {ret:.2f}%")
 
         portfolio_values.append({"date": date, "value": cash + (holdings * price)})
 
@@ -469,7 +474,7 @@ def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float
         "max_drawdown": {"median": np.median(max_drawdowns), "mean": np.mean(max_drawdowns), "worst": np.max(max_drawdowns)}
     }
 
-def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 36, window_months: int = 12, step_months: int = 3, strategy: str = "bounce", cli_overrides: dict = None):
+def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 36, window_months: int = 12, step_months: int = 3, strategy: str = "bounce", cli_overrides: dict = None, config_override: dict = None):
     start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
     results = []
     current_start = start_dt
@@ -482,7 +487,7 @@ def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 3
         try:
             w_start_str = current_start.strftime("%Y-%m-%d")
             logger.info(f"--- Rolling Window: {w_start_str} ---")
-            bt_result = run_backtest(ticker, w_start_str, duration_months=window_months, strategy=strategy, cli_overrides=cli_overrides)
+            bt_result = run_backtest(ticker, w_start_str, duration_months=window_months, strategy=strategy, cli_overrides=cli_overrides, config_override=config_override)
             if "error" not in bt_result:
                 results.append({
                     "start": w_start_str,

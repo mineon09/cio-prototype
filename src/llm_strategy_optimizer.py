@@ -167,7 +167,35 @@ def _get_llm_caller(model: str):
 # パラメータ検証・クリッピング
 # ---------------------------------------------------------------------------
 
-def _validate_param_updates(updates: dict, strategy: str) -> dict:
+def merge_ticker_override(config: dict, ticker: str) -> dict:
+    """
+    ticker_overrides セクションを base strategies に手動マージする。
+
+    `run_backtest(config_override=cfg)` 呼び出し時、ticker_overrides は自動適用されないため、
+    手動バックテスト・テストコードでは `load_config_with_overrides` の代わりにこの関数を使う。
+
+    Args:
+        config: config.json を読み込んだ辞書
+        ticker: 銘柄コード (例: "8035.T")
+
+    Returns:
+        ticker_override がマージされた新しい config 辞書
+    """
+    result = copy.deepcopy(config)
+    override = result.get("ticker_overrides", {}).get(ticker, {})
+    for strategy_name, strategy_override in override.get("strategies", {}).items():
+        base_strategy = result.setdefault("strategies", {}).setdefault(strategy_name, {})
+        for section_name, section_override in strategy_override.items():
+            if section_name in ("enabled_regimes",):
+                base_strategy[section_name] = section_override
+            elif isinstance(section_override, dict):
+                base_strategy.setdefault(section_name, {}).update(section_override)
+            elif not section_name.startswith("_"):
+                base_strategy[section_name] = section_override
+    return result
+
+
+
     """
     LLMが提案したパラメータ更新を境界チェックし、安全な範囲にクリップする。
 

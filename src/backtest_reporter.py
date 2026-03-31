@@ -97,7 +97,61 @@ def _build_param_json_template(strategy: str) -> str:
     return ",\n".join(items)
 
 
-def build_p1_prompt(backtest_result: dict, strategy: str, ticker: str, config: dict | None = None) -> str:
+def _format_mfe_mae_analysis(trades: list) -> str:
+    """MFE/MAE分析 - エッジ品質と早期Exit率を定量化する。"""
+    valid = [t for t in (trades or []) if "mfe" in t and "mae" in t and "return" in t]
+    if not valid:
+        return "  (MFE/MAEデータなし)"
+
+    avg_mfe = sum(t["mfe"] for t in valid) / len(valid)
+    avg_mae = sum(t["mae"] for t in valid) / len(valid)
+    mfe_mae_ratio = abs(avg_mfe / avg_mae) if avg_mae != 0 else 0.0
+
+    early_exit = [t for t in valid if t["mfe"] > 0 and t["return"] < t["mfe"] * 0.5]
+    early_exit_rate = len(early_exit) / len(valid) * 100 if valid else 0
+
+    lines = [
+        f"  Average MFE (最大含み益平均):  {avg_mfe:+.2f}%",
+        f"  Average MAE (最大含み損平均):  {avg_mae:+.2f}%",
+        f"  MFE/MAE Ratio (エッジ品質):   {mfe_mae_ratio:.2f}x",
+        f"  Early Exit Rate (MFEの50%未満でExitしたトレード): {len(early_exit)}/{len(valid)}件 ({early_exit_rate:.0f}%)",
+    ]
+    if early_exit:
+        lines.append("  Early-exit trades (潜在利益を取り切れなかった):")
+        for t in early_exit:
+            date_str = str(t.get("date", "?"))[:10]
+            lines.append(f"    {date_str}: exit={t['return']:+.2f}%, MFE={t['mfe']:+.2f}%, loss={(t['return'] - t['mfe']):.2f}%")
+    return "\n".join(lines)
+
+
+def _format_rolling_summary(rolling_result: dict) -> str:
+    """ローリングウォークフォワード検証サマリーをフォーマットする。"""
+    if not rolling_result or "windows" not in rolling_result:
+        return "  (ローリング検証データなし)"
+
+    windows = rolling_result["windows"]
+    lines = [
+        f"  総ウィンドウ数: {rolling_result.get('total_windows', len(windows))}",
+        f"  正リターン率:   {rolling_result.get('win_probability', 0):.1f}%",
+        f"  平均リターン:   {rolling_result.get('avg_return', 0):+.2f}%",
+        f"  平均Sharpe:    {rolling_result.get('avg_sharpe', 0):.3f}",
+        f"  平均Win Rate:  {rolling_result.get('avg_win_rate', 0):.1f}%",
+        "",
+        "  各ウィンドウ詳細:",
+    ]
+    for w in windows:
+        flag = "✅" if w.get("total_return", 0) > 0 else "❌"
+        lines.append(
+            f"    {flag} [{w['start']}~{w['end']}] "
+            f"Return:{w.get('total_return', 0):+.1f}%  "
+            f"Sharpe:{w.get('sharpe_ratio', 0):.2f}  "
+            f"WR:{w.get('win_rate', 0):.0f}%  "
+            f"Trades:{w.get('trades', 0)}"
+        )
+    return "\n".join(lines)
+
+
+
     """P1: 基本的なバックテスト指標のテキストフィードバック（論文 Prompt 1 相当）"""
     r = backtest_result
     regime_section = _format_regime_breakdown(r.get("regime_breakdown", {}))
@@ -142,14 +196,19 @@ Set parameters you do not want to change to null.
 """
 
 
-def build_p2_prompt(backtest_result: dict, strategy: str, ticker: str, config: dict | None = None) -> str:
-    """P2: P1 + エグジット理由内訳 + レジーム重みとの実績差分（論文 Prompt 2 相当）"""
+def build_p2_prompt(backtest_result: dict, strategy: str, ticker: str, config: dict | None = None, rolling_result: dict | None = None) -> str:
+    """P2: P1 + エグジット理由内訳 + MFE/MAE分析 + ローリング検証サマリー（論文 Prompt 2 カスタム版）"""
     r = backtest_result
 
     regime_section = _format_regime_breakdown(r.get("regime_breakdown", {}))
     exit_section = _format_exit_reasons(r.get("exit_reason_breakdown", {}))
+    mfe_mae_section = _format_mfe_mae_analysis(r.get("trades", []))
     available_params = _format_available_params(strategy, config)
     param_template = _build_param_json_template(strategy)
+
+    rolling_section = ""
+    if rolling_result:
+        rolling_section = "\n### Rolling Walk-Forward Validation\n" + _format_rolling_summary(rolling_result)
 
     # レジーム重みの設定値をテキスト化（config がある場合）
     weight_section = ""
@@ -171,7 +230,7 @@ def build_p2_prompt(backtest_result: dict, strategy: str, ticker: str, config: d
 
     return f"""You are a quantitative investment strategy analyst.
 Below are the backtest results of the {strategy} strategy for {ticker} ({r.get('period', 'N/A')}).
-Analyze the regime breakdown and exit reason distribution to propose targeted parameter improvements.
+Analyze the regime breakdown, exit reasons, and MFE/MAE excursion quality to propose targeted improvements.
 Do not rewrite strategy logic — only suggest parameter value changes from the Available Parameters list below.
 
 If the strategy already meets production criteria (Sharpe > 1.0, Win Rate > 50%, Max Drawdown better than -20%),
@@ -192,7 +251,10 @@ ONLY output "APPROVED" and nothing else.
 
 ### Exit Reason Breakdown
 {exit_section}
-{weight_section}
+
+### Trade Excursion Analysis (MFE/MAE)
+{mfe_mae_section}
+{weight_section}{rolling_section}
 
 ### Available Parameters (only these keys may be changed)
 {available_params}
@@ -200,7 +262,7 @@ ONLY output "APPROVED" and nothing else.
 ### Required Output Format
 ```json
 {{
-  "analysis": "Brief explanation focusing on regime and exit patterns",
+  "analysis": "Brief explanation focusing on excursion quality and robustness",
   "param_updates": {{
 {param_template}
   }}
@@ -294,6 +356,7 @@ def build_feedback_prompt(
     ticker: str,
     level: str = "P1",
     config: dict | None = None,
+    rolling_result: dict | None = None,
 ) -> tuple[str, str | None]:
     """
     フィードバックプロンプトを構築する。
@@ -304,6 +367,7 @@ def build_feedback_prompt(
         ticker: 銘柄コード
         level: "P1" / "P2" / "P3"
         config: config.json の内容（全レベルで使用: 現在値表示・レジーム重み取得）
+        rolling_result: run_rolling_backtest() の返り値（P2/P3 で使用）
 
     Returns:
         (text_prompt, base64_image_or_None)
@@ -312,7 +376,7 @@ def build_feedback_prompt(
     if level == "P3":
         return build_p3_prompt(backtest_result, strategy, ticker, config)
     elif level == "P2":
-        return build_p2_prompt(backtest_result, strategy, ticker, config), None
+        return build_p2_prompt(backtest_result, strategy, ticker, config, rolling_result=rolling_result), None
     else:
         return build_p1_prompt(backtest_result, strategy, ticker, config), None
 
