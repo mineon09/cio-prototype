@@ -278,7 +278,6 @@
             "YIELD_INVERSION",
             "BOJ_HIKE",
             "YEN_WEAK",
-            "YEN_STRONG",
             "NIKKEI_BULL"
           ],
           "entry": {
@@ -288,7 +287,8 @@
           "exit": {
             "take_profit_pct": 10.0,
             "take_profit_atr_multiplier": 4.0
-          }
+          },
+          "_optimization_note": "LLM-optimized (Copilot): +9.07% Sharpe 0.31 after excluding YEN_STRONG. YEN_STRONG (JPY appreciation) = export earnings headwind for TEL = breakout failure. YEN_WEAK is goldmine (75% WR, +16.5%). Baseline was -1.38% with YEN_STRONG included."
         },
         "bounce": {
           "enabled_regimes": [
@@ -337,6 +337,51 @@
             "stop_loss_atr_multiplier": 0.0
           },
           "_optimization_note": "LLM-optimized (Copilot): +8.72%, Sharpe 0.69, 36M 2022-2024. Key: YEN regime focus (Toyota yen-sensitive exporter), TP=10% captures full ~10.6% MFE. ATR trailing not needed (lower-vol stock). NIKKEI_BULL excluded (momentum regime adds noise for bounce strategy)."
+        }
+      }
+    },
+    "AMAT": {
+      "strategies": {
+        "bounce": {
+          "entry": {
+            "rsi_threshold": 45,
+            "bb_std": 1.4
+          },
+          "exit": {
+            "take_profit_pct": 10.0,
+            "hard_stop_pct": -3.5,
+            "stop_loss_atr_multiplier": 0.0,
+            "atr_trailing_multiplier": 2.5,
+            "atr_trailing_activation_pct": 3.5
+          },
+          "_optimization_note": "Partial improvement (Iter2): +3.63%, Sharpe 0.30. Structural limit: JP-centric regime system labels YIELD_INVERSION for all US stocks — wins only 33% in that regime. Viable but weak vs JP stocks."
+        },
+        "breakout": {
+          "enabled": false,
+          "_reason": "Breakout not viable: YIELD_INVERSION regime dominates (-16% from 10 trades). AMAT in 2022-24 = Fed rate hike downtrend cycle. Regime system cannot distinguish US bull vs bear — all labels as YIELD_INVERSION."
+        }
+      }
+    },
+    "JPM": {
+      "strategies": {
+        "bounce": {
+          "enabled": false,
+          "_reason": "Bounce not viable: YIELD_INVERSION is the only active regime and has 0% win rate. JP-centric regime system does not map accurately to US bank macro cycles. Consider breakout strategy or wait for regime-aware US macro module."
+        }
+      }
+    },
+    "TSLA": {
+      "strategies": {
+        "bounce": {
+          "enabled": false,
+          "_reason": "Bounce not viable: Extreme vol + YIELD_INVERSION-only regime = 0% win rate. TSLA is a trend/momentum stock, not a mean-reversion candidate in 2022-24 period."
+        }
+      }
+    },
+    "8053.T": {
+      "strategies": {
+        "breakout": {
+          "_optimization_note": "Baseline already excellent: +27.19%, Sharpe 0.83, 10 trades, WR 70% (2022-2024). NEUTRAL regime goldmine (100% WR, +20% from 2 trades). Do NOT tighten volume filter — vol=1.2x default is optimal. GUARD: leave unchanged."
         }
       }
     }
