@@ -498,7 +498,38 @@
         "valuation": 0.25,
         "technical": 0.3,
         "qualitative": 0.2
+      },
+      "FED_HIKE": {
+        "fundamental": 0.3,
+        "valuation": 0.35,
+        "technical": 0.2,
+        "qualitative": 0.15
+      },
+      "FED_PAUSE": {
+        "fundamental": 0.3,
+        "valuation": 0.25,
+        "technical": 0.25,
+        "qualitative": 0.2
+      },
+      "FED_CUT": {
+        "fundamental": 0.2,
+        "valuation": 0.25,
+        "technical": 0.3,
+        "qualitative": 0.25
+      },
+      "USD_STRONG": {
+        "fundamental": 0.35,
+        "valuation": 0.3,
+        "technical": 0.2,
+        "qualitative": 0.15
       }
+    },
+    "us_thresholds": {
+      "fed_hike_irx_delta": 0.5,
+      "fed_cut_irx_delta": -0.25,
+      "usd_strong_dxy_20d_return_pct": 2.0,
+      "vix_risk_off": 25,
+      "vix_risk_on": 18
     }
   },
   "edinet": {
@@ -976,6 +1007,44 @@
           "SPY"
         ]
       }
+    }
+  },
+  "us_regimes": {
+    "FED_HIKE": {
+      "condition": "irx_3m_delta > 0.5",
+      "description": "利上げ局面（高ボラ・グロース売り）",
+      "bounce_weight": 0.8,
+      "breakout_weight": 0.6
+    },
+    "FED_PAUSE": {
+      "condition": "irx_3m_delta between -0.25 and 0.5",
+      "description": "利上げ停止（方向感なし）",
+      "bounce_weight": 1.0,
+      "breakout_weight": 1.0
+    },
+    "FED_CUT": {
+      "condition": "irx_3m_delta < -0.25",
+      "description": "利下げ局面（リスクオン）",
+      "bounce_weight": 1.2,
+      "breakout_weight": 1.3
+    },
+    "USD_STRONG": {
+      "condition": "dxy_20d_return > 2.0",
+      "description": "ドル高（輸出株・新興国株逆風）",
+      "bounce_weight": 0.7,
+      "breakout_weight": 0.8
+    },
+    "RISK_ON": {
+      "condition": "vix < 18",
+      "description": "リスクオン（VIX安定）",
+      "bounce_weight": 1.1,
+      "breakout_weight": 1.2
+    },
+    "RISK_OFF": {
+      "condition": "vix > 25",
+      "description": "リスクオフ（VIX高騰・ポジション縮小）",
+      "bounce_weight": 0.5,
+      "breakout_weight": 0.3
     }
   }
 }

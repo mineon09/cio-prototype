@@ -67,7 +67,8 @@
 │   ├── copilot_client.py      # GitHub Models API クライアント（GPT-4o）
 │   └── parallel_utils.py      # 複数銘柄並列データ取得
 ├── scripts/                   # 検証・デバッグ・最適化スクリプト
-│   └── optimize_strategy.py   # LLM戦略最適化 CLI（論文フレームワーク実装）
+│   ├── optimize_strategy.py           # LLM戦略最適化 CLI（論文フレームワーク実装）
+│   └── apply_optimization_results.py  # 最適化結果を config.json に自動反映
 ├── tests/                     # 単体テスト（pytest）
 ├── requirements.txt
 ├── .env.example
@@ -206,6 +207,10 @@ python3 -m src.backtester --ticker 7203.T --start 2023-01-01 --months 24 --rolli
   --ticker 8035.T --strategy bounce \
   --start 2023-01-01 --months 12
 
+# 30 iter 設計（ConvergenceMonitor で自動早期打ち切りあり）
+./venv/bin/python3 scripts/optimize_strategy.py \
+  --ticker AMAT --strategy bounce --max-iter 30 --level P2
+
 # Gemini で実行（Claude APIキーなしの場合）
 ./venv/bin/python3 scripts/optimize_strategy.py \
   --ticker 7203.T --strategy breakout --model gemini
@@ -217,7 +222,22 @@ python3 -m src.backtester --ticker 7203.T --start 2023-01-01 --months 24 --rolli
 # モデル比較実験（Claude vs Gemini vs GPT-4o を同条件で比較）
 ./venv/bin/python3 scripts/optimize_strategy.py \
   --ticker 8035.T --strategy bounce --compare-models --dry-run
+
+# グループ一括最適化（TICKER_GROUPS 定義の全銘柄を順番に処理）
+./venv/bin/python3 scripts/optimize_strategy.py \
+  --group JP_semiconductor --level P2  # 30iter × 2銘柄
+./venv/bin/python3 scripts/optimize_strategy.py \
+  --group US_semiconductor --level P2  # 30iter × 2銘柄（FED/DXY/VIXレジーム使用）
 ```
+
+**利用可能なグループ (`--group`):**
+| グループ名 | 銘柄 | 戦略 | iter | 備考 |
+|-----------|------|------|------|------|
+| `JP_semiconductor` | 8035.T, 6857.T | bounce | 30 | YEN_STRONG 逆風対策 |
+| `JP_trading` | 8053.T, 8058.T | breakout | 15 | ベースラインが強い |
+| `JP_financial` | 8306.T, 8316.T | bounce | 30 | BOJ_HIKE 除外済み |
+| `US_semiconductor` | AMAT, LRCX | bounce | 30 | USレジーム v2 (FED/DXY/VIX) |
+| `US_energy` | XOM, CVX | breakout | 20 | USレジーム v2 必須 |
 
 **フィードバックレベル:**
 | レベル | 内容 | 推奨場面 |
@@ -227,6 +247,19 @@ python3 -m src.backtester --ticker 7203.T --start 2023-01-01 --months 24 --rolli
 | `P3` | P2 + 損益曲線プロット | レジーム適応性改善時 |
 
 最適化結果は `data/optimization/{ticker}_{strategy}_{date}.json` に自動保存されます。
+
+**最適化結果の config.json への自動反映:**
+
+```bash
+# 差分確認（config.json は変更されない）
+./venv/bin/python3 scripts/apply_optimization_results.py --dry-run
+
+# 全銘柄の最良結果を反映
+./venv/bin/python3 scripts/apply_optimization_results.py
+
+# 特定銘柄のみ反映
+./venv/bin/python3 scripts/apply_optimization_results.py --ticker 8035.T AMAT
+```
 
 > **注意:** Claude を使う場合は `ANTHROPIC_API_KEY` を `.env` に設定してください。
 > 未設定の場合は Gemini → GitHub Models (GPT-4o) の順でフォールバックします。

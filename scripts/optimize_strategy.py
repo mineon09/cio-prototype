@@ -14,7 +14,7 @@ scripts/optimize_strategy.py - LLMによる戦略パラメータ最適化 CLI
     # 実際に最適化を実行（設定が変更される）
     ./venv/bin/python3 scripts/optimize_strategy.py \\
         --ticker 8035.T --strategy breakout --start 2023-01-01 --months 12 \\
-        --model claude --level P2 --max-iter 5
+        --model claude --level P2 --max-iter 30
 
     # Gemini を使用（Claude API キーなしの場合）
     ./venv/bin/python3 scripts/optimize_strategy.py \\
@@ -23,6 +23,10 @@ scripts/optimize_strategy.py - LLMによる戦略パラメータ最適化 CLI
     # モデル比較（論文の A/B テストに相当）
     ./venv/bin/python3 scripts/optimize_strategy.py \\
         --ticker 8035.T --strategy bounce --compare-models --dry-run
+
+    # グループ全銘柄を順番に最適化（30iter × 各銘柄）
+    ./venv/bin/python3 scripts/optimize_strategy.py \\
+        --group JP_semiconductor --max-iter 30 --level P2
 
 モデル優先順位（論文の実験結果より）:
     Claude Sonnet 4.5: 平均 +14.1% の P&L 改善（最良）
@@ -47,6 +51,59 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("optimize_strategy")
+
+
+# ---------------------------------------------------------------------------
+# 銘柄グループ定義（30iter設計）
+# ---------------------------------------------------------------------------
+
+TICKER_GROUPS: dict[str, dict] = {
+    "JP_semiconductor": {
+        "tickers": ["8035.T", "6857.T"],        # 東京エレクトロン, アドバンテスト
+        "strategy": "bounce",
+        "benchmark": "6344",
+        "known_issue": "YEN_STRONG 逆風（輸出企業）",
+        "iter_budget": 30,
+        "start": "2022-01-01",
+        "months": 36,
+    },
+    "JP_trading": {
+        "tickers": ["8053.T", "8058.T"],        # 住友商事, 三菱商事
+        "strategy": "breakout",
+        "benchmark": "1699",
+        "known_issue": "ベースラインが強い — 変更最小限で検証",
+        "iter_budget": 15,
+        "start": "2022-01-01",
+        "months": 36,
+    },
+    "JP_financial": {
+        "tickers": ["8306.T", "8316.T"],        # 三菱UFJ, 三井住友
+        "strategy": "bounce",
+        "benchmark": "1615",
+        "known_issue": "BOJ_HIKE を除外済み",
+        "iter_budget": 30,
+        "start": "2022-01-01",
+        "months": 36,
+    },
+    "US_semiconductor": {
+        "tickers": ["AMAT", "LRCX"],
+        "strategy": "bounce",
+        "benchmark": "SOXX",
+        "known_issue": "USレジーム未対応 → v2.1 で FED/DXY/VIX システムに切り替え済み",
+        "iter_budget": 30,
+        "start": "2021-01-01",
+        "months": 36,
+    },
+    "US_energy": {
+        "tickers": ["XOM", "CVX"],
+        "strategy": "breakout",
+        "benchmark": "XLE",
+        "known_issue": "勝率 0% → USレジーム再設計が前提（v2.1 で対応済み）",
+        "iter_budget": 20,
+        "start": "2021-01-01",
+        "months": 36,
+    },
+}
 
 
 def run_single(args) -> dict:
@@ -155,6 +212,81 @@ def print_result_summary(result: dict):
     print("=" * 60)
 
 
+def run_group(args) -> dict:
+    """グループ内の全銘柄を順番に最適化する（30iter設計）"""
+    group_cfg = TICKER_GROUPS.get(args.group)
+    if not group_cfg:
+        raise ValueError(f"不明なグループ: {args.group}。有効: {list(TICKER_GROUPS.keys())}")
+
+    tickers = group_cfg["tickers"]
+    strategy = args.strategy or group_cfg["strategy"]
+    start = args.start or group_cfg["start"]
+    months = args.months or group_cfg["months"]
+    iter_budget = args.max_iter if args.max_iter != 5 else group_cfg["iter_budget"]
+
+    print("\n" + "=" * 60)
+    print(f"🔬 グループ最適化: {args.group}")
+    print(f"   銘柄: {tickers}")
+    print(f"   戦略: {strategy} | 期間: {start} + {months}M | 最大 {iter_budget} iter")
+    print(f"   補足: {group_cfg['known_issue']}")
+    print("=" * 60)
+
+    group_results: dict[str, dict] = {}
+    for ticker in tickers:
+        print(f"\n{'─' * 40}")
+        print(f"📈 {ticker} の最適化開始")
+        print(f"{'─' * 40}")
+
+        # args を一時的に上書き（ticker/strategy/start/months/max_iter）
+        class _FakeArgs:
+            pass
+
+        fargs = _FakeArgs()
+        fargs.__dict__.update(vars(args))
+        fargs.ticker = ticker
+        fargs.strategy = strategy
+        fargs.start = start
+        fargs.months = months
+        fargs.max_iter = iter_budget
+
+        try:
+            result = run_single(fargs)
+            group_results[ticker] = result
+        except Exception as e:
+            logger.error(f"  {ticker} 最適化失敗: {e}")
+            group_results[ticker] = {"error": str(e), "ticker": ticker}
+
+    # グループサマリー表示
+    print("\n" + "=" * 60)
+    print(f"📊 グループ最適化完了: {args.group}")
+    print("-" * 60)
+    print(f"{'銘柄':<12} {'Sharpe':>8} {'Return':>10} {'Trades':>8} {'承認':>6}")
+    print("-" * 60)
+    for ticker, res in group_results.items():
+        if "error" in res:
+            print(f"{ticker:<12} {'エラー':>8}")
+            continue
+        fp = res.get("final_performance", {})
+        sharpe = fp.get("sharpe_ratio", 0)
+        ret = fp.get("total_return_pct", 0)
+        trades = fp.get("trade_count", 0)
+        appr = "✅" if res.get("approved") else "❌"
+        print(f"{ticker:<12} {sharpe:>8.3f} {ret:>+9.2f}% {trades:>8} {appr:>6}")
+    print("=" * 60)
+
+    # グループ結果を JSON に保存
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = Path(__file__).parent.parent / "data" / "optimization"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"group_{args.group}_{ts}.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(group_results, f, ensure_ascii=False, indent=2, default=str)
+    print(f"\n💾 グループ結果を保存: {out_path}")
+
+    return group_results
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="LLMによる戦略パラメータ最適化",
@@ -162,14 +294,21 @@ def main():
         epilog=__doc__,
     )
 
-    # 必須引数
-    parser.add_argument("--ticker", required=True, help="銘柄コード (例: 8035.T, AAPL)")
-    parser.add_argument("--strategy", required=True, choices=["bounce", "breakout", "long"],
+    # 必須引数（--group 使用時は --ticker / --strategy は省略可）
+    parser.add_argument("--ticker", help="銘柄コード (例: 8035.T, AAPL)")
+    parser.add_argument("--strategy", choices=["bounce", "breakout", "long"],
                         help="戦略名")
 
+    # グループ最適化
+    parser.add_argument(
+        "--group",
+        choices=list(TICKER_GROUPS.keys()),
+        help="銘柄グループ名（グループ内全銘柄を順番に最適化）",
+    )
+
     # バックテスト設定
-    parser.add_argument("--start", default="2023-01-01", help="バックテスト開始日 (YYYY-MM-DD, デフォルト: 2023-01-01)")
-    parser.add_argument("--months", type=int, default=12, help="バックテスト期間（月数, デフォルト: 12）")
+    parser.add_argument("--start", default=None, help="バックテスト開始日 (YYYY-MM-DD; --group 使用時はグループ設定を優先)")
+    parser.add_argument("--months", type=int, default=None, help="バックテスト期間（月数; --group 使用時はグループ設定を優先）")
 
     # LLM設定
     parser.add_argument(
@@ -185,7 +324,7 @@ def main():
 
     # 最適化設定
     parser.add_argument("--max-iter", type=int, default=5,
-                        help="最大反復回数 (デフォルト: 5; 論文は10)")
+                        help="最大反復回数 (デフォルト: 5; 30iter設計は --group で自動設定)")
     parser.add_argument("--dry-run", action="store_true",
                         help="LLMの提案を表示するが設定は変更しない")
 
@@ -199,8 +338,37 @@ def main():
 
     args = parser.parse_args()
 
+    # --group と --ticker の排他チェック
+    if args.group and args.ticker:
+        parser.error("--group と --ticker は同時に指定できません")
+    if not args.group and not args.ticker:
+        parser.error("--ticker または --group のいずれかを指定してください")
+    if not args.group and not args.strategy:
+        parser.error("--ticker 使用時は --strategy が必要です")
+
+    # --ticker 使用時のデフォルト値設定
+    if not args.group:
+        if args.start is None:
+            args.start = "2023-01-01"
+        if args.months is None:
+            args.months = 12
+
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    if args.group:
+        print(f"\n🚀 グループ最適化 | {args.group} | モデル: {args.model} | レベル: {args.level}")
+        if args.dry_run:
+            print("   ⚠️  DRY RUN モード — 設定は変更されません")
+        try:
+            run_group(args)
+        except KeyboardInterrupt:
+            print("\n\n⚠️ 中断されました")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"エラー: {e}", exc_info=args.verbose)
+            sys.exit(1)
+        return
 
     print(f"\n🚀 LLM戦略最適化 | {args.ticker} ({args.strategy})")
     print(f"   モデル: {args.model} | レベル: {args.level} | 最大反復: {args.max_iter}")

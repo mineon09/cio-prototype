@@ -99,9 +99,140 @@ GUARD_PROMPT = """
    why the original direction was wrong.
 """
 
+# ---------------------------------------------------------------------------
+# システムプロンプト（LLMの役割・制約・出力形式を明示）
+# ---------------------------------------------------------------------------
+
+COPILOT_SYSTEM_PROMPT = """あなたは定量投資戦略の最適化エンジニアです。
+
+【役割】
+- バックテスト結果を分析し、具体的なパラメータ改善案を提示する
+- 各イテレーションで必ず何らかの変更を提案する（現状維持は不可）
+- 変更理由を定量的根拠（レジーム別成績・エグジット分析）で説明する
+
+【制約】
+- 1iter で変更するパラメータは最大 2 つ
+- 変更幅は前回値の ±50% 以内
+- 年間トレード数 3 件以上を維持
+- Max Drawdown -15% 以内を厳守
+- 同じパラメータを前回と逆方向に変更することを禁止する（変更履歴を必ず参照）
+
+【出力形式】
+必ず以下の JSON 形式のみで出力する（前後に説明文を付けない）:
+{
+  "analysis": "現状の問題点（1-2文）",
+  "hypothesis": "改善仮説（1文）",
+  "changes": { "param_name": new_value },
+  "expected_improvement": "期待効果（定量的に）",
+  "risk": "この変更のリスク"
+}
+
+承認基準（Sharpe > 1.2 かつ 年間トレード数 > 6 件）を達成した場合のみ:
+{ "approved": true, "reason": "達成理由" }
+"""
 
 
-def _get_llm_caller(model: str):
+# ---------------------------------------------------------------------------
+# 収束監視（過学習・早期打ち切り）
+# ---------------------------------------------------------------------------
+
+class ConvergenceMonitor:
+    """
+    最適化ループの収束・過学習・目標達成を自動検知する。
+
+    使い方:
+        monitor = ConvergenceMonitor()
+        for iteration in range(max_iter):
+            # バックテスト実行 ...
+            record = {"sharpe": 0.85, "trade_count": 8, "params": {...}}
+            should_go, reason = monitor.should_continue(history)
+            if not should_go:
+                logger.info(f"早期終了: {reason}")
+                break
+    """
+
+    # 収束判定: 直近 N iter での Sharpe 改善が閾値未満なら収束と見なす
+    CONVERGENCE_WINDOW = 5
+    CONVERGENCE_THRESHOLD = 0.05
+
+    # 目標基準
+    TARGET_SHARPE = 1.2
+    TARGET_TRADES = 6
+
+    # 過学習疑い: トレード数がこれ以下
+    MIN_TRADE_COUNT = 3
+
+    def should_continue(self, history: list[dict]) -> tuple[bool, str]:
+        """
+        最適化を継続すべきか判定する。
+
+        Args:
+            history: 各イテレーションの記録リスト。各要素は
+                     { "backtest": { "sharpe_ratio": float, "trade_count": int }, ... }
+
+        Returns:
+            (True, reason) = 継続
+            (False, reason) = 打ち切り
+        """
+        if len(history) < 2:
+            return True, "探索継続（初期フェーズ）"
+
+        sharpes = [h["backtest"].get("sharpe_ratio", 0) for h in history]
+        trade_counts = [h["backtest"].get("trade_count", 0) for h in history]
+
+        latest_sharpe = sharpes[-1]
+        latest_trades = trade_counts[-1]
+
+        # 1. 目標達成チェック
+        if latest_sharpe >= self.TARGET_SHARPE and latest_trades >= self.TARGET_TRADES:
+            return False, f"目標達成 ✅ (Sharpe {latest_sharpe:.3f} > {self.TARGET_SHARPE}, Trades {latest_trades})"
+
+        # 2. 過学習疑い: トレード数が極端に減少
+        if latest_trades < self.MIN_TRADE_COUNT:
+            return False, f"トレード数不足（過学習疑い）: {latest_trades} 件 < {self.MIN_TRADE_COUNT}"
+
+        # 3. 収束チェック: 直近 N iter の Sharpe 変動が小さい
+        if len(history) >= self.CONVERGENCE_WINDOW:
+            recent = sharpes[-self.CONVERGENCE_WINDOW:]
+            improvement = max(recent) - min(recent)
+            if improvement < self.CONVERGENCE_THRESHOLD:
+                return False, (
+                    f"収束（直近 {self.CONVERGENCE_WINDOW} iter の Sharpe 変動: "
+                    f"{improvement:.3f} < {self.CONVERGENCE_THRESHOLD}）"
+                )
+
+        return True, "改善継続"
+
+    def detect_oscillation(self, param_history: list[dict]) -> bool:
+        """
+        パラメータが A→B→A→B と振動していないか検知する。
+
+        Args:
+            param_history: 各イテレーションで変更されたパラメータの辞書リスト
+                           例: [{"entry.rsi_threshold": 40}, {"entry.rsi_threshold": 45}, ...]
+
+        Returns:
+            True = 振動検知（同一パラメータが交互に変化している）
+        """
+        if len(param_history) < 4:
+            return False
+
+        last_4 = param_history[-4:]
+        all_params: set[str] = set()
+        for h in last_4:
+            all_params.update(h.keys())
+
+        for param in all_params:
+            values = [h.get(param) for h in last_4 if param in h]
+            if len(values) >= 4:
+                # A→B→A→B パターンの検知
+                if values[0] == values[2] and values[1] == values[3] and values[0] != values[1]:
+                    return True
+
+        return False
+
+
+def _get_llm_caller(model: str, system_prompt: str | None = None):
     """
     モデル名に応じたLLM呼び出し関数を返す。
     戻り値: callable(prompt: str, image_b64: str | None) -> str
@@ -110,6 +241,10 @@ def _get_llm_caller(model: str):
       claude  → Anthropic API (ANTHROPIC_API_KEY)
       gemini  → Google Gemini API (GEMINI_API_KEY)
       gpt-4o  → GitHub Models API (gh auth token)
+
+    Args:
+        model:         使用するモデル名
+        system_prompt: システムプロンプト（None の場合は付加しない）
     """
     model_lower = model.lower()
 
@@ -128,11 +263,14 @@ def _get_llm_caller(model: str):
                             "source": {"type": "base64", "media_type": "image/png", "data": image_b64},
                         })
                     content.append({"type": "text", "text": prompt})
-                    message = client.messages.create(
-                        model="claude-sonnet-4-5",
-                        max_tokens=2048,
-                        messages=[{"role": "user", "content": content}],
-                    )
+                    kwargs: dict = {
+                        "model": "claude-sonnet-4-5",
+                        "max_tokens": 2048,
+                        "messages": [{"role": "user", "content": content}],
+                    }
+                    if system_prompt:
+                        kwargs["system"] = system_prompt
+                    message = client.messages.create(**kwargs)
                     return message.content[0].text
 
                 logger.info("LLM: Claude (Anthropic API) を使用")
@@ -149,9 +287,10 @@ def _get_llm_caller(model: str):
                 from src.data_fetcher import call_gemini
 
                 def call_gemini_wrapper(prompt: str, image_b64: str | None = None) -> str:
-                    # Gemini はマルチモーダル対応だが、既存の call_gemini はテキストのみ
-                    # 画像がある場合はプロンプトにその旨を付記する
+                    # Gemini はシステムプロンプトをユーザープロンプト先頭に連結
                     full_prompt = prompt
+                    if system_prompt:
+                        full_prompt = f"[System Instructions]\n{system_prompt}\n\n[User]\n{prompt}"
                     if image_b64:
                         full_prompt += "\n\n[Note: An equity curve plot image was generated but cannot be attached in this API call. Please focus on the text metrics above.]"
                     result, _ = call_gemini(full_prompt, parse_json=False)
@@ -167,7 +306,16 @@ def _get_llm_caller(model: str):
         from src.copilot_client import call_github_models
 
         def call_github(prompt: str, image_b64: str | None = None) -> str:
-            result, _ = call_github_models(prompt, model="gpt-4o", temperature=1.0)
+            # GitHub Models は system ロールを messages リストで渡す
+            if system_prompt:
+                result, _ = call_github_models(
+                    prompt,
+                    model="gpt-4o",
+                    temperature=1.0,
+                    system_message=system_prompt,
+                )
+            else:
+                result, _ = call_github_models(prompt, model="gpt-4o", temperature=1.0)
             return result
 
         logger.info("LLM: GitHub Models (GPT-4o) を使用")
@@ -354,13 +502,15 @@ def optimize_strategy(
         logger.warning(f"設定読み込み失敗、デフォルト設定を使用: {e}")
         config = {}
 
-    llm_caller = _get_llm_caller(model)
+    llm_caller = _get_llm_caller(model, system_prompt=COPILOT_SYSTEM_PROMPT)
 
     optimization_history: list[dict] = []
     config_changes: list[dict] = []
+    param_change_history: list[dict] = []   # 振動検知用
     current_config = copy.deepcopy(config)
     approved = False
     initial_perf: dict | None = None
+    convergence_monitor = ConvergenceMonitor()
 
     for iteration in range(max_iter):
         logger.info(f"\n--- 反復 {iteration + 1}/{max_iter} ---")
@@ -464,8 +614,19 @@ def optimize_strategy(
                 "updates": validated_updates,
                 "analysis": parsed.get("analysis", ""),
             })
+            param_change_history.append(validated_updates)
 
         optimization_history.append(iteration_record)
+
+        # 収束チェック（ConvergenceMonitor）
+        should_go, conv_reason = convergence_monitor.should_continue(optimization_history)
+        if not should_go:
+            logger.info(f"  🛑 早期終了: {conv_reason}")
+            break
+
+        # 振動検知
+        if convergence_monitor.detect_oscillation(param_change_history):
+            logger.warning("  ⚠️ パラメータ振動を検知 (A→B→A→B パターン) — 探索方向を変えてください")
 
     # 最終バックテスト（dry_run でも結果確認のため実行）
     final_bt = run_backtest(
