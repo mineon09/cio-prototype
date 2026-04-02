@@ -152,15 +152,20 @@ def run_with_progress(cmd: list, cwd: str, timeout: int = _GEN_TIMEOUT):
 def extract_prompt_text(stdout: str) -> str:
     """
     generate_prompt.py の stdout から本文を抽出する。
-    "====" 区切り行以降〜"💡 使用方法" 行の前まで。
+    1つ目の "====" 区切り行の直後から、2つ目の "====" 行の直前まで。
+    2つ目が見つからない場合は "💡 使用方法" 行の前までをフォールバックとする。
     """
     lines = stdout.splitlines()
     start_idx = None
     end_idx = None
 
     for i, line in enumerate(lines):
-        if start_idx is None and re.match(r'^=+$', line.strip()):
-            start_idx = i + 1
+        if re.match(r'^=+$', line.strip()):
+            if start_idx is None:
+                start_idx = i + 1  # 1つ目の ==== の次行からプロンプト開始
+            else:
+                end_idx = i        # 2つ目の ==== の直前でプロンプト終了
+                break
         if start_idx is not None and "💡 使用方法" in line:
             end_idx = i
             break
