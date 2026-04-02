@@ -249,7 +249,29 @@ with tab1:
             st.session_state["generated_prompt"] = prompt_text
             st.session_state["last_ticker"] = ticker_gen_upper
             st.session_state["save_ticker"] = ticker_gen_upper  # STEP3フィールドを自動入力
-            st.success("✅ プロンプト生成完了")
+
+            # 簡易プロンプトへのフォールバック検出
+            _is_fallback = "最新財務データを収集（ROE, PER, PBR" in prompt_text
+            if _is_fallback:
+                st.warning(
+                    "⚠️ データ取得に失敗したため簡易プロンプトが生成されました。\n"
+                    "以下の診断ログを確認してください。"
+                )
+                with st.expander("🔍 診断ログ（クリックで展開）", expanded=True):
+                    # stderrがあればエラーの根本原因
+                    if result.stderr:
+                        st.code(result.stderr, language="text")
+                    # stdoutの先頭（====より前）に診断情報が含まれる
+                    diag_lines = []
+                    for line in result.stdout.splitlines():
+                        if re.match(r'^=+$', line.strip()):
+                            break
+                        if line.strip():
+                            diag_lines.append(line)
+                    if diag_lines:
+                        st.code("\n".join(diag_lines), language="text")
+            else:
+                st.success("✅ プロンプト生成完了")
         else:
             st.error(f"❌ 生成失敗: {result.stderr[:200] if result.stderr else '（エラーなし）'}")
             with st.expander("エラーログ"):

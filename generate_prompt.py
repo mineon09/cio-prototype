@@ -999,10 +999,14 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         from src.data_fetcher import fetch_stock_data
         data = fetch_stock_data(ticker)
     except Exception as e:
+        import traceback
         print(f"⚠️ データ取得失敗：{e}")
+        traceback.print_exc(file=sys.stderr)
         return build_simple_prompt(ticker)
 
     if not data or not data.get('metrics'):
+        import sys as _sys
+        print(f"⚠️ 財務データ未取得（metrics空）— 簡易プロンプトにフォールバック", file=_sys.stderr)
         return build_simple_prompt(ticker)
 
     company_name = data.get('name', ticker)

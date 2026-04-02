@@ -12,8 +12,27 @@ if sys.platform == "win32":
 import yfinance as yf
 from datetime import datetime, timedelta
 import numpy as np
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
-from google import genai
+try:
+    from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+    _HAS_TENACITY = True
+except ImportError:
+    _HAS_TENACITY = False
+    # Stub: デコレータなしで関数をそのまま通す
+    def retry(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    def wait_exponential(*args, **kwargs): return None
+    def stop_after_attempt(*args, **kwargs): return None
+    def retry_if_exception_type(*args, **kwargs): return None
+
+try:
+    from google import genai as _genai_module
+    genai = _genai_module
+    _HAS_GENAI = True
+except ImportError:
+    genai = None
+    _HAS_GENAI = False
 from dotenv import load_dotenv
 
 # .env ファイルから環境変数を読み込む
