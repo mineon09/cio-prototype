@@ -21,8 +21,22 @@ import streamlit as st
 # ============================================================
 # Secrets Bridge: Streamlit Cloud → os.environ（サブプロセスへ継承）
 # ============================================================
+_ALL_SECRET_KEYS = [
+    # AI
+    "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY",
+    # Data sources
+    "EDINET_API_KEY", "EDINETDB_API_KEY", "JQUANTS_API_KEY",
+    "FINNHUB_API_KEY", "EXA_API_KEY", "PERPLEXITY_API_KEY", "TAVILY_API_KEY",
+    "SEC_USER_AGENT",
+    # Google Sheets
+    "GOOGLE_SERVICE_ACCOUNT_JSON", "GOOGLE_SHEETS_KEY_PATH", "SPREADSHEET_ID",
+    # LINE
+    "LINE_CHANNEL_ACCESS_TOKEN", "LINE_USER_ID", "LINE_NOTIFY_TOKEN",
+    # Notion
+    "NOTION_API_KEY", "NOTION_DATABASE_ID",
+]
 try:
-    for _key in ["NOTION_API_KEY", "NOTION_DATABASE_ID"]:
+    for _key in _ALL_SECRET_KEYS:
         if _key in st.secrets and _key not in os.environ:
             os.environ[_key] = st.secrets[_key]
 except Exception:
