@@ -172,6 +172,43 @@ streamlit run app.py
 
 ---
 
+### ☁️ Streamlit Cloud にデプロイした場合
+
+`.env` ファイルはリポジトリに含まれません。Streamlit Cloud では **Settings → Secrets** に以下の TOML を設定してください。
+
+```toml
+# 必須
+GEMINI_API_KEY = "AIza..."
+
+# 日本株の完全版プロンプト生成に必要
+EDINET_API_KEY     = "..."       # 有報 PDF（未設定→有報セクションなし）
+EXA_API_KEY        = "..."       # Webニュース（未設定→ニュースセクションなし）
+
+# 任意
+ANTHROPIC_API_KEY  = "..."       # Claude API
+JQUANTS_API_KEY    = "..."       # 東証公式OHLC
+EDINETDB_API_KEY   = "..."       # 有報DB + AI分析
+FINNHUB_API_KEY    = "..."       # 米国株ニュース
+PERPLEXITY_API_KEY = "..."       # Webニュース fallback
+TAVILY_API_KEY     = "..."       # Webニュース fallback
+NOTION_API_KEY     = "..."
+NOTION_DATABASE_ID = "..."
+SPREADSHEET_ID     = "..."
+GOOGLE_SERVICE_ACCOUNT_JSON = '{"type":"service_account",...}'
+LINE_CHANNEL_ACCESS_TOKEN = "..."
+LINE_USER_ID = "..."
+```
+
+> **診断ヒント**: Prompt Studio ページの「🩺 環境診断」ボタンを押すと、
+> 現在の Cloud 環境でどの API キーが設定済みかを確認できます。
+>
+> CLI でも確認可能：
+> ```bash
+> ./venv/bin/python3 generate_prompt.py --check-env
+> ```
+
+---
+
 ### 🔄 バックテスト
 
 ```bash

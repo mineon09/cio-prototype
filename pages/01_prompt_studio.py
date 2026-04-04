@@ -103,7 +103,10 @@ _GEN_TIMEOUT = 300  # プロンプト生成の最大待機秒数
 def _run_cmd_in_thread(cmd: list, cwd: str, result_queue):
     """バックグラウンドスレッドでサブプロセスを実行し結果をキューに入れる"""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=cwd,
+            env=os.environ.copy(),  # secrets bridge 後の env を明示的に継承
+        )
         result_queue.put(("ok", result))
     except Exception as e:
         result_queue.put(("error", str(e)))
@@ -178,6 +181,38 @@ def extract_prompt_text(stdout: str) -> str:
     return stdout.strip()
 
 
+def extract_diag_log(stdout: str) -> str:
+    """
+    generate_prompt.py の stdout から診断ログ部分（==== 区切り前）を抽出する。
+    """
+    lines = []
+    for line in stdout.splitlines():
+        if re.match(r'^=+$', line.strip()):
+            break
+        if line.strip():
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def detect_prompt_sections(prompt_text: str) -> dict:
+    """
+    生成プロンプトにどのデータセクションが含まれるかを検出する。
+
+    Returns
+    -------
+    dict: {section_name: bool}
+    """
+    return {
+        "news":      "【ニュース" in prompt_text,
+        "web_news":  "ウェブ検索ニュース" in prompt_text or "ディープサーチ" in prompt_text,
+        "edinet":    "有価証券報告書" in prompt_text or "有報" in prompt_text,
+        "analyst":   "アナリスト" in prompt_text,
+        "financial": "【財務指標】" in prompt_text,
+        "technical": "【テクニカル指標】" in prompt_text,
+    }
+
+
+
 # ============================================================
 # Page Config
 # ============================================================
@@ -195,6 +230,10 @@ if "last_ticker" not in st.session_state:
     st.session_state["last_ticker"] = ""
 if "save_ticker" not in st.session_state:
     st.session_state["save_ticker"] = ""
+if "generated_diag_log" not in st.session_state:
+    st.session_state["generated_diag_log"] = ""
+if "generated_stderr" not in st.session_state:
+    st.session_state["generated_stderr"] = ""
 
 st.title("🧠 Prompt Studio")
 st.caption("STEP 1 でプロンプトを生成し、Claude に貼り付けた後、STEP 3 で結果を保存します。")
@@ -218,6 +257,21 @@ with tab1:
     )
 
     gen_btn = st.button("🔍 プロンプト生成", type="primary")
+    check_env_btn = st.button("🩺 環境診断（API キー確認）", type="secondary")
+
+    # 環境診断ボタン
+    if check_env_btn:
+        py_cmd = get_python_cmd()
+        with st.spinner("環境診断中..."):
+            diag_result = subprocess.run(
+                [py_cmd, "generate_prompt.py", "--check-env"],
+                capture_output=True, text=True,
+                cwd=str(Path(__file__).parent.parent),
+                env=os.environ.copy(),
+            )
+        diag_out = diag_result.stdout or diag_result.stderr or "（出力なし）"
+        with st.expander("🩺 環境診断結果", expanded=True):
+            st.code(diag_out, language="text")
 
     if gen_btn:
         # バリデーション
@@ -246,32 +300,32 @@ with tab1:
 
         if result.returncode == 0:
             prompt_text = extract_prompt_text(result.stdout)
+            diag_log = extract_diag_log(result.stdout)
             st.session_state["generated_prompt"] = prompt_text
+            st.session_state["generated_diag_log"] = diag_log
+            st.session_state["generated_stderr"] = result.stderr or ""
             st.session_state["last_ticker"] = ticker_gen_upper
             st.session_state["save_ticker"] = ticker_gen_upper  # STEP3フィールドを自動入力
 
-            # 簡易プロンプトへのフォールバック検出
+            # 簡易プロンプトへの完全フォールバック検出
             _is_fallback = "最新財務データを収集（ROE, PER, PBR" in prompt_text
             if _is_fallback:
                 st.warning(
                     "⚠️ データ取得に失敗したため簡易プロンプトが生成されました。\n"
                     "以下の診断ログを確認してください。"
                 )
-                with st.expander("🔍 診断ログ（クリックで展開）", expanded=True):
-                    # stderrがあればエラーの根本原因
-                    if result.stderr:
-                        st.code(result.stderr, language="text")
-                    # stdoutの先頭（====より前）に診断情報が含まれる
-                    diag_lines = []
-                    for line in result.stdout.splitlines():
-                        if re.match(r'^=+$', line.strip()):
-                            break
-                        if line.strip():
-                            diag_lines.append(line)
-                    if diag_lines:
-                        st.code("\n".join(diag_lines), language="text")
             else:
-                st.success("✅ プロンプト生成完了")
+                # 部分的なデータ欠落を検出
+                sections = detect_prompt_sections(prompt_text)
+                missing = []
+                if not sections["news"] and not sections["web_news"] and not simple_mode:
+                    missing.append("ニュース（EXA_API_KEY 等を Secrets に設定してください）")
+                if not sections["edinet"] and ticker_gen_upper.endswith(".T") and not simple_mode:
+                    missing.append("有報データ（EDINET_API_KEY を Secrets に設定してください）")
+                if missing:
+                    st.warning("⚠️ 一部データが取得できませんでした: " + " / ".join(missing))
+                else:
+                    st.success("✅ プロンプト生成完了")
         else:
             st.error(f"❌ 生成失敗: {result.stderr[:200] if result.stderr else '（エラーなし）'}")
             with st.expander("エラーログ"):
@@ -289,6 +343,17 @@ with tab1:
         )
 
         render_copy_button(prompt_text, key="copy_btn")
+
+        # 常時診断ログ（expander）
+        diag_log = st.session_state.get("generated_diag_log", "")
+        stderr_log = st.session_state.get("generated_stderr", "")
+        if diag_log or stderr_log:
+            with st.expander("📊 データ取得ログ（クリックで展開）"):
+                if diag_log:
+                    st.code(diag_log, language="text")
+                if stderr_log:
+                    st.caption("⚠️ 標準エラー出力")
+                    st.code(stderr_log[:2000], language="text")
 
         # コンテキストJSON 確認（simple=False の場合のみ）
         if not st.session_state.get("gen_simple", False):

@@ -1341,18 +1341,81 @@ def generate_output_filename(ticker: str) -> str:
     return f"{safe_ticker}_{timestamp}.txt"
 
 
+def check_env() -> None:
+    """
+    各 API キーの設定状況を出力する（値は非表示）。
+    Streamlit Cloud 等のリモート環境で診断に使用する。
+    """
+    import sys as _sys
+
+    keys = [
+        ("GEMINI_API_KEY",         "AI（Gemini）"),
+        ("ANTHROPIC_API_KEY",      "AI（Claude）"),
+        ("GROQ_API_KEY",           "AI（Groq）"),
+        ("EDINET_API_KEY",         "有報 PDF（EDINET）"),
+        ("EDINETDB_API_KEY",       "有報 DB（EDINET DB）"),
+        ("JQUANTS_API_KEY",        "株価 OHLC（J-Quants）"),
+        ("FINNHUB_API_KEY",        "US ニュース（Finnhub）"),
+        ("EXA_API_KEY",            "Web 検索ニュース（Exa）"),
+        ("PERPLEXITY_API_KEY",     "Web 検索ニュース（Perplexity）"),
+        ("TAVILY_API_KEY",         "Web 検索ニュース（Tavily）"),
+        ("SEC_USER_AGENT",         "US 有報（SEC EDGAR）"),
+        ("GOOGLE_SERVICE_ACCOUNT_JSON", "Google Sheets（SA JSON）"),
+        ("SPREADSHEET_ID",         "Google Sheets（ID）"),
+        ("NOTION_API_KEY",         "Notion"),
+        ("LINE_CHANNEL_ACCESS_TOKEN", "LINE"),
+    ]
+
+    print("==== 環境変数チェック ====")
+    print(f"CWD: {os.getcwd()}")
+
+    # .env ファイル検出
+    env_file = Path(".env")
+    print(f".env ファイル: {'存在する' if env_file.exists() else '存在しない（Streamlit Cloud 等）'}")
+    print()
+
+    any_missing = False
+    for key, label in keys:
+        val = os.getenv(key, "")
+        if val:
+            masked = val[:4] + "***" if len(val) > 4 else "***"
+            status = f"✅ 設定済み ({masked})"
+        else:
+            status = "❌ 未設定"
+            any_missing = True
+        print(f"  {key:<32}  [{label}]  {status}")
+
+    print()
+    if any_missing:
+        print("⚠️  未設定のキーがあります。Streamlit Cloud の場合は Settings → Secrets に追記してください。")
+        print("   参照: .env.example")
+    else:
+        print("✅ すべての API キーが設定されています。")
+    print("=========================")
+    _sys.exit(0)
+
+
 def main():
     parser = argparse.ArgumentParser(description='LLM 用投資判断プロンプトを生成')
-    parser.add_argument('ticker', help='銘柄コード（例：7203.T, AAPL, XOM）')
+    parser.add_argument('ticker', nargs='?', help='銘柄コード（例：7203.T, AAPL, XOM）')
     parser.add_argument('-o', '--output', help=f'出力ファイルパス（指定がない場合は prompts/ 配下に自動保存）')
     parser.add_argument('--copy', action='store_true', help='クリップボードにコピー')
     parser.add_argument('--simple', action='store_true', help='簡易モード（データ取得なし）')
     parser.add_argument('--no-qualitative', action='store_true', help='定性情報（ニュース・アナリスト・業界動向）をスキップ')
     parser.add_argument('--no-cache', action='store_true', help='キャッシュを使用しない')
+    parser.add_argument('--check-env', action='store_true', help='API キーの設定状況を診断して終了')
     parser.add_argument('--model', choices=['gemini', 'qwen', 'chatgpt', 'claude', 'groq'],
                        default='groq', help='対象モデル')
 
     args = parser.parse_args()
+
+    # 環境診断モード：ticker 不要
+    if args.check_env:
+        check_env()
+
+    if not args.ticker:
+        parser.error("ticker は必須です（--check-env 以外のモードでは）")
+
     args.ticker = args.ticker.upper()  # 大文字正規化: 8306.t → 8306.T (endswith('.T') は大文字小文字を区別するため必須)
 
     print(f"🔍 プロンプト生成中：{args.ticker}")
@@ -1452,6 +1515,7 @@ def main():
     print(f"   --simple         : データ取得なし（最速）")
     print(f"   --no-qualitative : ニュース・アナリスト・業界動向をスキップ")
     print(f"   --no-cache       : 最新データ取得（API 呼び出しあり）")
+    print(f"   --check-env      : API キー設定状況を診断（Streamlit Cloud で使用可）")
     print(f"   -o <path>        : 出力先を指定")
 
 
