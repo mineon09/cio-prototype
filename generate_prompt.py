@@ -324,12 +324,12 @@ def build_high_quality_prompt(
     avg_vol_str = f"{avg_vol_raw:,.0f}株" if isinstance(avg_vol_raw, (int, float)) else str(avg_vol_raw or 'N/A')
 
     tech_detail = f"""
-  現在価格       : {technical_data.get('current_price', 'N/A')}
-  RSI(14)        : {technical_data.get('rsi', 'N/A')}
-  MA25 乖離率    : {technical_data.get('ma25_deviation', 'N/A')}%
+  現在価格       : {fmt_num(technical_data.get('current_price'))}
+  RSI(14)        : {fmt_num(technical_data.get('rsi'))}
+  MA25 乖離率    : {fmt_num(technical_data.get('ma25_deviation'))}%
   MA75 乖離率    : {ma75_str}
-  BB 位置        : {technical_data.get('bb_position', 'N/A')}%
-  出来高比率     : {technical_data.get('volume_ratio', 'N/A')}
+  BB 位置        : {fmt_num(technical_data.get('bb_position'))}%
+  出来高比率     : {fmt_num(technical_data.get('volume_ratio'))}
   Perfect Order  : {technical_data.get('perfect_order', 'N/A')}
     （定義: MA5 > MA25 > MA75 > MA200 = 強気アライメント／逆順 = 弱気アライメント）
   時価総額       : {mkt_cap_str}
@@ -616,6 +616,7 @@ def build_enhanced_prompt_with_data(
     jquants_source: str = "jquants",
     web_news_data: list = None,
     yuho_summary: str = None,
+    scorecard: dict = None,
 ) -> str:
     """
     全ての定性情報を含む完全版プロンプトを生成
@@ -698,11 +699,11 @@ def build_enhanced_prompt_with_data(
         sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【テクニカル指標】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  現在価格       : {t.get('current_price', 'N/A')}
-  RSI(14)        : {t.get('rsi', 'N/A')}
-  MA25 乖離率    : {t.get('ma25_deviation', 'N/A')}%
-  BB 位置        : {t.get('bb_position', 'N/A')}%
-  出来高比率     : {t.get('volume_ratio', 'N/A')}
+  現在価格       : {fmt_num(t.get('current_price'))}
+  RSI(14)        : {fmt_num(t.get('rsi'))}
+  MA25 乖離率    : {fmt_num(t.get('ma25_deviation'))}%
+  BB 位置        : {fmt_num(t.get('bb_position'))}%
+  出来高比率     : {fmt_num(t.get('volume_ratio'))}
   Perfect Order  : {t.get('perfect_order', 'N/A')}
 """)
 
@@ -805,6 +806,17 @@ def build_enhanced_prompt_with_data(
 
 {yuho_summary}
 """)
+    elif is_us_stock(ticker):
+        # US株でSECデータが未取得の場合はClaudeに分析を依頼するプレースホルダー
+        sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【SEC 10-K / 10-Q 分析（AIによる推定）】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+※ SEC EDGAR の自動取得データは未設定のため、あなたの知識から {ticker} の直近10-K/10-Qに基づき以下を分析してください：
+  - 主要リスクファクター（Risk Factors セクション）
+  - 事業セグメント別売上構成と地域別依存度
+  - マネジメントの業績見通し（MD&A）の要点
+  - 重要な会計上の見積もりと不確実性
+""")
 
     if jquants_data:
         try:
@@ -825,6 +837,15 @@ def build_enhanced_prompt_with_data(
 """)
         except Exception:
             pass
+
+    # 6.5 スコアカード概要（4軸評価）
+    if scorecard and isinstance(scorecard, dict) and scorecard.get('total_score') is not None:
+        scorecard_text = format_scorecard_text(scorecard)
+        sections.append(f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【スコアカード概要（4軸評価）】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{scorecard_text}
+""")
 
     # 6.8 前回分析との比較（同銘柄の results.json 直近3件）
     try:
@@ -1094,6 +1115,15 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
             print(f"  ⚠️ Web News取得エラー：{e}")
             return None
 
+    def _fetch_web_news_us():
+        try:
+            from src.news_fetcher import fetch_web_search_news
+            query = f"{company_name} stock earnings revenue outlook analyst"
+            return fetch_web_search_news(query, max_results=5)
+        except Exception as e:
+            print(f"  ⚠️ Web News (US) 取得エラー：{e}")
+            return None
+
     # --- 独立タスクを並列実行 ---
     print(f"  🔀 並列データ取得開始...")
     news_data = None
@@ -1115,6 +1145,9 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         task_fns["jquants"] = _fetch_jquants
         if include_qualitative:
             task_fns["web_news"] = _fetch_web_news
+    elif include_qualitative:
+        # US株でもExa/Perplexity等でウェブ検索ニュースを取得する
+        task_fns["web_news"] = _fetch_web_news_us
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(task_fns) or 1)
     try:
@@ -1174,6 +1207,21 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
                 reverse=True,
             )
 
+    # スコアカード生成（4軸評価）
+    scorecard = None
+    try:
+        from src.analyzers import generate_scorecard
+        scorecard = generate_scorecard(
+            metrics=data.get('metrics', {}),
+            technical=data.get('technical', {}),
+            yuho_data=None,
+            sector=data.get('sector'),
+            macro_data={"regime": "NEUTRAL"},
+            buy_threshold=6.5,
+        )
+    except Exception as e:
+        print(f"  ⚠️ スコアカード生成エラー：{e}")
+
     prompt = build_enhanced_prompt_with_data(
         ticker=ticker,
         company_name=data.get('name'),
@@ -1188,6 +1236,7 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         jquants_source=jquants_source,
         web_news_data=web_news_data,
         yuho_summary=yuho_summary,
+        scorecard=scorecard,
     )
 
     return prompt

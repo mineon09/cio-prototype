@@ -230,6 +230,8 @@ if "last_ticker" not in st.session_state:
     st.session_state["last_ticker"] = ""
 if "save_ticker" not in st.session_state:
     st.session_state["save_ticker"] = ""
+if "pending_save" not in st.session_state:
+    st.session_state["pending_save"] = False
 if "generated_diag_log" not in st.session_state:
     st.session_state["generated_diag_log"] = ""
 if "generated_stderr" not in st.session_state:
@@ -390,15 +392,23 @@ with tab2:
 
     save_btn = st.button("💾 ダッシュボードに保存", type="primary")
 
+    # ボタンクリック時に保存意図をセッション状態に記録
+    # （rerun後もボタン状態がリセットされないようにするため）
     if save_btn:
+        st.session_state["pending_save"] = True
+
+    if st.session_state.get("pending_save", False):
         # バリデーション
         if not save_ticker:
+            st.session_state["pending_save"] = False
             st.error("ティッカーコードを入力してください")
             st.stop()
         if not validate_ticker(save_ticker):
+            st.session_state["pending_save"] = False
             st.error("無効なティッカーコードです（英数字・ドット・ハイフン、最大20文字）")
             st.stop()
         if not response_text:
+            st.session_state["pending_save"] = False
             st.error("Claude の回答を貼り付けてください")
             st.stop()
 
@@ -470,13 +480,15 @@ with tab2:
 
             st.balloons()
 
-            # confirm_no_json フラグをリセット
+            # confirm_no_json / pending_save フラグをリセット
             if "confirm_no_json" in st.session_state:
                 del st.session_state["confirm_no_json"]
+            st.session_state["pending_save"] = False
         else:
             st.error(f"❌ 保存失敗: {result.stderr[:200] if result.stderr else '（エラーなし）'}")
             with st.expander("エラーログ"):
                 st.code(result.stderr or result.stdout or "（出力なし）")
+            st.session_state["pending_save"] = False
 
 
 # ============================================================
