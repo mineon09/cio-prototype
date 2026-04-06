@@ -413,8 +413,10 @@ with tab2:
             st.stop()
 
         # JSON ブロックチェック
+        # ```json フェンスブロック OR 生JSON（{ で始まり "signal" を含む）ならOK
         has_json_block = "```json" in response_text
-        if not has_json_block:
+        has_raw_json = response_text.strip().startswith('{') and '"signal"' in response_text
+        if not has_json_block and not has_raw_json:
             confirm_key = "confirm_no_json"
             confirmed = st.session_state.get(confirm_key, False)
             st.warning("⚠️ JSONブロックが見つかりません。保存を続行しますか？")
