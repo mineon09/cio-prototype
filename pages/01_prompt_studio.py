@@ -413,9 +413,10 @@ with tab2:
             st.stop()
 
         # JSON ブロックチェック
-        # ```json フェンスブロック OR 生JSON（{ で始まり "signal" を含む）ならOK
-        has_json_block = "```json" in response_text
-        has_raw_json = response_text.strip().startswith('{') and '"signal"' in response_text
+        # ```json フェンスブロック OR テキスト中に { と "signal" が含まれていればOK
+        # （save_claude_result.py の extract_json_from_response は文中どこにでもある JSON を抽出可能）
+        has_json_block = "```json" in response_text or "```\n{" in response_text
+        has_raw_json = '{' in response_text and '"signal"' in response_text
         if not has_json_block and not has_raw_json:
             confirm_key = "confirm_no_json"
             confirmed = st.session_state.get(confirm_key, False)

@@ -1,4 +1,92 @@
-"""
+XOM（Exxon Mobil）
+json{
+    "signal": "WATCH",
+    "score": 4.5,
+    "confidence": 0.65,
+    "reasoning": "PER24.0倍はエネルギーセクター平均12〜15倍を約60%上回り割高感が強い。アナリストコンセンサス目標株価$160.17は現在株価$160.69をわずかに下回り実質的アップサイドゼロ。ROE11.1%は業界平均15%を下回るが、営業CF/純利益1.95は強固なキャッシュ創出力を示す。Perfect Order成立でモメンタムは維持も、マクロ環境（関税・原油価格変動）リスクを考慮しエントリーは見送り。配当利回り2.49%はダウンサイド緩衝として機能。",
+    "industry_outlook": "再エネ転換・EV普及が長期的収益圧迫リスク。短中期は地政学的緊張と供給制約で原油価格は下値サポートされる見込み。",
+    "competitive_position": "統合型メジャーとして上流〜下流の垂直統合強み。Pioneer買収でPermianポジション強化済み。バリュエーションは業界内で割高水準。",
+    "entry_price": 152.0,
+    "stop_loss": 142.0,
+    "take_profit": 175.0,
+    "position_size": 0.05,
+    "holding_period": "long",
+    "time_horizon": "12-18 months",
+    "key_catalysts": [
+        {
+            "event": "2026年Q2決算発表（Pioneer統合効果の確認）",
+            "expected_timing": "2026Q3",
+            "impact": "high",
+            "probability": 0.75
+        },
+        {
+            "event": "原油価格$85/bbl超への回復",
+            "expected_timing": "2026H2",
+            "impact": "high",
+            "probability": 0.40
+        },
+        {
+            "event": "増配・自社株買い拡大発表",
+            "expected_timing": "2026Q3",
+            "impact": "medium",
+            "probability": 0.60
+        },
+        {
+            "event": "低炭素事業（CCS・水素）進捗開示",
+            "expected_timing": "2026Q4",
+            "impact": "medium",
+            "probability": 0.50
+        }
+    ],
+    "key_risks": [
+        {
+            "risk": "原油価格急落（関税戦争による世界需要減速）",
+            "probability": 0.40,
+            "impact": "high",
+            "mitigation": "エネルギーセクターウェイト削減・原油先物ヘッジ"
+        },
+        {
+            "risk": "環境規制強化によるCapex上昇・資産減損",
+            "probability": 0.30,
+            "impact": "medium",
+            "mitigation": "低炭素投資進捗のモニタリング"
+        },
+        {
+            "risk": "PER割高修正（バリュエーション収縮）",
+            "probability": 0.45,
+            "impact": "medium",
+            "mitigation": "エントリー価格をPER20倍相当$152近辺まで引き下げ待ち"
+        },
+        {
+            "risk": "地政学リスクによる供給過剰・価格崩壊",
+            "probability": 0.25,
+            "impact": "high",
+            "mitigation": "ポートフォリオ内エネルギー比率を5%以下に抑制"
+        }
+    ],
+    "scenario_analysis": {
+        "bull_case": {
+            "target": 185.0,
+            "probability": 0.20,
+            "scenario": "原油$90/bbl回復＋Pioneer統合シナジー前倒し実現でEPS$10超、PER18倍適用"
+        },
+        "base_case": {
+            "target": 162.0,
+            "probability": 0.55,
+            "scenario": "原油$70〜80/bbl推移、コンセンサスEPS$8前後でPER20倍維持。現水準から横ばい圏"
+        },
+        "bear_case": {
+            "target": 130.0,
+            "probability": 0.25,
+            "scenario": "関税戦争による世界景気後退で原油$60割れ、EPS$5台へ縮小。PER15倍への収縮"
+        }
+    },
+    "esg_factors": {
+        "environmental": "CCS・低炭素技術への投資を拡大中だが、化石燃料依存の根本構造は変わらず。Scope3排出削減目標の具体性が課題",
+        "social": "Pioneer買収後の雇用・地域コミュニティへの影響が継続的モニタリング項目。安全記録は業界平均を上回る",
+        "governance": "取締役会の独立性は高く、株主還元規律は強固。ただし気候関連株主提案への対応姿勢に批判的な機関投資家あり"
+    }
+}"""
 portfolio_manager.py - 保有銘柄台帳 CLI
 
 使い方:
