@@ -197,6 +197,70 @@ def compute_accuracy_stats(results: dict) -> dict:
 # Main
 # ---------------------------------------------------------------------------
 
+def store_accuracy_history(results: dict) -> None:
+    """
+    compute_accuracy_stats() の結果を data/accuracy_history.json に追記する。
+    weight_optimizer.py が詳細な分析を行うが、ここでは軽量なサマリーを蓄積する。
+    """
+    try:
+        from src.weight_optimizer import (
+            load_accuracy_history, save_accuracy_history,
+            resolve_sector_profile, compute_axis_correlations,
+        )
+        import json
+        from pathlib import Path
+
+        config_path = Path(__file__).parent / "config.json"
+        if not config_path.exists():
+            return
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        history = load_accuracy_history()
+        now = datetime.now().isoformat()
+
+        # セクタープロファイル別にグルーピング
+        grouped: dict[str, list[dict]] = {}
+        for ticker, tdata in results.items():
+            sector = tdata.get("sector", "")
+            profile = resolve_sector_profile(sector, config)
+            if profile:
+                grouped.setdefault(profile, []).extend(
+                    tdata.get("history", [])
+                )
+
+        added = 0
+        for profile_name, entries in grouped.items():
+            for w in WINDOWS:
+                stats = compute_axis_correlations(entries, w)
+                if stats is None:
+                    continue
+                snapshot = {
+                    "timestamp": now,
+                    "sector_profile": profile_name,
+                    "regime": None,
+                    "window": w,
+                    "total": stats["total"],
+                    "hits": stats["hits"],
+                    "win_rate": stats["win_rate"],
+                    "avg_return": stats["avg_return"],
+                    "axis_correlations": stats["axis_correlations"],
+                    "weights_before": config.get("sector_profiles", {})
+                                         .get(profile_name, {})
+                                         .get("weights", {}),
+                    "weights_after": None,
+                }
+                history["snapshots"].append(snapshot)
+                added += 1
+
+        if added:
+            for name, profile in config.get("sector_profiles", {}).items():
+                history["current_weights"][name] = profile.get("weights", {})
+            save_accuracy_history(history)
+            print(f"📊 accuracy_history.json に {added} スナップショットを追記")
+    except Exception as e:
+        print(f"⚠️ accuracy_history.json の更新スキップ: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="予測 vs 実績トラッキング — results.json に verified_{30/90/180}d を追記"
@@ -205,6 +269,10 @@ def main():
     parser.add_argument("--window",  type=int, choices=WINDOWS, help="検証ウィンドウ（日）")
     parser.add_argument("--dry-run", action="store_true", help="書き込みなしで確認のみ")
     parser.add_argument("--stats",   action="store_true", help="現在の精度統計を表示して終了")
+    parser.add_argument("--update-weights", action="store_true",
+                        help="検証完了後に weight_optimizer.py で重みを自動更新")
+    parser.add_argument("--model",   default="claude", choices=["claude", "gemini"],
+                        help="--update-weights 時に使う LLM モデル (デフォルト: claude)")
     args = parser.parse_args()
 
     results = load_results()
@@ -267,6 +335,23 @@ def main():
             wr  = f"{s['win_rate']*100:.1f}%" if s["win_rate"] is not None else "—"
             ret = f"{s['avg_return']:+.1f}%"  if s["avg_return"] is not None else "—"
             print(f"{w:>4}日  {s['total']:>4}  {wr:>6}  {ret:>10}")
+
+        # 精度履歴の蓄積（weight_optimizer と共有）
+        store_accuracy_history(results)
+
+        if args.update_weights:
+            print("\n🔄 重みの自動最適化を実行中...")
+            try:
+                from src.weight_optimizer import run_weight_optimization
+                opt_results = run_weight_optimization(
+                    window_preference=args.window,
+                    model=args.model,
+                    dry_run=False,
+                )
+                applied = [r for r in opt_results if r["applied"]]
+                print(f"✅ 重み更新完了: {len(applied)}/{len(opt_results)} セクター適用")
+            except Exception as e:
+                print(f"⚠️ 重み最適化スキップ: {e}")
 
 
 if __name__ == "__main__":
