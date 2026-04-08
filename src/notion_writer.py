@@ -34,7 +34,9 @@ def ensure_database_properties(notion, db_id):
                 }
             },
             "Score": {"number": {}},
-            "Price": {"rich_text": {}}
+            "Price": {"rich_text": {}},
+            "PriceChange30d": {"number": {}},
+            "SignalHit30d": {"checkbox": {}},
         }
         
         print(f"📦 書き込みエラー発生。不足しているプロパティの補完を試みます...")
@@ -111,6 +113,15 @@ def write_to_notion(ticker: str, target_data: dict, report: str, scorecard: dict
             "Score": {"number": float(total_score)},
             "Price": {"rich_text": [{"text": {"content": price_text}}]}
         }
+
+        # 検証フィールド（verify_predictions.py 実行後に値が入る）
+        if scorecard:
+            v30 = scorecard.get("verified_30d")
+            if v30 and isinstance(v30, dict):
+                if v30.get("price_change_pct") is not None:
+                    properties["PriceChange30d"] = {"number": float(v30["price_change_pct"])}
+                if v30.get("signal_hit") is not None:
+                    properties["SignalHit30d"] = {"checkbox": bool(v30["signal_hit"])}
         
         # MD Link は Notion API が file:// URL を拒否するため送信しない
         # if md_path:

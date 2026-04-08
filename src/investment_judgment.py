@@ -146,6 +146,8 @@ class APIJudgmentEngine(BaseJudgmentEngine):
         technical = ticker_data.get('technical', {})
         scores = ticker_data.get('scores', {})
         
+        def _m(v): return v if v is not None else 'N/A'
+        
         prompt = f"""あなたは優秀な金融アナリストです。
 以下のデータに基づいて、投資判断（BUY/WATCH/SELL）を出力してください。
 
@@ -153,12 +155,12 @@ class APIJudgmentEngine(BaseJudgmentEngine):
 【セクター】{sector}
 
 【財務指標】
-- ROE: {metrics.get('roe', 'N/A')}%
-- PER: {metrics.get('per', 'N/A')}倍
-- PBR: {metrics.get('pbr', 'N/A')}倍
-- 営業利益率：{metrics.get('op_margin', 'N/A')}%
-- 自己資本比率：{metrics.get('equity_ratio', 'N/A')}%
-- 配当利回り：{metrics.get('dividend_yield', 'N/A')}%
+- ROE: {_m(metrics.get('roe'))}%
+- PER: {_m(metrics.get('per'))}倍
+- PBR: {_m(metrics.get('pbr'))}倍
+- 営業利益率：{_m(metrics.get('op_margin'))}%
+- 自己資本比率：{_m(metrics.get('equity_ratio'))}%
+- 配当利回り：{_m(metrics.get('dividend_yield'))}%
 
 【テクニカル】
 - 現在価格：{technical.get('current_price', 'N/A')}

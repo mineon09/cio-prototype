@@ -12,8 +12,27 @@ if sys.platform == "win32":
 import yfinance as yf
 from datetime import datetime, timedelta
 import numpy as np
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
-from google import genai
+try:
+    from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+    _HAS_TENACITY = True
+except ImportError:
+    _HAS_TENACITY = False
+    # Stub: デコレータなしで関数をそのまま通す
+    def retry(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    def wait_exponential(*args, **kwargs): return None
+    def stop_after_attempt(*args, **kwargs): return None
+    def retry_if_exception_type(*args, **kwargs): return None
+
+try:
+    from google import genai as _genai_module
+    genai = _genai_module
+    _HAS_GENAI = True
+except ImportError:
+    genai = None
+    _HAS_GENAI = False
 from dotenv import load_dotenv
 
 # .env ファイルから環境変数を読み込む
@@ -635,9 +654,32 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         
         # TTM が取れなければ従来の単四半期×4にフォールバック
         # net_income: 直近四半期の純利益（フォールバック用）
-        net_income = get_val(fin_latest, ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests'])
+        _ni_keys = ['Net Income', 'Net Income Common Stockholders', 'Net Income Including Noncontrolling Interests']
+        net_income = get_val(fin_latest, _ni_keys)
         if ttm_net_income is None:
             ttm_net_income = (net_income * 4) if net_income else None
+
+        # 日本株等で quarterly_financials に Net Income / R&D がない場合の年次フォールバック用に
+        # stock.financials を一度だけ取得してキャッシュする。
+        ann_fin_latest = None  # 年次最新列（複数の計算で再利用）
+        ann_revenue = None     # 年次売上高（R&D比率計算用）
+        if not as_of_date:
+            try:
+                _ann_fin = stock.financials
+                if _ann_fin is not None and not _ann_fin.empty:
+                    ann_fin_latest = _ann_fin.iloc[:, 0]  # 最新年度
+                    ann_revenue = get_val(ann_fin_latest, [
+                        'Total Revenue', 'Operating Revenue', 'Total Operating Income As Reported'
+                    ])
+            except Exception:
+                pass
+
+        # 日立等の日本株で quarterly_financials に Net Income がない場合、
+        # 年次 financials からフォールバック（過去1年分として そのまま使用）
+        if ttm_net_income is None and ann_fin_latest is not None:
+            ann_ni = get_val(ann_fin_latest, _ni_keys)
+            if ann_ni:
+                ttm_net_income = ann_ni  # 年次純利益をそのままTTMとして使用
 
         # equity: 自己資本（自己資本比率・ROE・BPS計算用）
         equity = get_val(bs_latest, ['Stockholders Equity', 'Total Equity Gross Minority Interest', 'Stockholders Equity Including Minority Interest', 'Common Stock Equity'])
@@ -676,38 +718,51 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
             metrics['equity_ratio'] = None
 
         # 4. CF品質 (Operating CF / Net Income)
+        # net_income が None（日本株等で quarterly に NI がない場合）は ttm_net_income を代替使用
         op_cf = get_val(cf_latest, ['Operating Cash Flow', 'Total Cash From Operating Activities'])
-        if op_cf and net_income and net_income != 0:
-             metrics['cf_quality'] = round(op_cf / net_income, 2)
+        _ni_denom = net_income if net_income is not None else ttm_net_income
+        if op_cf and _ni_denom and _ni_denom != 0:
+             metrics['cf_quality'] = round(op_cf / _ni_denom, 2)
         else:
              metrics['cf_quality'] = None
 
         # 5. R&D比率 (DF-002: バックテスト時のみ省略、ライブ分析では取得試行)
         # CRIT-005注記: バックテスト時(as_of_date指定時)は yfinance の R&D データが
-        # 過去断面では信頼性が低いため意図的にゼロ固定としている。
-        # ライブ分析時は fin_latest / info から取得を試行する。
+        # 過去断面では信頼性が低いため意図的に省略。0 ではなく None（不明）として扱う。
+        # ライブ分析時は fin_latest → 年次 financials → info の順で取得を試行する。
         if as_of_date:
-            metrics['rd_ratio'] = 0  # バックテスト時: 過去R&Dデータ不安定のため省略
+            metrics['rd_ratio'] = None  # バックテスト時: 過去R&Dデータ不安定のため省略（不明扱い）
         else:
-            # 複数のキーで試行（yfinance のバージョン差異に対応）
-            rd_exp = get_val(fin_latest, [
+            _rd_keys = [
                 'Research And Development',
                 'Research Development',
                 'R&D Expense',
                 'Research And Development Expense',
                 'ResearchDevelopmentAndEngineering',
-            ])
-            
+            ]
+            # 複数のキーで試行（yfinance のバージョン差異に対応）
+            rd_exp = get_val(fin_latest, _rd_keys)
+
+            # 四半期データに R&D がない場合、年次 financials からフォールバック
+            if (not rd_exp or pd.isna(rd_exp)) and ann_fin_latest is not None:
+                rd_exp = get_val(ann_fin_latest, _rd_keys)
+
             # 財務データから取得できない場合、info から取得
             if not rd_exp or pd.isna(rd_exp):
                 rd_exp = info.get('researchAndDevelopmentExpense')
-            
-            if rd_exp and revenue and revenue != 0:
-                metrics['rd_ratio'] = round((rd_exp / revenue) * 100, 2)
+
+            # 売上高: quarterly が None なら年次売上高を使用
+            _rev_for_rd = revenue if revenue is not None else ann_revenue
+
+            if rd_exp and _rev_for_rd and _rev_for_rd != 0:
+                metrics['rd_ratio'] = round((rd_exp / _rev_for_rd) * 100, 2)
             else:
-                 # info から直接取得（既に比率の場合）
-                 rd_ratio_info = info.get('researchAndDevelopmentRatio')
-                 metrics['rd_ratio'] = (rd_ratio_info * 100 if rd_ratio_info and rd_ratio_info < 1 else rd_ratio_info) or 0
+                # info から直接取得（既に比率の場合）
+                rd_ratio_info = info.get('researchAndDevelopmentRatio')
+                if rd_ratio_info:
+                    metrics['rd_ratio'] = rd_ratio_info * 100 if rd_ratio_info < 1 else rd_ratio_info
+                else:
+                    metrics['rd_ratio'] = None  # データ未取得（0% ではなく不明として扱う）
         
         if as_of_date:
             shares = get_val(bs_latest, ['Share Issued', 'Ordinary Shares Number'])
@@ -747,7 +802,7 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                 else:
                     metrics['dividend_yield'] = round(dy_yield * 100, 2)
             else:
-                metrics['dividend_yield'] = 0
+                metrics['dividend_yield'] = None  # データ未取得（0%ではなく不明として扱う）
 
         # --- Technical 構築 ---
         technical = {}
@@ -769,11 +824,13 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         # MA乖離
         if len(closes) >= 25:
             ma25 = closes.rolling(window=25).mean().iloc[-1]
-            technical['ma25_deviation'] = round((current_price - ma25) / ma25 * 100, 2)
+            if ma25 is not None and not pd.isna(ma25) and ma25 > 0:
+                technical['ma25_deviation'] = round((current_price - ma25) / ma25 * 100, 2)
         
         if len(closes) >= 75:
             ma75 = closes.rolling(window=75).mean().iloc[-1]
-            technical['ma75_deviation'] = round((current_price - ma75) / ma75 * 100, 2)
+            if ma75 is not None and not pd.isna(ma75) and ma75 > 0:
+                technical['ma75_deviation'] = round((current_price - ma75) / ma75 * 100, 2)
 
         # Raw MAs for Backtester
         if len(closes) >= 5:
@@ -837,8 +894,8 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                 return None if allow_nan else 0.0
             return val
             
-        metrics['roe'] = validate_number(metrics.get('roe'), 'roe', allow_nan=False) # ROEは必須として扱う(無い場合は0)
-        technical['current_price'] = validate_number(technical.get('current_price'), 'current_price', allow_nan=False)
+        metrics['roe'] = validate_number(metrics.get('roe'), 'roe')  # None のまま保持（0 に変換しない）
+        technical['current_price'] = validate_number(technical.get('current_price'), 'current_price')
         
         # 前日比変化率のバリデーション (±50%超は異常値として警告)
         if len(closes) >= 2:

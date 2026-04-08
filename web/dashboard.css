@@ -490,3 +490,76 @@ body {
 .card {
     animation: fadeIn 0.3s ease;
 }
+/* ===== Web News Cards ===== */
+.web-news-card {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    transition: background 0.2s;
+}
+
+.web-news-card:hover {
+    background: rgba(255, 255, 255, 0.07);
+}
+
+.web-news-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.35rem;
+}
+
+.web-news-source {
+    font-size: 0.7rem;
+    color: var(--accent);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.web-news-date {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+
+.web-news-title {
+    display: block;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-decoration: none;
+    line-height: 1.4;
+    margin-bottom: 0.3rem;
+}
+
+.web-news-title:hover {
+    color: var(--accent);
+}
+
+.web-news-content {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin: 0;
+}
+
+/* ===== EDINET DB info dl ===== */
+.info-dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.3rem 0.8rem;
+    margin: 0;
+    font-size: 0.8rem;
+}
+
+.info-dl dt {
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.info-dl dd {
+    margin: 0;
+    color: var(--text-primary);
+}

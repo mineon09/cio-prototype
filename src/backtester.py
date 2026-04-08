@@ -1,3 +1,4 @@
+import copy
 import sys
 import os
 import io
@@ -106,7 +107,7 @@ def get_buy_threshold(regime: str, config: dict) -> float:
     default = config.get("signals", {}).get("BUY", {}).get("min_score", 6.5)
     return overrides.get(regime, {}).get("min_score", default)
 
-def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, strategy: str = "long", cli_overrides: dict = None):
+def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, strategy: str = "long", cli_overrides: dict = None, config_override: dict = None):
     try:
         start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
     except ValueError:
@@ -115,8 +116,11 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
     logger.info(f"Backtest Start: {ticker} ({strategy}) from {start_date_str}")
     
     try:
-        from src.utils import load_config_with_overrides
-        config = load_config_with_overrides(ticker)
+        if config_override is not None:
+            config = copy.deepcopy(config_override)
+        else:
+            from src.utils import load_config_with_overrides
+            config = load_config_with_overrides(ticker)
     except Exception as e:
         logger.error(f"Failed to load config with overrides: {e}")
         config = {}
@@ -345,7 +349,7 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
                     if strategy_name != "long":
                          stop_loss, take_profit, mode = execute_short_entry(price, date, daily_data, config, strategy_name)
                     
-                    ctx = {'buy_price': buy_price, 'entry_date': date, 'entry_atr': entry_atr, 'trailing_high': price, 'low_score_months': 0}
+                    ctx = {'buy_price': buy_price, 'entry_date': date, 'entry_atr': entry_atr, 'trailing_high': price, 'low_score_months': 0, 'mfe': 0.0, 'mae': 0.0}
                     trades.append({
                         "date": date, 
                         "type": "BUY", 
@@ -357,14 +361,19 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
         
         else:
             ctx['trailing_high'] = max(ctx['trailing_high'], row.get('high', price))
+            buy_p = ctx['buy_price']
+            ctx['mfe'] = max(ctx['mfe'], (row.get('high', price) - buy_p) / buy_p * 100)
+            ctx['mae'] = min(ctx['mae'], (row.get('low', price) - buy_p) / buy_p * 100)
             should_sell, reason, exit_price = strategy.should_sell(row, past_slice, ta, ctx)
             if not should_sell and i == len(df) - 1: should_sell, reason, exit_price = True, "End of Period", price
 
             if should_sell:
                 cash = holdings * exit_price * (1 - cost_rate)
                 holdings, last_sell_date, last_sell_reason = 0, date, reason
-                trades[-1].update({"sell_date": date, "sell_price": exit_price, "reason": reason, "return": (exit_price - buy_price) / buy_price * 100})
-                logger.info(f"  ⚖️ SELL: {exit_price:,.0f} ({reason}) Return: {trades[-1]['return']:.2f}%")
+                ret = (exit_price - buy_price) / buy_price * 100
+                trades[-1].update({"sell_date": date, "sell_price": exit_price, "reason": reason, "return": ret,
+                                   "mfe": round(ctx['mfe'], 3), "mae": round(ctx['mae'], 3)})
+                logger.info(f"  ⚖️ SELL: {exit_price:,.0f} ({reason}) Return: {ret:.2f}%")
 
         portfolio_values.append({"date": date, "value": cash + (holdings * price)})
 
@@ -387,6 +396,40 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
     gross_loss = abs(sum([t['return'] for t in valid_trades if t['return'] < 0]))
     profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 999.99  # CRIT-001: JSON互換値（float('inf')はJSON仕様外）
 
+    # レジーム別パフォーマンス内訳
+    regime_breakdown = {}
+    for t in valid_trades:
+        regime = t.get("regime", "UNKNOWN")
+        if regime not in regime_breakdown:
+            regime_breakdown[regime] = {"trades": 0, "wins": 0, "total_return": 0.0}
+        regime_breakdown[regime]["trades"] += 1
+        regime_breakdown[regime]["total_return"] += t["return"]
+        if t["return"] > 0:
+            regime_breakdown[regime]["wins"] += 1
+    for regime, stats in regime_breakdown.items():
+        n = stats["trades"]
+        stats["win_rate"] = round(stats["wins"] / n * 100, 1) if n > 0 else 0.0
+        stats["avg_return"] = round(stats["total_return"] / n, 2) if n > 0 else 0.0
+        stats["total_return"] = round(stats["total_return"], 2)
+
+    # エグジット理由別内訳
+    exit_reason_breakdown = {}
+    for t in valid_trades:
+        reason = t.get("reason", "Unknown")
+        # 理由をカテゴリ化（例: "ATR Stop (x1.5)" → "ATR Stop"）
+        category = reason.split("(")[0].strip() if "(" in reason else reason
+        if category not in exit_reason_breakdown:
+            exit_reason_breakdown[category] = {"count": 0, "wins": 0, "total_return": 0.0}
+        exit_reason_breakdown[category]["count"] += 1
+        exit_reason_breakdown[category]["total_return"] += t["return"]
+        if t["return"] > 0:
+            exit_reason_breakdown[category]["wins"] += 1
+    for reason, stats in exit_reason_breakdown.items():
+        n = stats["count"]
+        stats["win_rate"] = round(stats["wins"] / n * 100, 1) if n > 0 else 0.0
+        stats["avg_return"] = round(stats["total_return"] / n, 2) if n > 0 else 0.0
+        stats["total_return"] = round(stats["total_return"], 2)
+
     return {
         "ticker": "", "period": f"{df.iloc[0]['date'].strftime('%Y-%m')} ~ {df.iloc[-1]['date'].strftime('%Y-%m')}",
         "initial_capital": initial_capital, "final_value": p_df['value'].iloc[-1],
@@ -394,7 +437,10 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
         "market_return_pct": round(market_return, 2), "alpha": round(total_return - market_return, 2),
         "win_rate_pct": round(win_rate, 1), "max_drawdown_pct": round(p_df['dd'].min(), 2),
         "sharpe_ratio": round(sharpe_ratio, 2), "profit_factor": profit_factor,
-        "trade_count": len(valid_trades), "trades": trades, "history": portfolio_values, "stock_return_pct": round(stock_return, 2)
+        "trade_count": len(valid_trades), "trades": trades, "history": portfolio_values,
+        "stock_return_pct": round(stock_return, 2),
+        "regime_breakdown": regime_breakdown,
+        "exit_reason_breakdown": exit_reason_breakdown,
     }
 
 def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float = 1000000, position_pct: float = 0.10) -> dict:
@@ -428,7 +474,7 @@ def run_monte_carlo(trades: list, iterations: int = 1000, initial_capital: float
         "max_drawdown": {"median": np.median(max_drawdowns), "mean": np.mean(max_drawdowns), "worst": np.max(max_drawdowns)}
     }
 
-def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 36, window_months: int = 12, step_months: int = 3, strategy: str = "bounce", cli_overrides: dict = None):
+def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 36, window_months: int = 12, step_months: int = 3, strategy: str = "bounce", cli_overrides: dict = None, config_override: dict = None):
     start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
     results = []
     current_start = start_dt
@@ -441,7 +487,7 @@ def run_rolling_backtest(ticker: str, start_date_str: str, total_months: int = 3
         try:
             w_start_str = current_start.strftime("%Y-%m-%d")
             logger.info(f"--- Rolling Window: {w_start_str} ---")
-            bt_result = run_backtest(ticker, w_start_str, duration_months=window_months, strategy=strategy, cli_overrides=cli_overrides)
+            bt_result = run_backtest(ticker, w_start_str, duration_months=window_months, strategy=strategy, cli_overrides=cli_overrides, config_override=config_override)
             if "error" not in bt_result:
                 results.append({
                     "start": w_start_str,

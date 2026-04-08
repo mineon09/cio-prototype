@@ -149,7 +149,15 @@
         "bb_period": 20,
         "bb_std": 2.0,
         "require_price_at_lower_bb": true,
-        "volume_multiplier": 1.1
+        "volume_multiplier": 1.1,
+        "scoring_mode": false,
+        "scoring_weights": {
+          "rsi": 1.0,
+          "bb": 1.5,
+          "vol": 0.8,
+          "ma75": 2.0
+        },
+        "scoring_threshold": 3.5
       },
       "exit": {
         "hard_stop_pct": -2.5,
@@ -188,7 +196,19 @@
         "gc_lookback_days": 5,
         "volume_multiplier": 1.2,
         "require_20d_high_break": true,
-        "require_bullish_close": true
+        "require_bullish_close": true,
+        "scoring_mode": false,
+        "scoring_weights": {
+          "close_break": 2.5,
+          "bullish": 1.0,
+          "ma75": 2.0,
+          "atr_pct": 1.5,
+          "adx": 1.2,
+          "cmf": 1.0,
+          "vol": 0.8,
+          "gc": 0.6
+        },
+        "scoring_threshold": 6.0
       },
       "exit": {
         "hard_stop_pct": -3.0,
@@ -222,7 +242,6 @@
         "bounce": {
           "enabled_regimes": [
             "RISK_ON",
-            "NEUTRAL",
             "RATE_CUT",
             "YIELD_INVERSION",
             "BOJ_HIKE",
@@ -233,8 +252,17 @@
           "entry": {
             "fundamental_min": 3.5,
             "volume_multiplier": 1.0,
-            "rsi_threshold": 40
-          }
+            "rsi_threshold": 42,
+            "bb_std": 1.6
+          },
+          "exit": {
+            "take_profit_pct": 8.0,
+            "hard_stop_pct": -4.0,
+            "atr_trailing_multiplier": 2.5,
+            "atr_trailing_activation_pct": 3.0,
+            "stop_loss_atr_multiplier": 0.0
+          },
+          "_optimization_note": "LLM-optimized (Copilot Iter6): +15.19%, Sharpe 0.72, 36M 2022-2024. Key: NEUTRAL excluded (bank stock underperforms in ambiguous regime), RSI/BB relaxed for lower-vol stock, ATR trailing 2.5x/3.0% activation."
         }
       }
     },
@@ -250,7 +278,6 @@
             "YIELD_INVERSION",
             "BOJ_HIKE",
             "YEN_WEAK",
-            "YEN_STRONG",
             "NIKKEI_BULL"
           ],
           "entry": {
@@ -260,12 +287,9 @@
           "exit": {
             "take_profit_pct": 10.0,
             "take_profit_atr_multiplier": 4.0
-          }
-        }
-      }
-    },
-    "7203.T": {
-      "strategies": {
+          },
+          "_optimization_note": "LLM-optimized (Copilot): +9.07% Sharpe 0.31 after excluding YEN_STRONG. YEN_STRONG (JPY appreciation) = export earnings headwind for TEL = breakout failure. YEN_WEAK is goldmine (75% WR, +16.5%). Baseline was -1.38% with YEN_STRONG included."
+        },
         "bounce": {
           "enabled_regimes": [
             "RISK_ON",
@@ -273,19 +297,91 @@
             "RATE_CUT",
             "RATE_HIKE",
             "RISK_OFF",
-            "BOJ_HIKE",
+            "YIELD_INVERSION",
             "YEN_WEAK",
             "YEN_STRONG",
-            "NIKKEI_BULL",
-            "YIELD_INVERSION"
+            "NIKKEI_BULL"
           ],
           "entry": {
-            "rsi_threshold": 30,
+            "rsi_threshold": 42.0,
+            "bb_std": 1.6,
+            "volume_multiplier": 1.1
+          },
+          "exit": {
+            "hard_stop_pct": -3.5,
+            "take_profit_pct": 12.0,
+            "time_stop_bars": 10,
+            "atr_trailing_multiplier": 2.5,
+            "atr_trailing_activation_pct": 3.5,
+            "stop_loss_atr_multiplier": 0.0
+          },
+          "_optimization_note": "LLM-optimized 2026-03-31: Iter4, Sharpe 1.25, +16.12% (18-month 2023-01 to 2024-07)"
+        }
+      }
+    },
+    "7203.T": {
+      "strategies": {
+        "bounce": {
+          "enabled_regimes": [
+            "YEN_WEAK",
+            "YEN_STRONG"
+          ],
+          "entry": {
+            "rsi_threshold": 42,
+            "bb_std": 1.6,
             "volume_multiplier": 1.3
           },
           "exit": {
-            "stop_loss_atr_multiplier": 1.5
-          }
+            "take_profit_pct": 10.0,
+            "hard_stop_pct": -3.5,
+            "stop_loss_atr_multiplier": 0.0
+          },
+          "_optimization_note": "LLM-optimized (Copilot): +8.72%, Sharpe 0.69, 36M 2022-2024. Key: YEN regime focus (Toyota yen-sensitive exporter), TP=10% captures full ~10.6% MFE. ATR trailing not needed (lower-vol stock). NIKKEI_BULL excluded (momentum regime adds noise for bounce strategy)."
+        }
+      }
+    },
+    "AMAT": {
+      "strategies": {
+        "bounce": {
+          "entry": {
+            "rsi_threshold": 45,
+            "bb_std": 1.4
+          },
+          "exit": {
+            "take_profit_pct": 10.0,
+            "hard_stop_pct": -3.5,
+            "stop_loss_atr_multiplier": 0.0,
+            "atr_trailing_multiplier": 2.5,
+            "atr_trailing_activation_pct": 3.5
+          },
+          "_optimization_note": "Partial improvement (Iter2): +3.63%, Sharpe 0.30. Structural limit: JP-centric regime system labels YIELD_INVERSION for all US stocks — wins only 33% in that regime. Viable but weak vs JP stocks."
+        },
+        "breakout": {
+          "enabled": false,
+          "_reason": "Breakout not viable: YIELD_INVERSION regime dominates (-16% from 10 trades). AMAT in 2022-24 = Fed rate hike downtrend cycle. Regime system cannot distinguish US bull vs bear — all labels as YIELD_INVERSION."
+        }
+      }
+    },
+    "JPM": {
+      "strategies": {
+        "bounce": {
+          "enabled": false,
+          "_reason": "Bounce not viable: YIELD_INVERSION is the only active regime and has 0% win rate. JP-centric regime system does not map accurately to US bank macro cycles. Consider breakout strategy or wait for regime-aware US macro module."
+        }
+      }
+    },
+    "TSLA": {
+      "strategies": {
+        "bounce": {
+          "enabled": false,
+          "_reason": "Bounce not viable: Extreme vol + YIELD_INVERSION-only regime = 0% win rate. TSLA is a trend/momentum stock, not a mean-reversion candidate in 2022-24 period."
+        }
+      }
+    },
+    "8053.T": {
+      "strategies": {
+        "breakout": {
+          "_optimization_note": "Baseline already excellent: +27.19%, Sharpe 0.83, 10 trades, WR 70% (2022-2024). NEUTRAL regime goldmine (100% WR, +20% from 2 trades). Do NOT tighten volume filter — vol=1.2x default is optimal. GUARD: leave unchanged."
         }
       }
     }
@@ -388,21 +484,52 @@
       "YEN_WEAK": {
         "fundamental": 0.25,
         "valuation": 0.25,
-        "technical": 0.30,
-        "qualitative": 0.20
+        "technical": 0.3,
+        "qualitative": 0.2
       },
       "YEN_STRONG": {
-        "fundamental": 0.30,
-        "valuation": 0.30,
-        "technical": 0.20,
-        "qualitative": 0.20
+        "fundamental": 0.3,
+        "valuation": 0.3,
+        "technical": 0.2,
+        "qualitative": 0.2
       },
       "NIKKEI_BULL": {
         "fundamental": 0.25,
         "valuation": 0.25,
-        "technical": 0.30,
-        "qualitative": 0.20
+        "technical": 0.3,
+        "qualitative": 0.2
+      },
+      "FED_HIKE": {
+        "fundamental": 0.3,
+        "valuation": 0.35,
+        "technical": 0.2,
+        "qualitative": 0.15
+      },
+      "FED_PAUSE": {
+        "fundamental": 0.3,
+        "valuation": 0.25,
+        "technical": 0.25,
+        "qualitative": 0.2
+      },
+      "FED_CUT": {
+        "fundamental": 0.2,
+        "valuation": 0.25,
+        "technical": 0.3,
+        "qualitative": 0.25
+      },
+      "USD_STRONG": {
+        "fundamental": 0.35,
+        "valuation": 0.3,
+        "technical": 0.2,
+        "qualitative": 0.15
       }
+    },
+    "us_thresholds": {
+      "fed_hike_irx_delta": 0.5,
+      "fed_cut_irx_delta": -0.25,
+      "usd_strong_dxy_20d_return_pct": 2.0,
+      "vix_risk_off": 25,
+      "vix_risk_on": 18
     }
   },
   "edinet": {
@@ -541,52 +668,383 @@
   },
   "sector_competitors": {
     "Technology": {
-      "jp": {"direct": ["6861.T","8035.T","9984.T"], "substitute": ["1321.T"], "benchmark": ["^N225","1306.T"]},
-      "us": {"direct": ["MSFT","AAPL","GOOGL"],       "substitute": ["XLK"],    "benchmark": ["^IXIC","SPY"]}
+      "jp": {
+        "direct": [
+          "6861.T",
+          "8035.T",
+          "9984.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "^N225",
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "MSFT",
+          "AAPL",
+          "GOOGL"
+        ],
+        "substitute": [
+          "XLK"
+        ],
+        "benchmark": [
+          "^IXIC",
+          "SPY"
+        ]
+      }
     },
     "Communication Services": {
-      "jp": {"direct": ["9437.T","9432.T","9433.T"], "substitute": ["1321.T"], "benchmark": ["^N225","1306.T"]},
-      "us": {"direct": ["META","GOOGL","NFLX"],       "substitute": ["XLC"],    "benchmark": ["^IXIC","SPY"]}
+      "jp": {
+        "direct": [
+          "9437.T",
+          "9432.T",
+          "9433.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "^N225",
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "META",
+          "GOOGL",
+          "NFLX"
+        ],
+        "substitute": [
+          "XLC"
+        ],
+        "benchmark": [
+          "^IXIC",
+          "SPY"
+        ]
+      }
     },
     "Financial Services": {
-      "jp": {"direct": ["8306.T","8316.T","8411.T"], "substitute": ["1321.T"], "benchmark": ["8306.T","1306.T"]},
-      "us": {"direct": ["JPM","BAC","WFC"],           "substitute": ["XLF"],    "benchmark": ["SPY"]}
+      "jp": {
+        "direct": [
+          "8306.T",
+          "8316.T",
+          "8411.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "8306.T",
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "JPM",
+          "BAC",
+          "WFC"
+        ],
+        "substitute": [
+          "XLF"
+        ],
+        "benchmark": [
+          "SPY"
+        ]
+      }
     },
     "Financial": {
-      "jp": {"direct": ["8306.T","8316.T","8411.T"], "substitute": ["1321.T"], "benchmark": ["1306.T"]},
-      "us": {"direct": ["JPM","BAC","GS"],            "substitute": ["XLF"],    "benchmark": ["SPY"]}
+      "jp": {
+        "direct": [
+          "8306.T",
+          "8316.T",
+          "8411.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "JPM",
+          "BAC",
+          "GS"
+        ],
+        "substitute": [
+          "XLF"
+        ],
+        "benchmark": [
+          "SPY"
+        ]
+      }
     },
     "Healthcare": {
-      "jp": {"direct": ["4502.T","4568.T","4519.T"], "substitute": ["1321.T"], "benchmark": ["1306.T"]},
-      "us": {"direct": ["JNJ","UNH","PFE"],           "substitute": ["XLV"],    "benchmark": ["SPY"]}
+      "jp": {
+        "direct": [
+          "4502.T",
+          "4568.T",
+          "4519.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "JNJ",
+          "UNH",
+          "PFE"
+        ],
+        "substitute": [
+          "XLV"
+        ],
+        "benchmark": [
+          "SPY"
+        ]
+      }
     },
     "Industrials": {
-      "jp": {"direct": ["7011.T","6301.T","6857.T"], "substitute": ["1321.T"], "benchmark": ["1306.T"]},
-      "us": {"direct": ["HON","MMM","CAT"],            "substitute": ["XLI"],    "benchmark": ["SPY"]}
+      "jp": {
+        "direct": [
+          "7011.T",
+          "6301.T",
+          "6857.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "HON",
+          "MMM",
+          "CAT"
+        ],
+        "substitute": [
+          "XLI"
+        ],
+        "benchmark": [
+          "SPY"
+        ]
+      }
     },
     "Consumer Defensive": {
-      "jp": {"direct": ["2802.T","2914.T","2503.T"], "substitute": ["1321.T"], "benchmark": ["1306.T"]},
-      "us": {"direct": ["PG","KO","WMT"],             "substitute": ["XLP"],    "benchmark": ["SPY"]}
+      "jp": {
+        "direct": [
+          "2802.T",
+          "2914.T",
+          "2503.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "PG",
+          "KO",
+          "WMT"
+        ],
+        "substitute": [
+          "XLP"
+        ],
+        "benchmark": [
+          "SPY"
+        ]
+      }
     },
     "Consumer Cyclical": {
-      "jp": {"direct": ["7203.T","7267.T","9983.T"], "substitute": ["1321.T"], "benchmark": ["1306.T"]},
-      "us": {"direct": ["AMZN","TSLA","MCD"],         "substitute": ["XLY"],    "benchmark": ["SPY"]}
+      "jp": {
+        "direct": [
+          "7203.T",
+          "7267.T",
+          "9983.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "AMZN",
+          "TSLA",
+          "MCD"
+        ],
+        "substitute": [
+          "XLY"
+        ],
+        "benchmark": [
+          "SPY"
+        ]
+      }
     },
     "Energy": {
-      "jp": {"direct": ["5020.T","5019.T","1605.T"], "substitute": ["1321.T"], "benchmark": ["1306.T"]},
-      "us": {"direct": ["XOM","CVX","COP"],            "substitute": ["XLE"],    "benchmark": ["SPY"]}
+      "jp": {
+        "direct": [
+          "5020.T",
+          "5019.T",
+          "1605.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "XOM",
+          "CVX",
+          "COP"
+        ],
+        "substitute": [
+          "XLE"
+        ],
+        "benchmark": [
+          "SPY"
+        ]
+      }
     },
     "Basic Materials": {
-      "jp": {"direct": ["4004.T","5401.T","3407.T"], "substitute": ["1321.T"], "benchmark": ["1306.T"]},
-      "us": {"direct": ["LIN","APD","NEM"],            "substitute": ["XLB"],    "benchmark": ["SPY"]}
+      "jp": {
+        "direct": [
+          "4004.T",
+          "5401.T",
+          "3407.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "LIN",
+          "APD",
+          "NEM"
+        ],
+        "substitute": [
+          "XLB"
+        ],
+        "benchmark": [
+          "SPY"
+        ]
+      }
     },
     "Utilities": {
-      "jp": {"direct": ["9501.T","9502.T","9503.T"], "substitute": ["1321.T"], "benchmark": ["1306.T"]},
-      "us": {"direct": ["NEE","DUK","SO"],             "substitute": ["XLU"],    "benchmark": ["SPY"]}
+      "jp": {
+        "direct": [
+          "9501.T",
+          "9502.T",
+          "9503.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "NEE",
+          "DUK",
+          "SO"
+        ],
+        "substitute": [
+          "XLU"
+        ],
+        "benchmark": [
+          "SPY"
+        ]
+      }
     },
     "Real Estate": {
-      "jp": {"direct": ["8801.T","8802.T","8830.T"], "substitute": ["1321.T"], "benchmark": ["1306.T"]},
-      "us": {"direct": ["AMT","PLD","EQIX"],           "substitute": ["XLRE"],   "benchmark": ["SPY"]}
+      "jp": {
+        "direct": [
+          "8801.T",
+          "8802.T",
+          "8830.T"
+        ],
+        "substitute": [
+          "1321.T"
+        ],
+        "benchmark": [
+          "1306.T"
+        ]
+      },
+      "us": {
+        "direct": [
+          "AMT",
+          "PLD",
+          "EQIX"
+        ],
+        "substitute": [
+          "XLRE"
+        ],
+        "benchmark": [
+          "SPY"
+        ]
+      }
+    }
+  },
+  "us_regimes": {
+    "FED_HIKE": {
+      "condition": "irx_3m_delta > 0.5",
+      "description": "利上げ局面（高ボラ・グロース売り）",
+      "bounce_weight": 0.8,
+      "breakout_weight": 0.6
+    },
+    "FED_PAUSE": {
+      "condition": "irx_3m_delta between -0.25 and 0.5",
+      "description": "利上げ停止（方向感なし）",
+      "bounce_weight": 1.0,
+      "breakout_weight": 1.0
+    },
+    "FED_CUT": {
+      "condition": "irx_3m_delta < -0.25",
+      "description": "利下げ局面（リスクオン）",
+      "bounce_weight": 1.2,
+      "breakout_weight": 1.3
+    },
+    "USD_STRONG": {
+      "condition": "dxy_20d_return > 2.0",
+      "description": "ドル高（輸出株・新興国株逆風）",
+      "bounce_weight": 0.7,
+      "breakout_weight": 0.8
+    },
+    "RISK_ON": {
+      "condition": "vix < 18",
+      "description": "リスクオン（VIX安定）",
+      "bounce_weight": 1.1,
+      "breakout_weight": 1.2
+    },
+    "RISK_OFF": {
+      "condition": "vix > 25",
+      "description": "リスクオフ（VIX高騰・ポジション縮小）",
+      "bounce_weight": 0.5,
+      "breakout_weight": 0.3
     }
   }
 }

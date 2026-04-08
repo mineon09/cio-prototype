@@ -12,6 +12,7 @@ import sys
 import json
 import re
 import time
+import pandas as pd
 import streamlit as st
 from datetime import datetime
 
@@ -32,7 +33,8 @@ load_dotenv(_env_path, override=True)
 try:
     for key in ["GEMINI_API_KEY", "GROQ_API_KEY", "EDINET_API_KEY", "SPREADSHEET_ID",
                  "GOOGLE_SERVICE_ACCOUNT_JSON",
-                 "LINE_CHANNEL_ACCESS_TOKEN", "LINE_USER_ID"]:
+                 "LINE_CHANNEL_ACCESS_TOKEN", "LINE_USER_ID",
+                 "NOTION_API_KEY", "NOTION_DATABASE_ID"]:
         if key in st.secrets:
             os.environ[key] = st.secrets[key]
 except Exception:
@@ -69,7 +71,7 @@ from main import analyze_all, save_to_dashboard_json, run_strategy_analysis
 st.set_page_config(
     page_title="CIO インテリジェンス分析",
     page_icon="📊",
-    layout="wide",
+    layout="centered",
     initial_sidebar_state="expanded",
 )
 
@@ -376,7 +378,6 @@ if st.session_state.get("backtest_result") and st.session_state.get("backtest_ti
     # APP-004: 中国語 typo 修正 (资产 -> 資産)
     st.subheader("資産推移 (Equity Curve)")
     if "history" in res:
-        import pandas as pd
         hist_df = pd.DataFrame(res["history"])
         if not hist_df.empty:
             hist_df['date'] = pd.to_datetime(hist_df['date'])
@@ -480,10 +481,10 @@ elif view_ticker and view_ticker in results:
         st.subheader("📊 Key Metrics")
         m_cols = st.columns(3)
         items = [
-            ("ROE", f"{metrics.get('roe', '-')}%"),
+            ("ROE", f"{metrics['roe']}%" if metrics.get('roe') is not None else "-"),
             ("PER", f"{float(metrics.get('per', 0)):.1f}x" if metrics.get('per') else "-"),
             ("PBR", f"{float(metrics.get('pbr', 0)):.2f}x" if metrics.get('pbr') else "-"),
-            ("営業利益率", f"{metrics.get('op_margin', '-')}%"),
+            ("営業利益率", f"{metrics['op_margin']}%" if metrics.get('op_margin') is not None else "-"),
             ("RSI", f"{float(tech.get('rsi', 0)):.1f}" if tech.get('rsi') else "-"),
             ("株価", f"${float(tech.get('current_price', 0)):,.0f}" if tech.get('current_price') else "-"),
         ]
@@ -532,7 +533,6 @@ elif view_ticker and view_ticker in results:
     history = raw.get("history", [])
     if len(history) >= 2:
         st.subheader("📈 スコア推移")
-        import pandas as pd
         trend_data = {
             "日付": [h.get("date", "").split(" ")[0] for h in history],
             "総合": [h.get("total_score", 0) for h in history],
@@ -543,6 +543,29 @@ elif view_ticker and view_ticker in results:
         }
         df = pd.DataFrame(trend_data).set_index("日付")
         st.line_chart(df, height=250)
+
+    # ── Prediction Accuracy ──
+    verified_entries = [
+        h for h in history
+        if any(f"verified_{w}d" in h for w in [30, 90, 180])
+    ]
+    if verified_entries:
+        st.subheader("🎯 予測精度")
+        for w in [30, 90, 180]:
+            key = f"verified_{w}d"
+            entries = [h for h in history if key in h]
+            if not entries:
+                continue
+            hits   = sum(1 for h in entries if h[key].get("signal_hit") is True)
+            misses = sum(1 for h in entries if h[key].get("signal_hit") is False)
+            rets   = [h[key]["price_change_pct"] for h in entries
+                      if h[key].get("price_change_pct") is not None]
+            total  = hits + misses
+            wr     = f"{hits/total*100:.0f}%" if total > 0 else "—"
+            ar     = f"{sum(rets)/len(rets):+.1f}%" if rets else "—"
+            st.markdown(
+                f"**{w}日後** — 件数: {len(entries)}  |  勝率: {wr}  |  平均リターン: {ar}"
+            )
 
     # ── Report ──
     st.subheader("📝 分析レポート")
@@ -576,7 +599,6 @@ else:
             "履歴": len(raw.get("history", [])),
         })
 
-    import pandas as pd
     df = pd.DataFrame(rows)
 
     # st.dataframe の selection 機能を使用 (Streamlit 1.35+)

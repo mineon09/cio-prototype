@@ -459,6 +459,31 @@ def run(ticker: str, strategy: str = "long", engine: str = "gemini"):
             print(f"  ✅ 有報データ取得成功")
         else:
             print(f"  ⚠️ 有報データなし")
+
+        # ── EDINET DB API（edinetdb.jp）から財務データ・AI分析を追加取得 ──
+        try:
+            from src.edinetdb_client import get_full_company_data
+            edinetdb_data = get_full_company_data(ticker)
+            if edinetdb_data.get('available'):
+                target_data['edinetdb'] = edinetdb_data
+                print(f"  ✅ EDINET DB データ取得成功（健全性スコア: {edinetdb_data.get('health_score', 'N/A')}）")
+            else:
+                reason = edinetdb_data.get('_reason', '')
+                if 'not set' not in reason:
+                    print(f"  ⚠️ EDINET DB データなし: {reason}")
+        except Exception as e:
+            print(f"  ⚠️ EDINET DB 取得失敗（スキップ）: {e}")
+
+        # ── J-Quants から東証公式株価 OHLC を取得 ──
+        try:
+            from src.jquants_client import get_price_history
+            jquants_prices = get_price_history(ticker, days=30)
+            if jquants_prices:
+                target_data['jquants_prices'] = jquants_prices
+                print(f"  ✅ J-Quants 株価取得成功（{len(jquants_prices)} 件）")
+        except Exception as e:
+            print(f"  ⚠️ J-Quants 取得失敗（スキップ）: {e}")
+
     elif HAS_SEC and is_us_stock(ticker):
         print(f"\n🇺🇸 米国株: SEC 10-K/10-Q を検索中...")
         yuho_data = extract_sec_data(ticker)
@@ -469,7 +494,7 @@ def run(ticker: str, strategy: str = "long", engine: str = "gemini"):
     else:
         print(f"ℹ️ 有価証券報告書の取得をスキップ")
 
-    # ── ニュース取得（Gemini google_search） ──
+    # ── ニュース取得（yfinance + Finnhub + ウェブ検索フォールバック） ──
     # 日本株・米国株問わずニュースを取得
     if not target_data.get('news'):
         print(f"  📰 {ticker} のニュースを検索中...")
@@ -507,6 +532,21 @@ def run(ticker: str, strategy: str = "long", engine: str = "gemini"):
         except Exception as e:
             print(f"  ⚠️ ニュース取得エラー：{e}")
             target_data['news'] = []
+
+    # ── ウェブ検索ニュース（Exa → Perplexity → Tavily フォールバック）──
+    # yfinance/Finnhub で取得できなかった場合、または補足情報として追加
+    if is_japanese_stock(ticker):
+        try:
+            from src.news_fetcher import fetch_web_search_news
+            company_name = target_data.get('name', '') or ticker
+            web_news = fetch_web_search_news(
+                f"{company_name} 株価 最新ニュース", max_results=5
+            )
+            if web_news:
+                target_data['web_news'] = web_news
+                print(f"  ✅ ウェブ検索ニュース: {len(web_news)} 件")
+        except Exception as e:
+            print(f"  ⚠️ ウェブ検索ニュース失敗（スキップ）: {e}")
 
     # ── DCF理論株価算出 ──
     dcf_data = {}
@@ -692,6 +732,26 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
                     "regime": macro_data.get("regime"),
                     "detail": macro_data.get("detail", ""),
                 }
+
+            # EDINET DB データがあれば追加（日本株のみ）
+            edinetdb = target_data.get("edinetdb")
+            if edinetdb and edinetdb.get("available"):
+                new_entry["edinetdb"] = {
+                    "health_score":   edinetdb.get("health_score"),
+                    "company_info":   edinetdb.get("company_info", {}),
+                    "financials":     edinetdb.get("financials", []),
+                    "analysis":       edinetdb.get("analysis", {}),
+                }
+
+            # J-Quants 株価データがあれば追加（日本株のみ）
+            jquants = target_data.get("jquants_prices")
+            if jquants:
+                new_entry["jquants_prices"] = jquants
+
+            # ウェブ検索ニュースがあれば追加
+            web_news = target_data.get("web_news")
+            if web_news:
+                new_entry["web_news"] = web_news
 
             # 既存のエントリを取得 or 新規作成
             if ticker in all_results:

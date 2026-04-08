@@ -10,12 +10,37 @@ import queue as queue_module
 import re
 import sys
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+
+# ============================================================
+# Secrets Bridge: Streamlit Cloud → os.environ（サブプロセスへ継承）
+# ============================================================
+_ALL_SECRET_KEYS = [
+    # AI
+    "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY",
+    # Data sources
+    "EDINET_API_KEY", "EDINETDB_API_KEY", "JQUANTS_API_KEY",
+    "FINNHUB_API_KEY", "EXA_API_KEY", "PERPLEXITY_API_KEY", "TAVILY_API_KEY",
+    "SEC_USER_AGENT",
+    # Google Sheets
+    "GOOGLE_SERVICE_ACCOUNT_JSON", "GOOGLE_SHEETS_KEY_PATH", "SPREADSHEET_ID",
+    # LINE
+    "LINE_CHANNEL_ACCESS_TOKEN", "LINE_USER_ID", "LINE_NOTIFY_TOKEN",
+    # Notion
+    "NOTION_API_KEY", "NOTION_DATABASE_ID",
+]
+try:
+    for _key in _ALL_SECRET_KEYS:
+        if _key in st.secrets and _key not in os.environ:
+            os.environ[_key] = st.secrets[_key]
+except Exception:
+    pass  # ローカル環境では st.secrets が無い場合あり
 
 # ============================================================
 # Helpers
@@ -31,21 +56,40 @@ import base64
 
 
 def render_copy_button(text: str, key: str = "copy_btn"):
-    """JavaScript navigator.clipboard API でクリップボードにコピーするボタンを描画。
-    pyperclip 不要・Linux/Wayland/X11 環境でも動作する。"""
+    """クリップボードコピーボタン。
+    navigator.clipboard（HTTPS必須）が使えない場合は textarea を全選択して
+    手動コピーしやすくするフォールバックを提供する（iOS Safari 対応）。"""
     encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    fallback_id = f"{key}_fallback"
     html = f"""
     <button id="{key}" onclick="
         const txt = new TextDecoder().decode(Uint8Array.from(atob('{encoded}'), c => c.charCodeAt(0)));
-        navigator.clipboard.writeText(txt)
-            .then(() => {{ document.getElementById('{key}').innerText = '✅ コピー完了'; }})
-            .catch(() => {{ document.getElementById('{key}').innerText = '❌ コピー失敗（手動コピーしてください）'; }});
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+            navigator.clipboard.writeText(txt)
+                .then(() => {{
+                    document.getElementById('{key}').innerText = '✅ コピー完了';
+                    document.getElementById('{fallback_id}').style.display = 'none';
+                }})
+                .catch(() => {{
+                    document.getElementById('{key}').innerText = '❌ コピー失敗 — 下のテキストを全選択してコピー';
+                    document.getElementById('{fallback_id}').style.display = 'block';
+                    document.getElementById('{fallback_id}').select();
+                }});
+        }} else {{
+            document.getElementById('{key}').innerText = '❌ コピー不可 — 下のテキストを全選択してコピー';
+            document.getElementById('{fallback_id}').style.display = 'block';
+            document.getElementById('{fallback_id}').select();
+        }}
     " style="padding:8px 16px; background:#FF4B4B; color:white; border:none; border-radius:4px;
              cursor:pointer; font-size:14px; font-family:sans-serif;">
         📋 クリップボードにコピー
     </button>
+    <textarea id="{fallback_id}" style="display:none; width:100%; height:60px; margin-top:8px;
+              font-size:12px; resize:none;"
+              onfocus="this.select()"
+              readonly>{text.replace('<', '&lt;').replace('>', '&gt;')}</textarea>
     """
-    st.components.v1.html(html, height=50)
+    st.components.v1.html(html, height=80)
 
 
 def validate_ticker(ticker: str) -> bool:
@@ -59,7 +103,10 @@ _GEN_TIMEOUT = 300  # プロンプト生成の最大待機秒数
 def _run_cmd_in_thread(cmd: list, cwd: str, result_queue):
     """バックグラウンドスレッドでサブプロセスを実行し結果をキューに入れる"""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=cwd,
+            env=os.environ.copy(),  # secrets bridge 後の env を明示的に継承
+        )
         result_queue.put(("ok", result))
     except Exception as e:
         result_queue.put(("error", str(e)))
@@ -108,15 +155,20 @@ def run_with_progress(cmd: list, cwd: str, timeout: int = _GEN_TIMEOUT):
 def extract_prompt_text(stdout: str) -> str:
     """
     generate_prompt.py の stdout から本文を抽出する。
-    "====" 区切り行以降〜"💡 使用方法" 行の前まで。
+    1つ目の "====" 区切り行の直後から、2つ目の "====" 行の直前まで。
+    2つ目が見つからない場合は "💡 使用方法" 行の前までをフォールバックとする。
     """
     lines = stdout.splitlines()
     start_idx = None
     end_idx = None
 
     for i, line in enumerate(lines):
-        if start_idx is None and re.match(r'^=+$', line.strip()):
-            start_idx = i + 1
+        if re.match(r'^=+$', line.strip()):
+            if start_idx is None:
+                start_idx = i + 1  # 1つ目の ==== の次行からプロンプト開始
+            else:
+                end_idx = i        # 2つ目の ==== の直前でプロンプト終了
+                break
         if start_idx is not None and "💡 使用方法" in line:
             end_idx = i
             break
@@ -129,6 +181,38 @@ def extract_prompt_text(stdout: str) -> str:
     return stdout.strip()
 
 
+def extract_diag_log(stdout: str) -> str:
+    """
+    generate_prompt.py の stdout から診断ログ部分（==== 区切り前）を抽出する。
+    """
+    lines = []
+    for line in stdout.splitlines():
+        if re.match(r'^=+$', line.strip()):
+            break
+        if line.strip():
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def detect_prompt_sections(prompt_text: str) -> dict:
+    """
+    生成プロンプトにどのデータセクションが含まれるかを検出する。
+
+    Returns
+    -------
+    dict: {section_name: bool}
+    """
+    return {
+        "news":      "【ニュース" in prompt_text,
+        "web_news":  "ウェブ検索ニュース" in prompt_text or "ディープサーチ" in prompt_text,
+        "edinet":    "有価証券報告書" in prompt_text or "有報" in prompt_text,
+        "analyst":   "アナリスト" in prompt_text,
+        "financial": "【財務指標】" in prompt_text,
+        "technical": "【テクニカル指標】" in prompt_text,
+    }
+
+
+
 # ============================================================
 # Page Config
 # ============================================================
@@ -136,7 +220,7 @@ def extract_prompt_text(stdout: str) -> str:
 st.set_page_config(
     page_title="Prompt Studio",
     page_icon="🧠",
-    layout="wide",
+    layout="centered",
 )
 
 # セッションステートの初期化
@@ -146,27 +230,27 @@ if "last_ticker" not in st.session_state:
     st.session_state["last_ticker"] = ""
 if "save_ticker" not in st.session_state:
     st.session_state["save_ticker"] = ""
+if "pending_save" not in st.session_state:
+    st.session_state["pending_save"] = False
+if "generated_diag_log" not in st.session_state:
+    st.session_state["generated_diag_log"] = ""
+if "generated_stderr" not in st.session_state:
+    st.session_state["generated_stderr"] = ""
 
 st.title("🧠 Prompt Studio")
 st.caption("STEP 1 でプロンプトを生成し、Claude に貼り付けた後、STEP 3 で結果を保存します。")
 
-col_left, col_right = st.columns(2)
+tab1, tab2 = st.tabs(["📝 STEP 1 — プロンプト生成", "💾 STEP 3 — 結果保存"])
 
 # ============================================================
-# 左カラム — STEP 1: プロンプト生成
+# STEP 1: プロンプト生成
 # ============================================================
-with col_left:
-    st.subheader("📝 STEP 1 — プロンプト生成")
+with tab1:
 
     ticker_gen = st.text_input(
         "ティッカーコード",
         placeholder="例: 7203.T, AAPL",
         key="gen_ticker",
-    )
-    model_sel = st.selectbox(
-        "モデル",
-        ["claude", "gemini", "qwen", "chatgpt"],
-        key="gen_model",
     )
     simple_mode = st.checkbox(
         "シンプルモード（データ取得なし・高速）",
@@ -175,6 +259,21 @@ with col_left:
     )
 
     gen_btn = st.button("🔍 プロンプト生成", type="primary")
+    check_env_btn = st.button("🩺 環境診断（API キー確認）", type="secondary")
+
+    # 環境診断ボタン
+    if check_env_btn:
+        py_cmd = get_python_cmd()
+        with st.spinner("環境診断中..."):
+            diag_result = subprocess.run(
+                [py_cmd, "generate_prompt.py", "--check-env"],
+                capture_output=True, text=True,
+                cwd=str(Path(__file__).parent.parent),
+                env=os.environ.copy(),
+            )
+        diag_out = diag_result.stdout or diag_result.stderr or "（出力なし）"
+        with st.expander("🩺 環境診断結果", expanded=True):
+            st.code(diag_out, language="text")
 
     if gen_btn:
         # バリデーション
@@ -188,7 +287,7 @@ with col_left:
         ticker_gen_upper = ticker_gen.strip().upper()
         py_cmd = get_python_cmd()
 
-        cmd = [py_cmd, "generate_prompt.py", ticker_gen_upper, "--model", model_sel]
+        cmd = [py_cmd, "generate_prompt.py", ticker_gen_upper]
         if simple_mode:
             cmd.append("--simple")
 
@@ -203,10 +302,32 @@ with col_left:
 
         if result.returncode == 0:
             prompt_text = extract_prompt_text(result.stdout)
+            diag_log = extract_diag_log(result.stdout)
             st.session_state["generated_prompt"] = prompt_text
+            st.session_state["generated_diag_log"] = diag_log
+            st.session_state["generated_stderr"] = result.stderr or ""
             st.session_state["last_ticker"] = ticker_gen_upper
             st.session_state["save_ticker"] = ticker_gen_upper  # STEP3フィールドを自動入力
-            st.success("✅ プロンプト生成完了")
+
+            # 簡易プロンプトへの完全フォールバック検出
+            _is_fallback = "最新財務データを収集（ROE, PER, PBR" in prompt_text
+            if _is_fallback:
+                st.warning(
+                    "⚠️ データ取得に失敗したため簡易プロンプトが生成されました。\n"
+                    "以下の診断ログを確認してください。"
+                )
+            else:
+                # 部分的なデータ欠落を検出
+                sections = detect_prompt_sections(prompt_text)
+                missing = []
+                if not sections["news"] and not sections["web_news"] and not simple_mode:
+                    missing.append("ニュース（EXA_API_KEY 等を Secrets に設定してください）")
+                if not sections["edinet"] and ticker_gen_upper.endswith(".T") and not simple_mode:
+                    missing.append("有報データ（EDINET_API_KEY を Secrets に設定してください）")
+                if missing:
+                    st.warning("⚠️ 一部データが取得できませんでした: " + " / ".join(missing))
+                else:
+                    st.success("✅ プロンプト生成完了")
         else:
             st.error(f"❌ 生成失敗: {result.stderr[:200] if result.stderr else '（エラーなし）'}")
             with st.expander("エラーログ"):
@@ -225,6 +346,17 @@ with col_left:
 
         render_copy_button(prompt_text, key="copy_btn")
 
+        # 常時診断ログ（expander）
+        diag_log = st.session_state.get("generated_diag_log", "")
+        stderr_log = st.session_state.get("generated_stderr", "")
+        if diag_log or stderr_log:
+            with st.expander("📊 データ取得ログ（クリックで展開）"):
+                if diag_log:
+                    st.code(diag_log, language="text")
+                if stderr_log:
+                    st.caption("⚠️ 標準エラー出力")
+                    st.code(stderr_log[:2000], language="text")
+
         # コンテキストJSON 確認（simple=False の場合のみ）
         if not st.session_state.get("gen_simple", False):
             last_t = st.session_state["last_ticker"]
@@ -236,10 +368,9 @@ with col_left:
 
 
 # ============================================================
-# 右カラム — STEP 3: 結果保存
+# STEP 3: 結果保存
 # ============================================================
-with col_right:
-    st.subheader("💾 STEP 3 — 結果保存")
+with tab2:
 
     save_ticker = st.text_input(
         "ティッカーコード",
@@ -261,21 +392,32 @@ with col_right:
 
     save_btn = st.button("💾 ダッシュボードに保存", type="primary")
 
+    # ボタンクリック時に保存意図をセッション状態に記録
+    # （rerun後もボタン状態がリセットされないようにするため）
     if save_btn:
+        st.session_state["pending_save"] = True
+
+    if st.session_state.get("pending_save", False):
         # バリデーション
         if not save_ticker:
+            st.session_state["pending_save"] = False
             st.error("ティッカーコードを入力してください")
             st.stop()
         if not validate_ticker(save_ticker):
+            st.session_state["pending_save"] = False
             st.error("無効なティッカーコードです（英数字・ドット・ハイフン、最大20文字）")
             st.stop()
         if not response_text:
+            st.session_state["pending_save"] = False
             st.error("Claude の回答を貼り付けてください")
             st.stop()
 
         # JSON ブロックチェック
-        has_json_block = "```json" in response_text
-        if not has_json_block:
+        # ```json フェンスブロック OR テキスト中に { と "signal" が含まれていればOK
+        # （save_claude_result.py の extract_json_from_response は文中どこにでもある JSON を抽出可能）
+        has_json_block = "```json" in response_text or "```\n{" in response_text
+        has_raw_json = '{' in response_text and '"signal"' in response_text
+        if not has_json_block and not has_raw_json:
             confirm_key = "confirm_no_json"
             confirmed = st.session_state.get(confirm_key, False)
             st.warning("⚠️ JSONブロックが見つかりません。保存を続行しますか？")
@@ -285,12 +427,11 @@ with col_right:
                 st.stop()
 
         save_ticker_upper = save_ticker.strip().upper()
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        tmp_path = f"/tmp/claude_response_{save_ticker_upper}_{timestamp}.txt"
 
-        # 一時ファイルに書き出し
+        # クロスプラットフォーム対応の一時ファイル
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt")
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                 f.write(response_text)
         except Exception as e:
             st.error(f"❌ 一時ファイル書き出し失敗: {e}")
@@ -331,15 +472,26 @@ with col_right:
             m2.metric("スコア", f"{score_val}/10" if score_val != "N/A" else "N/A")
             m3.metric("エントリー価格", entry_val)
 
+            # Notion 保存結果を表示
+            notion_url_match = re.search(r'Notionに保存完了[:：]\s*(https://\S+)', stdout)
+            notion_skip_match = re.search(r'Notion\s*保存スキップ[:：]\s*(.+)', stdout)
+            if notion_url_match:
+                notion_url = notion_url_match.group(1).strip()
+                st.markdown(f"📝 [Notion に保存済み]({notion_url})")
+            elif notion_skip_match:
+                st.warning(f"⚠️ Notion 保存スキップ: {notion_skip_match.group(1).strip()}")
+
             st.balloons()
 
-            # confirm_no_json フラグをリセット
+            # confirm_no_json / pending_save フラグをリセット
             if "confirm_no_json" in st.session_state:
                 del st.session_state["confirm_no_json"]
+            st.session_state["pending_save"] = False
         else:
             st.error(f"❌ 保存失敗: {result.stderr[:200] if result.stderr else '（エラーなし）'}")
             with st.expander("エラーログ"):
                 st.code(result.stderr or result.stdout or "（出力なし）")
+            st.session_state["pending_save"] = False
 
 
 # ============================================================
@@ -348,10 +500,10 @@ with col_right:
 st.divider()
 st.caption("📖 使い方フロー")
 st.info(
-    "**[STEP 1]** ティッカー入力 → プロンプト生成  \n"
+    "**[STEP 1タブ]** ティッカー入力 → プロンプト生成  \n"
     "　　↓ 生成されたプロンプトをコピー  \n"
     "**[STEP 2]** Claude Web UI に貼り付けて実行  \n"
     "　　↓ 回答全体をコピー  \n"
-    "**[STEP 3]** 右カラムに貼り付け → 保存ボタン  \n"
+    "**[STEP 3タブ]** 回答を貼り付け → 保存ボタン  \n"
     "　　↓ ダッシュボードに反映"
 )

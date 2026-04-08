@@ -31,7 +31,7 @@ python3 main.py --ticker 7011.T --strategy breakout
 python3 main.py --ticker AAPL --engine copilot
 ```
 
-- **実行内容**: データの取得、DCF 算出（有利子負債を反映した正式な WACC 計算対応）、マクロ環境判定（自動・TTL 付きキャッシュ）、ルールベース＆AI ハイブリッドによる競合比較（API 節約対応）、AI レポート生成、Notion への自動記録、ローカル Markdown 形式およびダッシュボード用 JSON（排他制御対応）への保存。
+- **実行内容**: データの取得、DCF 算出（正式な WACC 計算対応）、マクロ環境判定（自動キャッシュ）、ルールベース＆AI ハイブリッドによる競合比較、**日本株特有の高度化（EDINET DBによる財務健全性スコア、J-Quantsによる東証公式OHLC株価、高機能AIウェブ検索によるニュース取得）**、AI レポート生成、Notion への自動記録、ローカル Markdown 形式およびダッシュボード用 JSON（排他制御対応）への保存。
 
 ### Streamlit ダッシュボード
 
@@ -467,9 +467,9 @@ print(f"判断：{result['signal']}")
 
 ---
 
-## 4. Claude 回答のダッシュボード保存（save_claude_result.py）
+## 4. Claude 回答のダッシュボード＆Notion保存（save_claude_result.py）
 
-`generate_prompt.py` で生成したプロンプトを Claude（Web UI / API）に送信した後、その回答を `save_claude_result.py` でダッシュボード（`data/results.json`）に取り込みます。
+`generate_prompt.py` で生成したプロンプトを Claude（Web UI / API）に送信した後、その回答を `save_claude_result.py` でダッシュボード（`data/results.json`）および Notion のデータベースに取り込みます。
 
 ### エンドツーエンドのフロー
 
@@ -483,6 +483,7 @@ print(f"判断：{result['signal']}")
 
 [3] save_claude_result.py 7203.T --from-clipboard
         ↓ data/results.json に保存（ダッシュボード反映）
+        ↓ Notion データベースに保存
 ```
 
 ### コマンド例
@@ -558,11 +559,12 @@ cat response.txt | ./venv/bin/python3 save_claude_result.py 7203.T
 🔍 JSON 抽出中...
    signal=BUY, score=7.5, confidence=0.8
 💾 ダッシュボードに保存中...
+📤 Notion に保存中...
 ✅ ダッシュボード保存完了：7203.T (履歴 3 件)
    シグナル  : BUY
    総合スコア: 6.5
    エントリー: 2850  損切: 2700  利確: 3100
-   保存先    : data/results.json
+   保存先    : data/results.json (および Notion)
 ```
 
 ### 注意事項
@@ -620,7 +622,37 @@ python3 -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplie
 
 ---
 
-## 6. 設定のカスタマイズ
+## 6. LLM戦略最適化（新機能）
+
+LLMを使用して、バックテスト結果に基づく戦略パラメーターの自動最適化を行います。
+論文「大規模言語モデルを用いた株式投資戦略の自動生成におけるフィードバック設計」に基づいた高度なフィードバックループを実行します。
+
+### 最適化の実行
+
+最も基本的な実行方法です。デフォルトでClaude（未設定時はGeminiに自動フォールバック）を呼び出し、複数回の反復を通じて戦略を最適化します。
+
+```bash
+# 実行（Claude → Gemini → GPT-4o フォールバック）
+./venv/bin/python3 scripts/optimize_strategy.py --ticker 8035.T --strategy bounce
+```
+
+### 事前確認とモデル比較
+
+既存の設定（`config.json`）を書き換えずに、LLMからの提案内容だけを確認したり、LLMモデル間の比較（A/Bテスト）を行うことができます。スコアリングモードの評価等にも役立ちます。
+
+```bash
+# 事前確認（DRY RUN：設定ファイルは変更されません）
+./venv/bin/python3 scripts/optimize_strategy.py --ticker 8035.T --strategy bounce --dry-run
+
+# モデル比較（複数モデルでのパラメーター提案結果の比較）
+./venv/bin/python3 scripts/optimize_strategy.py --ticker 8035.T --strategy bounce --compare-models --dry-run
+```
+
+最適化の履歴や詳細なメトリクスは、各実行後に都度 `data/optimization/` ディレクトリ配下に JSON 形式で保存されます。
+
+---
+
+## 7. 設定のカスタマイズ
 
 `config.json` を編集することで、システムの恒久的な挙動をコントロールできます。
 
@@ -634,7 +666,7 @@ python3 -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplie
 
 ---
 
-## 7. トラブルシューティング
+## 8. トラブルシューティング
 
 - **yfinance の株価仕様注意点**: バックテストにて過去の株価を参照する際、yfinance の仕様により、その後に発生した**株式分割などで調整済みの価格（現在の基準）**が過去にも遡って適用されます（当時の実際の価格ではない点に留意してください）。
 - **財務データの欠損**: yfinance 等でデータが取得できない項目は、安全側のデフォルト値（NG 判定）や通期データによる補完が自動で行われます。
@@ -642,7 +674,7 @@ python3 -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplie
 - **複数システムからの並列実行**: `results.json` へのアクセスは `filelock` により排他制御されています。GitHub Actions 等で並列実行した場合も安全に書き込みが行われます。
 - **Notion 連携時の挙動**: Notion 書き込み時にデータベースのプロパティが不足している場合、エラーを検知して動的にプロパティを追加・リトライします（Add-On-Demand 機能）。またブロックの文字数制限（2000 文字）を回避するため、長文レポートは自動で安全なサイズにチャンク分割されて保存されます。
 - **実行ログ**: ターミナルの標準出力およびローカルディレクトリ (`data/reports/`) 内の Markdown ファイルで詳細を確認できます。Notion 連携を設定している場合は、指定したデータベースにも内容が自動書き込みされます。
-- **API キーのエラー**: `.env` ファイルに API キーが正しく設定されているか確認してください。`python3 -c "import os; print(os.environ.get('GEMINI_API_KEY'))` で環境変数を確認できます。
+- **API キーのエラー**: `.env` ファイルに API キー（`GEMINI_API_KEY`, `EDINETDB_API_KEY`, `JQUANTS_API_KEY` 等）が正しく設定されているか確認してください。新機能のキー（J-Quants等）が未設定の場合は、該当セクションのみを自動でスキップして分析を継続します。
 - **投資判断エンジンのエラー**: `src/investment_judgment.py` のログ出力を確認してください。`logging` モジュールで INFO レベル以上のログが出力されます。
 
 ---
@@ -667,4 +699,6 @@ python3 -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplie
 - **デュアルエンジン**: 両方の結果を比較して、より信頼性の高い判断を得たい場合
 
 ---
-*Last Updated: 2026-03-27 (v2.4.1 --engine オプション追記・architecture.md / system_design.md 全面刷新)*
+---
+*Last Updated: 2026-03-27 (v2.4.1 --engine オプション追記・Notion保存機能追記・architecture / system_design 全面刷新)*
+

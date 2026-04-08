@@ -117,6 +117,49 @@ def _determine_regime(indicators: dict) -> tuple[str, str]:
     return "NEUTRAL", f"ニュートラル (VIX {vix:.0f}, 10Y {us10y}%)"
 
 
+def _determine_us_regime_v2(indicators: dict) -> tuple[str, str]:
+    """
+    US株専用レジーム判定 v2 — FED proxy / DXY / VIX ベース。
+    優先度順:
+      1. RISK_OFF  (VIX > 25 — 最優先)
+      2. FED_HIKE  (IRX 3M delta > 0.5pt)
+      3. FED_CUT   (IRX 3M delta < -0.25pt)
+      4. USD_STRONG (DXY 20日リターン > 2%)
+      5. RISK_ON   (VIX < 18)
+      6. FED_PAUSE (それ以外)
+
+    IRX (^IRX) は 3ヶ月 T-Bill 利回りで Fed Funds Rate の最良プロキシ。
+    change_1m は _build_indicators_from_cache で 20日絶対差分（rate_keys に含めること）。
+    dxy の change_1m は 20日 % 変化率（rate_keys に含めない）。
+    """
+    vix = indicators.get('vix', {}).get('current', 20.0)
+    irx_delta = indicators.get('us3m', {}).get('change_1m', 0.0)   # 3M T-Bill delta
+    dxy_20d_return = indicators.get('dxy', {}).get('change_1m', 0.0)
+
+    # 1. RISK_OFF — VIX 高騰は全レジームより優先
+    if vix >= 25:
+        return "RISK_OFF", f"VIX高騰 ({vix:.0f}) — リスクオフ、ポジション縮小推奨"
+
+    # 2. FED_HIKE — 3ヶ月 T-Bill が 0.5pt 以上上昇 → 利上げサイクル
+    if irx_delta > 0.5:
+        return "FED_HIKE", f"利上げ局面 (IRX 3M delta: +{irx_delta:.2f}pt) — グロース株逆風"
+
+    # 3. FED_CUT — 3ヶ月 T-Bill が 0.25pt 以上低下 → 利下げサイクル
+    if irx_delta < -0.25:
+        return "FED_CUT", f"利下げ局面 (IRX 3M delta: {irx_delta:.2f}pt) — リスクオン追い風"
+
+    # 4. USD_STRONG — DXY 20日リターンが +2% 超 → ドル高（輸出株・新興国逆風）
+    if dxy_20d_return > 2.0:
+        return "USD_STRONG", f"ドル高 (DXY 20d: +{dxy_20d_return:.1f}%) — 輸出・素材セクター逆風"
+
+    # 5. RISK_ON — VIX 安定
+    if vix < 18:
+        return "RISK_ON", f"リスクオン (VIX: {vix:.0f}) — トレンド追随有利"
+
+    # 6. FED_PAUSE — 方向感なし
+    return "FED_PAUSE", f"利上げ停止・中立 (VIX: {vix:.0f}, IRX delta: {irx_delta:+.2f}pt)"
+
+
 # =========================================================
 # JP マクロ指標の取得・判定 (v2.0 案C)
 # =========================================================
@@ -431,12 +474,16 @@ def _ensure_cache_us(current_date, config: dict = None):
     """US マクロ指標の履歴キャッシュを取得/更新する"""
     from datetime import timedelta
     global _macro_cache_us
-    
+
     tickers = {
         'us10y':  '^TNX',
-        'us3m':   '^IRX',
+        'us3m':   '^IRX',   # 3ヶ月 T-Bill — Fed Funds Rate の最良プロキシ
         'vix':    '^VIX',
         'hyg':    'HYG',
+        'dxy':    'DX-Y.NYB',  # US ドル指数（USレジーム v2 で使用）
+    }
+    mock_vals = {
+        'us10y': 4.0, 'us3m': 4.0, 'vix': 20.0, 'hyg': 75.0, 'dxy': 100.0
     }
 
     if not _macro_cache_us.is_valid():
@@ -444,7 +491,7 @@ def _ensure_cache_us(current_date, config: dict = None):
         print("  📥 Fetching US Macro Data for Backtest (Once)...")
         start_cache = (current_date - timedelta(days=365*10)).strftime('%Y-%m-%d')
         end_cache = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-        
+
         cache_data = {}
         for key, symbol in tickers.items():
             try:
@@ -456,20 +503,18 @@ def _ensure_cache_us(current_date, config: dict = None):
                         df.columns = df.columns.get_level_values(0)
                 if df.index.tz is not None:
                     df.index = df.index.tz_localize(None)
-                if df.empty: raise Exception("Empty Data")
+                if df.empty:
+                    raise Exception("Empty Data")
                 cache_data[key] = df
             except Exception as e:
                 print(f"  ⚠️ US Macro Fetch Error ({symbol}): {e} -> Using Mock Data")
                 dates = pd.date_range(start=start_cache, end=end_cache, freq='D')
-                mock_vals = {
-                    'us10y': 4.0, 'us3m': 4.0, 'vix': 20.0, 'hyg': 75.0
-                }
                 cache_data[key] = pd.DataFrame(
                     {'Close': [mock_vals.get(key, 0.0)] * len(dates)},
                     index=dates
                 )
                 _macro_cache_us._has_mock = True
-        
+
         _macro_cache_us.data = cache_data
 
 
@@ -573,6 +618,7 @@ def get_macro_regime(current_date, config: dict = None, ticker: str = "") -> str
     指定日のマクロレジームを判定して返す（バックテスト用）。
     全期間のデータを一度だけ取得し、メモリにキャッシュして高速化。
     v2.0: ticker に応じて US/JP を自動選択、キャッシュ分離。
+    v2.1: US 株は _determine_us_regime_v2() (FED/DXY/VIX) を使用。
     """
     if _is_japanese_stock(ticker):
         _ensure_cache_jp(current_date, config)
@@ -580,9 +626,10 @@ def get_macro_regime(current_date, config: dict = None, ticker: str = "") -> str
         regime, _ = _determine_jp_regime(indicators)
     else:
         _ensure_cache_us(current_date, config)
+        # us3m (^IRX) は金利なので絶対差分、dxy は % 変化率（rate_keys 不要）
         indicators = _build_indicators_from_cache(
             _macro_cache_us, current_date, rate_keys={'us10y', 'us3m'}
         )
-        regime, _ = _determine_regime(indicators)
-    
+        regime, _ = _determine_us_regime_v2(indicators)
+
     return regime
