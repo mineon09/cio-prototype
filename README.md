@@ -207,6 +207,25 @@ LINE_USER_ID = "..."
 > ./venv/bin/python3 generate_prompt.py --check-env
 > ```
 
+#### ⚠️ 簡易プロンプトにフォールバックした場合
+
+Streamlit Cloud で `--check-env` を実行しても API キーに問題がないのに「データ取得に失敗したため簡易プロンプトが生成されました」と表示される場合、 **「📊 データ取得ログ」が自動展開** され、原因が以下のプレフィックスで表示されます。
+
+| ログプレフィックス | 意味 |
+|---|---|
+| `[FALLBACK_REASON]` | フォールバック理由（metrics 件数不足・例外） |
+| `[DATA_ERROR]` | `fetch_stock_data` の例外メッセージ |
+| `[DATA_ERROR_DETAIL]` | トレースバック末尾（詳細） |
+| `[FETCH_TRACEBACK]` | fetch_stock_data 呼び出し時の完全トレースバック |
+
+典型的な原因と対処：
+
+| 原因 | 対処 |
+|---|---|
+| yfinance レート制限 / 403 | 数分待って再試行、またはキャッシュ利用 |
+| yfinance ネットワーク不通 | Streamlit Cloud の外部通信制限を確認 |
+| `metrics=0件, technical=0件` | ティッカーシンボルが正しいか確認（日本株は `.T` 付き） |
+
 ---
 
 ### 🔄 バックテスト

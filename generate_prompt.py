@@ -1021,14 +1021,22 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         data = fetch_stock_data(ticker)
     except Exception as e:
         import traceback
-        print(f"⚠️ データ取得失敗：{e}")
+        tb_text = traceback.format_exc()
+        print(f"[FALLBACK_REASON] fetch_stock_data 例外: {e}")
+        print(f"[FETCH_TRACEBACK]\n{tb_text}")
         traceback.print_exc(file=sys.stderr)
         return build_simple_prompt(ticker)
 
-    if not data or not data.get('metrics'):
-        import sys as _sys
-        print(f"⚠️ 財務データ未取得（metrics空）— 簡易プロンプトにフォールバック", file=_sys.stderr)
+    metrics = data.get('metrics', {}) if data else {}
+    technical = data.get('technical', {}) if data else {}
+
+    # metrics が極めて少ない（2件未満）かつ technical もない場合のみ簡易フォールバック。
+    # 部分的にでもデータがあれば build_enhanced_prompt_with_data を使う。
+    if not data or (len(metrics) < 2 and not technical):
+        print(f"[FALLBACK_REASON] 財務データ不足: metrics={len(metrics)}件, technical={len(technical)}件 → 簡易プロンプトにフォールバック")
         return build_simple_prompt(ticker)
+
+    print(f"  ✓ 基本データ取得完了: metrics={len(metrics)}件, technical={len(technical)}件")
 
     company_name = data.get('name', ticker)
     is_japanese = ticker.endswith('.T')

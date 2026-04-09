@@ -240,7 +240,11 @@ if "generated_stderr" not in st.session_state:
 st.title("🧠 Prompt Studio")
 st.caption("STEP 1 でプロンプトを生成し、Claude に貼り付けた後、STEP 3 で結果を保存します。")
 
-tab1, tab2 = st.tabs(["📝 STEP 1 — プロンプト生成", "💾 STEP 3 — 結果保存"])
+tab1, tab2, tab3 = st.tabs([
+    "📝 STEP 1 — プロンプト生成",
+    "💾 STEP 3 — 結果保存",
+    "📊 精度フィードバック",
+])
 
 # ============================================================
 # STEP 1: プロンプト生成
@@ -311,11 +315,20 @@ with tab1:
 
             # 簡易プロンプトへの完全フォールバック検出
             _is_fallback = "最新財務データを収集（ROE, PER, PBR" in prompt_text
+            # stdout から [FALLBACK_REASON] / [DATA_ERROR] 行を抽出してユーザーに提示
+            _error_lines = [
+                line for line in (diag_log + "\n" + (result.stderr or "")).splitlines()
+                if line.startswith(("[FALLBACK_REASON]", "[DATA_ERROR]", "[FETCH_TRACEBACK]"))
+            ]
+            _error_summary = "\n".join(_error_lines[:5]) if _error_lines else ""
             if _is_fallback:
-                st.warning(
+                _warn_msg = (
                     "⚠️ データ取得に失敗したため簡易プロンプトが生成されました。\n"
                     "以下の診断ログを確認してください。"
                 )
+                if _error_summary:
+                    _warn_msg += f"\n\n原因:\n{_error_summary[:400]}"
+                st.warning(_warn_msg)
             else:
                 # 部分的なデータ欠落を検出
                 sections = detect_prompt_sections(prompt_text)
@@ -346,11 +359,12 @@ with tab1:
 
         render_copy_button(prompt_text, key="copy_btn")
 
-        # 常時診断ログ（expander）
+        # 常時診断ログ（フォールバック時は自動展開）
         diag_log = st.session_state.get("generated_diag_log", "")
         stderr_log = st.session_state.get("generated_stderr", "")
+        _auto_expand = "最新財務データを収集（ROE, PER, PBR" in prompt_text
         if diag_log or stderr_log:
-            with st.expander("📊 データ取得ログ（クリックで展開）"):
+            with st.expander("📊 データ取得ログ（クリックで展開）", expanded=_auto_expand):
                 if diag_log:
                     st.code(diag_log, language="text")
                 if stderr_log:
@@ -492,6 +506,157 @@ with tab2:
             with st.expander("エラーログ"):
                 st.code(result.stderr or result.stdout or "（出力なし）")
             st.session_state["pending_save"] = False
+
+
+
+# ============================================================
+# STEP 精度フィードバック（tab3）
+# ============================================================
+with tab3:
+    st.subheader("📊 予測精度フィードバックループ")
+    st.caption("verify_predictions.py の結果を可視化し、スコアリング重みの自動最適化を実行できます。")
+
+    import json as _json
+    from pathlib import Path as _Path
+
+    _ROOT = _Path(__file__).parent.parent
+
+    # ── 精度履歴の読み込み ──────────────────────────────────
+    _hist_file = _ROOT / "data" / "accuracy_history.json"
+    _results_file = _ROOT / "data" / "results.json"
+
+    col_a, col_b = st.columns([2, 1])
+
+    with col_b:
+        st.markdown("#### ⚡ 重み最適化")
+        _dry_run = st.toggle("Dry-run（設定を変更しない）", value=True)
+        _model = st.selectbox("LLM モデル", ["claude", "gemini"], index=0)
+        if st.button("🔄 重みを最適化", type="primary"):
+            with st.spinner("LLM に重み提案を依頼中..."):
+                import subprocess
+                _cmd = [
+                    _get_python_exe(),
+                    str(_ROOT / "src" / "weight_optimizer.py"),
+                    "--model", _model,
+                ]
+                if _dry_run:
+                    _cmd.append("--dry-run")
+                _res = subprocess.run(_cmd, capture_output=True, text=True, cwd=str(_ROOT))
+            if _res.returncode == 0:
+                st.success("✅ 完了")
+                st.code(_res.stdout[-2000:] if len(_res.stdout) > 2000 else _res.stdout)
+            else:
+                st.error("❌ エラー")
+                st.code(_res.stderr[-1000:] if _res.stderr else _res.stdout)
+            st.rerun()
+
+        st.divider()
+        st.markdown("#### 🔍 検証実行")
+        _upd_weights = st.toggle("重みも同時に更新", value=False)
+        if st.button("▶ verify_predictions.py を実行"):
+            with st.spinner("実績価格を取得中..."):
+                import subprocess
+                _vcmd = [_get_python_exe(), str(_ROOT / "verify_predictions.py")]
+                if _upd_weights:
+                    _vcmd += ["--update-weights", "--model", _model]
+                _vres = subprocess.run(_vcmd, capture_output=True, text=True, cwd=str(_ROOT))
+            if _vres.returncode == 0:
+                st.success("✅ 完了")
+                st.code(_vres.stdout[-2000:] if len(_vres.stdout) > 2000 else _vres.stdout)
+            else:
+                st.error("❌ エラー")
+                st.code(_vres.stderr[-1000:] if _vres.stderr else _vres.stdout)
+            st.rerun()
+
+    with col_a:
+        # ── accuracy_history.json サマリー ──
+        if _hist_file.exists():
+            try:
+                _hist = _json.loads(_hist_file.read_text(encoding="utf-8"))
+                _snaps = _hist.get("snapshots", [])
+                if _snaps:
+                    import pandas as _pd
+                    _df = _pd.DataFrame(_snaps)
+                    # セクター × ウィンドウ別の最新スナップショット
+                    _latest = (
+                        _df.sort_values("timestamp")
+                           .groupby(["sector_profile", "window"])
+                           .last()
+                           .reset_index()
+                    )
+                    st.markdown("#### 最新の精度統計（セクター×ウィンドウ）")
+                    _disp = _latest[["sector_profile", "window", "total", "hits",
+                                     "win_rate", "avg_return"]].copy()
+                    _disp["win_rate"] = (_disp["win_rate"] * 100).round(1).astype(str) + "%"
+                    _disp["avg_return"] = _disp["avg_return"].map(
+                        lambda x: f"{x:+.2f}%" if x is not None and not _pd.isna(x) else "—"
+                    )
+                    st.dataframe(_disp, use_container_width=True, hide_index=True)
+
+                    # 軸相関バーチャート（最新 30d データ）
+                    _30d = _latest[_latest["window"] == 30]
+                    if not _30d.empty and "axis_correlations" in _30d.columns:
+                        st.markdown("#### 軸寄与度（30d、最新）")
+                        for _, row in _30d.iterrows():
+                            corr = row.get("axis_correlations")
+                            if not corr:
+                                continue
+                            st.caption(f"**{row['sector_profile']}** — 勝率 {row['win_rate']}")
+                            _corr_df = _pd.DataFrame(
+                                [{"軸": k, "相関スコア": v} for k, v in corr.items()]
+                            )
+                            st.bar_chart(_corr_df.set_index("軸"), height=150)
+                else:
+                    st.info("📭 スナップショットなし — `verify_predictions.py` を実行すると精度データが蓄積されます。")
+            except Exception as _e:
+                st.warning(f"⚠️ accuracy_history.json の読み込み失敗: {_e}")
+        else:
+            st.info(
+                "📭 `data/accuracy_history.json` がまだありません。\n\n"
+                "右側の「▶ verify_predictions.py を実行」ボタンで検証を開始してください。\n\n"
+                "**注意:** 分析から 30 日以上経過したエントリが存在する場合のみ精度データが生成されます。"
+            )
+
+        # ── 現在の重み（config.json から） ──
+        _cfg_file = _ROOT / "config.json"
+        if _cfg_file.exists():
+            try:
+                _cfg = _json.loads(_cfg_file.read_text(encoding="utf-8"))
+                _profiles = _cfg.get("sector_profiles", {})
+                if _profiles:
+                    st.markdown("#### 現在のスコアリング重み（config.json）")
+                    import pandas as _pd2
+                    _rows = []
+                    for _pname, _pdata in _profiles.items():
+                        _w = _pdata.get("weights", {})
+                        _rows.append({"profile": _pname, **_w})
+                    _wdf = _pd2.DataFrame(_rows).set_index("profile")
+                    st.dataframe(
+                        _wdf.style.background_gradient(cmap="Blues", axis=1),
+                        use_container_width=True,
+                    )
+            except Exception as _e:
+                st.warning(f"⚠️ config.json 読み込み失敗: {_e}")
+
+        # ── results.json の検証状況 ──
+        if _results_file.exists():
+            try:
+                _res_data = _json.loads(_results_file.read_text(encoding="utf-8"))
+                _total = 0
+                _verified_30 = 0
+                for _td in _res_data.values():
+                    for _e in _td.get("history", []):
+                        _total += 1
+                        if "verified_30d" in _e:
+                            _verified_30 += 1
+                st.caption(
+                    f"📋 results.json: {_total} エントリ総数 / "
+                    f"{_verified_30} 件が 30 日検証済み"
+                    + (" — フィードバックループ稼働中 ✅" if _verified_30 >= 5 else
+                       f" — あと {5 - _verified_30} 件で最適化が有効になります")
+                )
+            except Exception:
+                pass
 
 
 # ============================================================
