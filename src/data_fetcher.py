@@ -951,6 +951,9 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         return result_data
 
     except Exception as e:
-        print(f"  ⚠️ {ticker} 取得失敗: {e}")
+        import traceback as _tb
+        tb_summary = "\n".join(_tb.format_exc().splitlines()[-6:])
+        print(f"[DATA_ERROR] {ticker} 取得失敗: {e}")
+        print(f"[DATA_ERROR_DETAIL]\n{tb_summary}")
         return {"ticker": ticker, "name": ticker, "currency": "USD",
                 "metrics": {}, "technical": {}, "news": [], "description": ""}

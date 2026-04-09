@@ -315,11 +315,20 @@ with tab1:
 
             # 簡易プロンプトへの完全フォールバック検出
             _is_fallback = "最新財務データを収集（ROE, PER, PBR" in prompt_text
+            # stdout から [FALLBACK_REASON] / [DATA_ERROR] 行を抽出してユーザーに提示
+            _error_lines = [
+                line for line in (diag_log + "\n" + (result.stderr or "")).splitlines()
+                if line.startswith(("[FALLBACK_REASON]", "[DATA_ERROR]", "[FETCH_TRACEBACK]"))
+            ]
+            _error_summary = "\n".join(_error_lines[:5]) if _error_lines else ""
             if _is_fallback:
-                st.warning(
+                _warn_msg = (
                     "⚠️ データ取得に失敗したため簡易プロンプトが生成されました。\n"
                     "以下の診断ログを確認してください。"
                 )
+                if _error_summary:
+                    _warn_msg += f"\n\n原因:\n{_error_summary[:400]}"
+                st.warning(_warn_msg)
             else:
                 # 部分的なデータ欠落を検出
                 sections = detect_prompt_sections(prompt_text)
@@ -350,11 +359,12 @@ with tab1:
 
         render_copy_button(prompt_text, key="copy_btn")
 
-        # 常時診断ログ（expander）
+        # 常時診断ログ（フォールバック時は自動展開）
         diag_log = st.session_state.get("generated_diag_log", "")
         stderr_log = st.session_state.get("generated_stderr", "")
+        _auto_expand = "最新財務データを収集（ROE, PER, PBR" in prompt_text
         if diag_log or stderr_log:
-            with st.expander("📊 データ取得ログ（クリックで展開）"):
+            with st.expander("📊 データ取得ログ（クリックで展開）", expanded=_auto_expand):
                 if diag_log:
                     st.code(diag_log, language="text")
                 if stderr_log:
