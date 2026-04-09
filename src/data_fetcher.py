@@ -438,6 +438,110 @@ def select_competitors(target_data: dict, macro_data: dict = None) -> dict:
 
 
 # ==========================================
+# yfinance レート制限ヘルパー
+# ==========================================
+
+def _is_rate_limit_error(e: Exception) -> bool:
+    """429 / Too Many Requests 系エラーを検知する"""
+    msg = str(e).lower()
+    return any(x in msg for x in ["too many requests", "rate limit", "rate_limit", "429", "rateerror"])
+
+
+def _fetch_finnhub_fallback(ticker: str) -> dict | None:
+    """
+    yfinance レート制限時の Finnhub フォールバック（US株専用）。
+
+    FINNHUB_API_KEY が未設定または日本株の場合は None を返す。
+    取得できた場合は fetch_stock_data と同形式の dict を返す。
+    """
+    if ticker.endswith('.T'):
+        return None
+    api_key = os.environ.get("FINNHUB_API_KEY", "")
+    if not api_key:
+        print(f"  [RATE_LIMIT] FINNHUB_API_KEY 未設定 → Finnhub フォールバック不可")
+        return None
+
+    try:
+        import finnhub
+        client = finnhub.Client(api_key=api_key)
+
+        # 現在株価
+        quote = client.quote(ticker)
+        current_price = quote.get('c') or 0.0
+
+        # 基本財務指標
+        fin = client.company_basic_financials(ticker, 'all')
+        m = fin.get('metric', {})
+
+        # 会社情報
+        profile = client.company_profile2(symbol=ticker)
+        name = profile.get('name', ticker)
+        sector = profile.get('finnhubIndustry', 'Unknown')
+
+        # --- metrics 変換 ---
+        metrics: dict = {}
+        if m.get('roeTTM') is not None:
+            metrics['roe'] = round(float(m['roeTTM']), 2)
+        if m.get('peNormalizedAnnual') is not None:
+            metrics['per'] = round(float(m['peNormalizedAnnual']), 2)
+        if m.get('pbAnnual') is not None:
+            metrics['pbr'] = round(float(m['pbAnnual']), 2)
+        if m.get('operatingMarginTTM') is not None:
+            metrics['op_margin'] = round(float(m['operatingMarginTTM']), 2)
+        if m.get('dividendYieldIndicatedAnnual') is not None:
+            metrics['dividend_yield'] = round(float(m['dividendYieldIndicatedAnnual']), 2)
+        if m.get('netProfitMarginTTM') is not None:
+            metrics['net_margin'] = round(float(m['netProfitMarginTTM']), 2)
+        if m.get('debtToEquityAnnual') is not None:
+            metrics['debt_equity'] = round(float(m['debtToEquityAnnual']), 2)
+
+        # --- technical 変換 ---
+        technical: dict = {}
+        if current_price:
+            technical['current_price'] = round(current_price, 2)
+        if quote.get('h'):
+            technical['day_high'] = round(quote['h'], 2)
+        if quote.get('l'):
+            technical['day_low'] = round(quote['l'], 2)
+        if quote.get('o'):
+            technical['day_open'] = round(quote['o'], 2)
+        if quote.get('pc'):
+            technical['prev_close'] = round(quote['pc'], 2)
+        if m.get('52WeekHigh') is not None:
+            technical['week52_high'] = round(float(m['52WeekHigh']), 2)
+        if m.get('52WeekLow') is not None:
+            technical['week52_low'] = round(float(m['52WeekLow']), 2)
+        if m.get('beta') is not None:
+            technical['beta'] = round(float(m['beta']), 4)
+        if m.get('5DayPriceReturnDaily') is not None:
+            technical['return_5d'] = round(float(m['5DayPriceReturnDaily']), 2)
+        if m.get('13WeekPriceReturnDaily') is not None:
+            technical['return_13w'] = round(float(m['13WeekPriceReturnDaily']), 2)
+        # ATR 近似（52週 H/L からボラティリティを代用）
+        if m.get('52WeekHigh') and m.get('52WeekLow') and current_price:
+            w52_range = float(m['52WeekHigh']) - float(m['52WeekLow'])
+            technical['atr'] = round(w52_range / 52, 2)
+            technical['atr_pct'] = round(w52_range / 52 / current_price * 100, 2)
+
+        print(f"  [FINNHUB_FALLBACK] ✓ Finnhub から取得: metrics={len(metrics)}件, technical={len(technical)}件")
+        return {
+            "ticker": ticker,
+            "name": name,
+            "sector": sector,
+            "currency": "USD",
+            "metrics": metrics,
+            "technical": technical,
+            "macro": None,
+            "news": [],
+            "description": "",
+            "_data_source": "finnhub_fallback",
+        }
+    except Exception as e:
+        print(f"  [FINNHUB_FALLBACK] 失敗: {e}")
+        return None
+
+
+# ==========================================
 # yfinance データ取得
 # ==========================================
 
@@ -955,5 +1059,36 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         tb_summary = "\n".join(_tb.format_exc().splitlines()[-6:])
         print(f"[DATA_ERROR] {ticker} 取得失敗: {e}")
         print(f"[DATA_ERROR_DETAIL]\n{tb_summary}")
+
+        # ── Layer 2: ステールキャッシュ（レート制限時のみ、72h TTL で再利用）──
+        if _is_rate_limit_error(e) and price_history is None:
+            try:
+                _STALE_TTL_H = 72
+                if os.path.exists(cache_file):
+                    mtime = os.path.getmtime(cache_file)
+                    age_h = (time.time() - mtime) / 3600
+                    if age_h <= _STALE_TTL_H:
+                        with open(cache_file, "r", encoding="utf-8") as _f:
+                            stale = json.load(_f)
+                        print(f"[RATE_LIMIT] yfinance レート制限 → ステールキャッシュ使用 (age: {age_h:.0f}h)")
+                        return stale
+                    else:
+                        print(f"[RATE_LIMIT] ステールキャッシュも期限切れ (age: {age_h:.0f}h > {_STALE_TTL_H}h)")
+                else:
+                    print(f"[RATE_LIMIT] ステールキャッシュなし → Finnhub フォールバックへ")
+            except Exception as _ce:
+                print(f"[RATE_LIMIT] キャッシュ読み込み失敗: {_ce}")
+
+            # ── Layer 3: Finnhub フォールバック（US株・FINNHUB_API_KEY 設定時）──
+            finnhub_data = _fetch_finnhub_fallback(ticker)
+            if finnhub_data:
+                # Finnhub 取得結果もキャッシュ保存（次回は通常 TTL で使用可能）
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as _f:
+                        json.dump(finnhub_data, _f, indent=2, ensure_ascii=False)
+                except Exception:
+                    pass
+                return finnhub_data
+
         return {"ticker": ticker, "name": ticker, "currency": "USD",
                 "metrics": {}, "technical": {}, "news": [], "description": ""}

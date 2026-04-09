@@ -252,8 +252,23 @@ CLIからも確認できます：
 | ログの内容 | 原因 | 対処 |
 |---|---|---|
 | `metrics=0件, technical=0件` | yfinance でデータ取得不可 | ティッカー確認（日本株は `.T` 付き）、しばらく待って再試行 |
-| `[DATA_ERROR] 取得失敗: 403` | yfinance レート制限 | 数分待って再試行 |
+| `[DATA_ERROR] 取得失敗: 403 / Rate limited` | yfinance レート制限 | 自動フォールバック（後述）が動くか確認 |
 | `[DATA_ERROR] 取得失敗: HTTPError` | ネットワーク不通 | Streamlit Cloud の外部通信設定を確認 |
+| `[RATE_LIMIT] ステールキャッシュ使用 (age: Xh)` | yfinance 429 → ステールキャッシュで代替 | 正常動作。72h 超で失効 |
+| `[FINNHUB_FALLBACK] Finnhub から取得` | ステールキャッシュなし → Finnhub で代替 | 正常動作。`FINNHUB_API_KEY` 必須 |
+
+**yfinance レート制限時の 3 層フォールバック（US株）**：
+
+```
+Layer 1: yfinance（24h キャッシュ）
+   ↓ 429 / Too Many Requests
+Layer 2: ステールキャッシュ再利用（72h まで許容）
+   ↓ キャッシュなし or 72h 超
+Layer 3: Finnhub API（FINNHUB_API_KEY が必要）
+```
+
+- Finnhub で取得したデータは自動的にキャッシュ保存されます
+- 日本株（`.T`）は Layer 2 のみ（Finnhub は非対応）
 
 > **部分的なデータがある場合**（metrics ≥ 2件 または technical データあり）は、自動的に完全版プロンプトにフォールバックせず、取得済みデータを活用した強化プロンプトが生成されます。
 
