@@ -1,83 +1,77 @@
-# 🤖 AI投資司令塔 - CIO Prototype システム設計書 v2.4+
+# システム設計メモ
 
-## 変更履歴
+この文書は、現行コードで確認できた主要ユースケースを設計観点で簡潔にまとめたものです。
 
-| バージョン | 変更日 | 変更内容 | ステータス |
-| :--- | :--- | :--- | :--- |
-| **v1.5.1** | 2025-02 | 初期プロトタイプ。モンテカルロのブートストラップ化。 | ✅ 完了 |
-| **v2.0.0** | 2026-02 | **プロダクション堅牢化**：PITフィルタ（45日ラグ）、保有フラグ、動的WACC、循環インポート解消、filelock排他制御。 | ✅ 完了 |
-| **v2.1.0** | 2026-02 | **外部AIレビュー対応（16項目）**：TTM EPS、正式WACC（負債コスト込み）、FCF PITフィルタ、MCポジションサイズ、MacroHistoryCache TTL化。 | ✅ 完了 |
-| **v2.2.0** | 2026-03 | **API最適化**：競合選定ルールベース化（Gemini API節約）、Notion Add-On-Demand、2000文字チャンク保護。 | ✅ 完了 |
-| **v2.3.0** | 2026-03-15 | **コード品質強化**：単体テスト66件導入、logging_utils、parallel_utils、scoring_thresholds外部化。 | ✅ 完了 |
-| **v2.4.0** | 2026-03-15 | **投資判断エンジン**：APIベース(Gemini/Qwen)・ツールベース・デュアルエンジンを `src/investment_judgment.py` に実装。 | ✅ 完了 |
-| **v2.4.1** | 2026-03-27 | **カタリスト日付ガード**：`analyze_all()` にTEMPORAL CONSTRAINTSブロック注入。`news_fetcher.py` による14日ニュース取得。 | ✅ 完了 |
+## 1. 総合分析フロー
 
----
+対象: `main.py`
 
-## 1. システム概要
+1. ティッカー入力を正規化
+2. 市場データ取得 (`src/data_fetcher.py`)
+3. 競合銘柄の選定
+4. 日本株なら EDINET、米国株なら SEC を補助情報として取得
+5. 4軸スコアカードとマクロレジームを生成
+6. LLM 向けレポート本文を組み立て
+7. Markdown / `data/results.json` / 任意のNotionへ保存
 
-**CIO Prototype** は、プロフェッショナルな投資判断を自動化するAIエージェントシステムです。
-マクロ（レジーム）、ファンダメンタル（体力）、バリュエーション（割安度）、テクニカル（タイミング）、定性評価（堀）の多角的なデータを統合し、`BUY / WATCH / SELL` シグナルと具体的なアクションプランを生成します。
+設計上の要点:
 
-## 2. 主要ロジックの詳細
+- `config.json` がシグナル閾値、戦略パラメータ、ティッカー別上書きの中心
+- 総合スコアは `src/analyzers.py` と `config.json` に強く依存
+- `data/results.json` は履歴の中心で、検証・通知・UI の共通入力でもある
 
-### 2.1 4軸スコアリング (Analyzers)
+## 2. 外部LLM連携フロー
 
-- **Fundamental**: セクター別にROE/利益率の重みを `config.json` の `sector_profiles` で調整。
-- **Valuation**: DCFモデル（正式WACC）と市場平均との比較。PBR・PER・配当利回りを加味。
-- **Technical**: RSI・MA乖離・BB位置・出来高比率で算出。逆張り(Bounce)と順張り(Breakout)で解釈が異なる。
-- **Qualitative**: Geminiによる有報/10-K解析結果の構造化スコア。データ未取得時はウェイトを 0% に再配分（設計意図通り）。
+対象: `generate_prompt.py`, `save_claude_result.py`, `pages/01_prompt_studio.py`
 
-### 2.2 スコア制約（プロンプト厳守条件）
+1. `generate_prompt.py` がプロンプトと context JSON を生成
+2. ユーザーが Claude 等へ貼り付け
+3. `save_claude_result.py` が回答から JSON を抽出
+4. `signal` や `score` を `data/results.json` に反映
+5. Notion 設定済みなら追加保存
 
-LLMに渡すプロンプトには以下の制約を明記し、スコアの恣意的な上書きを防止する。
+設計上の要点:
 
-- 4軸スコアの数値変更禁止（±1.0 以内）
-- 総合スコアは加重平均と大きく乖離させない
-- ROE低＋PER高 → 「過小評価」断定を禁止
+- Prompt Studio は上記フローのUIラッパー
+- `*_context.json` があると、回答保存時にローカルのスコアや価格情報を補完できる
 
-### 2.3 カタリスト日付ガード (TEMPORAL CONSTRAINTS)
+## 3. GitHub Models 分析フロー
 
-`analyze_all()` 冒頭で `_today / _current_year / _current_quarter / _next_quarter` を計算し、
-プロンプトに `TEMPORAL CONSTRAINTS` ブロックを注入する。
+対象: `analyze.py`, `src/copilot_client.py`
 
-- 現在年以前のカタリスト日付を出力禁止
-- 日付が不明な場合は `{year}H2` や `{Q}` などの範囲表記を強制
+1. 最小限のデータ収集とプロンプト生成
+2. `gh auth token` で GitHub Models API を呼び出し
+3. 返却テキストから JSON シグナルを抽出
+4. Markdown レポートを保存
 
-LLMの訓練データカットオフ（2024年）依存を排除するための対策。
+設計上の要点:
 
-### 2.4 バックテスト環境 (Backtester)
+- 利用モデルは `src/copilot_client.py` の別名定義に依存
+- 追加APIキーではなく GitHub CLI 認証を前提にしている
 
-Point-in-Time フィルタにより、**歴史的な決算発表タイミング**を意識したシミュレーションが可能。
+## 4. バックテストと改善フロー
 
-- `as_of_date` 以前かつ発表から45日経過済みのデータのみを「既知」として扱う。
-- **TTM (Trailing Twelve Months)**: EPS算出では過去4四半期の合計を使用し、季節性歪みを排除。
-- **FCF PITフィルタ**: DCF用のFCF取得時も `as_of_date` を考慮し、ルックアヘッドを防止。
-- **モンテカルロ**: ブートストラップ法（1000回）に `position_pct` を反映。Rolling BTでは Sharpe Ratio を集計。
+対象: `src/backtester.py`, `scripts/optimize_strategy.py`, `verify_predictions.py`, `src/weight_optimizer.py`
 
-### 2.5 ポートフォリオ管理 (Portfolio)
+1. `src/backtester.py` で戦略ごとのシミュレーション
+2. `scripts/optimize_strategy.py` で LLM に改善提案を依頼
+3. `scripts/apply_optimization_results.py` で `config.json` へ反映
+4. `verify_predictions.py` で実運用結果を検証
+5. `src/weight_optimizer.py` で重み再調整
 
-買いシグナル発生時に以下のチェックを自動実行。
+設計上の要点:
 
-1. **既存保有確認**: `results.json` の `holding` フラグの状態を確認。
-2. **セクター集中度**: 同一セクターへの投資比率が `max_sector_exposure_pct` を超える場合は推奨ポジションサイズを縮小。
+- 検証フローは `data/results.json` と `data/accuracy_history.json` を共有ストアとして使う
+- 設定変更の最終反映先は `config.json`
 
-### 2.6 投資判断エンジン (Investment Judgment)
+## 5. 通知フロー
 
-`src/investment_judgment.py` に3種のエンジンを実装。
+対象: `alert_check.py`, `src/notifier.py`
 
-| エンジン | 技術 | 速度 | コスト |
-|---|---|---|---|
-| `APIJudgmentEngine` | LLM (Gemini/Qwen) | 2-5秒 | API料金 |
-| `ToolJudgmentEngine` | ルールベース | <0.1秒 | 無料 |
-| `DualJudgmentEngine` | 両者比較・統合 | 2-5秒 | API料金 |
+- `alert_check.py` は `data/results.json` と `data/portfolio.json` を参照して LINE Notify を送信
+- `app.py` には LINE Messaging API のテスト送信導線がある
 
-## 3. インフラ・外部サービス
+## 6. 現在の注意点
 
-- **LLM**: Gemini 2.5 Flash (Primary), Groq Llama 3 (Fallback), GitHub Models GPT-4o (`--engine=copilot`)
-- **Data**: yfinance, EDINET API v2, SEC EDGAR, Gemini google_search（ニュース・日本株）
-- **Storage**: Google Sheets (ログ/シグナル), Notion (レポート), JSON (ローカル状態, filelock排他制御)
-- **キャッシュ**: マクロ指標は `MacroHistoryCache`(TTL=12h), SEC/EDINET は TTL=30/90日のファイルキャッシュ
-
----
-*Last Updated: 2026-03-27 (v2.4.1)*
+- `portfolio_manager.py` は設計上は保有銘柄台帳CLIだが、現スナップショットでは構文エラーがある
+- 一部の詳細設計書は履歴重視で古い記述を含むため、最新導線は `README.md` と `docs/how_to_use.md` を優先する

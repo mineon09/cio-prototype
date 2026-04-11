@@ -1,746 +1,225 @@
-# 📖 CIO Prototype ユーザー操作マニュアル
+# 操作ガイド
 
-このドキュメントでは、AI 投資司令塔「CIO Prototype」の使用方法について詳しく説明します。
+このガイドは、現行コードに存在する入口スクリプトとStreamlit UIを中心に、日常利用の導線をまとめたものです。
 
----
-
-## 1. 銘柄の通常分析（最新データ）
-
-最新の株価、財務データ、有価証券報告書に基づいた総合レポートを生成します。
-
-### CLI での実行
-
-最も詳細な分析を行う場合は、`main.py` を使用します。
+## 事前準備
 
 ```bash
-# 仮想環境を使用する場合（推奨）
-./venv/bin/python3 main.py --ticker 7203.T
-
-# 通常分析（長期戦略）
-python3 main.py --ticker 7203.T
-
-# 複数銘柄を一括分析
-python3 main.py --ticker 7203.T 8306.T 9984.T
-
-# スイング戦略（Bounce: 逆張り / Breakout: 順張り）で分析
-python3 main.py --ticker 7203.T --strategy bounce
-python3 main.py --ticker 7011.T --strategy breakout
-
-# 分析エンジン指定（デフォルト: gemini）
-# copilot: GitHub Models API (GPT-4o) を使用
-python3 main.py --ticker AAPL --engine copilot
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+cp .env.example .env
 ```
 
-- **実行内容**: データの取得、DCF 算出（正式な WACC 計算対応）、マクロ環境判定（自動キャッシュ）、ルールベース＆AI ハイブリッドによる競合比較、**日本株特有の高度化（EDINET DBによる財務健全性スコア、J-Quantsによる東証公式OHLC株価、高機能AIウェブ検索によるニュース取得）**、AI レポート生成、Notion への自動記録、ローカル Markdown 形式およびダッシュボード用 JSON（排他制御対応）への保存。
+用途ごとの前提:
 
-### Streamlit ダッシュボード
+| 用途 | 前提 |
+| --- | --- |
+| `main.py` の標準運用 | `GEMINI_API_KEY` |
+| 米国株のSEC取得 | `SEC_USER_AGENT` |
+| GitHub Models系 (`analyze.py` など) | `gh auth login` |
+| Claude最適化 | `ANTHROPIC_API_KEY` |
+| Notion連携 | `NOTION_API_KEY`, `NOTION_DATABASE_ID` |
+| LINE Notify | `LINE_NOTIFY_TOKEN` |
 
-視覚的に分析結果を閲覧したい場合に使用します。
+## 1. 総合分析をCLIで回す
 
-```powershell
-# サーバー起動
+`main.py` が最上位のオーケストレーターです。ティッカーは位置引数でも `--ticker` でも渡せます。
+
+```bash
+./venv/bin/python3 main.py 7203.T
+./venv/bin/python3 main.py 7203.T 8306.T AAPL
+./venv/bin/python3 main.py --ticker AAPL --strategy breakout
+./venv/bin/python3 main.py 8035.T --strategy bounce
+./venv/bin/python3 main.py AAPL --engine copilot
+```
+
+確認できたオプション:
+
+| オプション | 内容 |
+| --- | --- |
+| `--ticker <code>` | 追加の分析対象を指定 |
+| `--strategy <long|bounce|breakout>` | 戦略切替 |
+| `--engine <gemini|copilot>` | 最終レポート生成エンジンを切替 |
+
+主な出力:
+
+- Markdownレポート
+- `data/results.json`
+- Notion（設定されている場合）
+
+## 2. ダッシュボードを使う
+
+```bash
 streamlit run app.py
 ```
 
-- ブラウザが起動し、銘柄コード入力欄が表示されます。
-- 左側のサイドバーから過去の分析履歴を素早く確認できます。
-- マクロ指標データは自動的にキャッシュ（TTL 対応）されるため、リロード不要で高速動作します。
+`app.py` でできること:
 
----
+- ティッカー入力からの分析実行
+- 戦略切替（`long / bounce / breakout`）
+- バックテスト実行
+- 履歴の閲覧
+- LINE Messaging API の送信テスト
+- Prompt Studio への遷移
 
-## 2. 投資判断の実行（v2.4.0 新機能）
+## 3. Prompt Studio を使う
 
-API ベースとルールベースの 2 つの投資判断システムを使用できます。
+Streamlit のサイドバー、または直接 `pages/01_prompt_studio.py` を通じて使います。
 
-### クイックスタート（Python スクリプト）
+主な役割:
 
-```python
-from src.investment_judgment import create_judgment_engine, DualJudgmentEngine
+1. `generate_prompt.py` を裏側で呼び出してプロンプト生成
+2. 生成結果のコピー補助
+3. Claude等の回答を `save_claude_result.py` 経由で保存
+4. 生成ログと診断ログの確認
 
-# 銘柄データ（既存の分析結果を使用）
-ticker_data = {
-    'ticker': '7203.T',
-    'name': 'Toyota Motor',
-    'sector': 'Consumer Cyclical',
-    'metrics': {
-        'roe': 10.5, 'per': 10.0, 'pbr': 1.2,
-        'op_margin': 8.5, 'equity_ratio': 40.0,
-    },
-    'technical': {
-        'current_price': 2850, 'rsi': 45,
-        'ma25_deviation': -2.5, 'bb_position': 35,
-    },
-    'scores': {
-        'fundamental': {'score': 7.5},
-        'valuation': {'score': 6.0},
-        'technical': {'score': 5.5},
-        'qualitative': {'score': 7.0},
-        'total_score': 6.5,
-    },
-}
-
-# 方法 1: API ベース判断（Gemini/Qwen）
-api_engine = create_judgment_engine('api', model='gemini')
-api_result = api_engine.judge(ticker_data)
-print(f"API 判断：{api_result.signal}")
-print(f"理由：{api_result.reasoning}")
-
-# 方法 2: ツールベース判断（ルールベース）
-tool_engine = create_judgment_engine('tool')
-tool_result = tool_engine.judge(ticker_data)
-print(f"ツール判断：{tool_result.signal}")
-
-# 方法 3: 両方比較（推奨）
-dual_engine = DualJudgmentEngine(api_engine, tool_engine)
-results = dual_engine.judge(ticker_data)
-print(f"合意シグナル：{results['consensus']}")
-print(f"最終推奨：{results['final_recommendation'].signal}")
-```
-
-### 比較レポートの生成
-
-```python
-from src.investment_judgment import DualJudgmentEngine, create_judgment_engine
-
-api_engine = create_judgment_engine('api', model='gemini')
-tool_engine = create_judgment_engine('tool')
-dual_engine = DualJudgmentEngine(api_engine, tool_engine)
-
-# 比較レポートを出力
-report = dual_engine.compare_and_report(ticker_data)
-print(report)
-```
-
-**出力例**:
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 投資判断比較レポート
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-【対象】Toyota Motor (7203.T)
-
-┌─────────────────────────────────────┐
-│ API 判断 (API-gemini)                │
-├─────────────────────────────────────┤
-│ シグナル：BUY                  │
-│ スコア：7.5/10              │
-│ 信頼度：80%                  │
-└─────────────────────────────────────┘
-
-┌─────────────────────────────────────┐
-│ ツール判断 (Tool-RuleBased)          │
-├─────────────────────────────────────┤
-│ シグナル：BUY                  │
-│ スコア：6.5/10              │
-│ 信頼度：75%                  │
-└─────────────────────────────────────┘
-
-【合意判定】
-- 合意シグナル：BUY
-- 統合信頼度：78%
-- 不一致フラグ：✅ なし
-
-【最終推奨】
-- エントリー：2850 円
-- 損切り：2700 円
-- 利確：3100 円
-- ポジション：12.5%
-```
-
----
-
-## 3. 外部ツール用プロンプト生成
-
-LLM API（Gemini/Qwen/ChatGPT/Claude）に投資判断を依頼するためのプロンプトを生成します。
-
-### 方法 0: 簡易コマンド（推奨・最速）
+## 4. 外部LLM向けプロンプトを生成する
 
 ```bash
-# 簡易プロンプト（データ取得なし、最速）
-./venv/bin/python3 generate_prompt.py 7203.T --simple
-
-# 完全プロンプト（データ取得あり）
 ./venv/bin/python3 generate_prompt.py 7203.T
-
-# ファイルに保存
-./venv/bin/python3 generate_prompt.py 7203.T -o prompt.txt
-
-# クリップボードにコピー（pyperclip が必要）
 ./venv/bin/python3 generate_prompt.py 7203.T --copy
-
-# モデル指定（gemini, qwen, chatgpt, claude）
-./venv/bin/python3 generate_prompt.py 7203.T --model qwen
+./venv/bin/python3 generate_prompt.py AAPL --simple
+./venv/bin/python3 generate_prompt.py 8306.T --no-qualitative
+./venv/bin/python3 generate_prompt.py 7203.T --no-cache
+./venv/bin/python3 generate_prompt.py --check-env
 ```
 
-**出力例**:
+確認できたオプション:
 
-```
-🔍 プロンプト生成中：7203.T
-============================================================
-あなたは優秀な金融アナリストです。
-以下のデータに基づいて、投資判断（BUY/WATCH/SELL）を出力してください。
+| オプション | 内容 |
+| --- | --- |
+| `-o, --output` | 出力先を指定 |
+| `--copy` | クリップボードへコピー |
+| `--simple` | データ取得なしの簡易プロンプト |
+| `--no-qualitative` | ニュース/アナリスト/業界動向を省略 |
+| `--no-cache` | キャッシュを使わず再取得 |
+| `--check-env` | APIキー状態を診断して終了 |
+| `--model <gemini|qwen|chatgpt|claude|groq>` | 対象モデルラベル |
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【対象銘柄】Toyota Motor (7203.T)
-【セクター】Consumer Cyclical
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+保存物:
 
-【財務指標】
-  ROE: 10.5%
-  PER: 10.0 倍
-  PBR: 1.2 倍
-...
+- `prompts/*.txt`
+- `prompts/*_context.json`（`--simple` 以外）
 
-💡 使用方法:
-   1. 上記プロンプトをコピー
-   2. GEMINI のチャットに貼り付け
-   3. 実行して投資判断を取得
-```
-
-#### コンテキスト JSON の自動保存
-
-`--simple` フラグなしで実行すると、プロンプトファイルと同時に **コンテキスト JSON**（`prompts/{TICKER}_context.json`）が自動的に保存されます。
-
-```
-✅ 保存先：prompts/7203_T_20260318_123456.txt
-📋 コンテキスト保存: prompts/7203_T_context.json
-```
-
-このファイルには後述の `save_claude_result.py` が利用するスコアカード・財務指標・テクニカルデータ等が含まれます。`--simple` モードでは生成されません。
-
-```json
-{
-  "ticker": "7203.T",
-  "name": "Toyota Motor",
-  "sector": "Consumer Cyclical",
-  "currency": "JPY",
-  "metrics": { "roe": 10.5, "per": 10.0, ... },
-  "technical": { "current_price": 2850, "rsi": 45, ... },
-  "scorecard": {
-    "fundamental": { "score": 7.5 },
-    "valuation":   { "score": 6.0 },
-    "technical":   { "score": 5.5 },
-    "qualitative": { "score": 7.0 },
-    "total_score": 6.5
-  },
-  "regime": "NEUTRAL",
-  "regime_weights": { ... },
-  "generated_at": "2026-03-18T12:34:56"
-}
-```
-
-#### ⚠️ 簡易プロンプトにフォールバックした場合のデバッグ
-
-「データ取得に失敗したため簡易プロンプトが生成されました」と表示される場合、Streamlit の **「📊 データ取得ログ」が自動展開** され、以下のプレフィックスで原因が確認できます。
-
-| ログプレフィックス | 意味 |
-|---|---|
-| `[FALLBACK_REASON]` | フォールバック理由（metrics 件数不足・例外発生） |
-| `[DATA_ERROR]` | `fetch_stock_data` で発生した例外メッセージ |
-| `[DATA_ERROR_DETAIL]` | トレースバック末尾（詳細） |
-| `[FETCH_TRACEBACK]` | fetch_stock_data 呼び出し時の完全トレースバック |
-
-CLIからも確認できます：
+## 5. Claude等の回答を履歴へ保存する
 
 ```bash
-./venv/bin/python3 generate_prompt.py 7203.T 2>&1 | grep -E "\[FALLBACK|DATA_ERROR\]"
-```
-
-**典型的な原因と対処**：
-
-| ログの内容 | 原因 | 対処 |
-|---|---|---|
-| `metrics=0件, technical=0件` | yfinance でデータ取得不可 | ティッカー確認（日本株は `.T` 付き）、しばらく待って再試行 |
-| `[DATA_ERROR] 取得失敗: 403 / Rate limited` | yfinance レート制限 | 自動フォールバック（後述）が動くか確認 |
-| `[DATA_ERROR] 取得失敗: HTTPError` | ネットワーク不通 | Streamlit Cloud の外部通信設定を確認 |
-| `[RATE_LIMIT] ステールキャッシュ使用 (age: Xh)` | yfinance 429 → ステールキャッシュで代替 | 正常動作。72h 超で失効 |
-| `[FINNHUB_FALLBACK] Finnhub から取得` | ステールキャッシュなし → Finnhub で代替 | 正常動作。`FINNHUB_API_KEY` 必須 |
-
-**yfinance レート制限時の 3 層フォールバック（US株）**：
-
-```
-Layer 1: yfinance（24h キャッシュ）
-   ↓ 429 / Too Many Requests
-Layer 2: ステールキャッシュ再利用（72h まで許容）
-   ↓ キャッシュなし or 72h 超
-Layer 3: Finnhub API（FINNHUB_API_KEY が必要）
-```
-
-- Finnhub で取得したデータは自動的にキャッシュ保存されます
-- 日本株（`.T`）は Layer 2 のみ（Finnhub は非対応）
-
-> **部分的なデータがある場合**（metrics ≥ 2件 または technical データあり）は、自動的に完全版プロンプトにフォールバックせず、取得済みデータを活用した強化プロンプトが生成されます。
-
-### 方法 1: 投資判断エンジンの API ベースを使用（推奨）
-
-```python
-from src.investment_judgment import APIJudgmentEngine
-
-# エンジン作成
-engine = APIJudgmentEngine(model='gemini')
-
-# 内部でプロンプトが自動生成され、API に送信される
-result = engine.judge(ticker_data)
-
-# 結果を取得
-print(f"シグナル：{result.signal}")
-print(f"スコア：{result.score}/10")
-print(f"理由：{result.reasoning}")
-```
-
-**メリット**:
-
-- プロンプト生成・送信・パースを自動で実行
-- エラーハンドリング付き
-- 一貫した出力形式
-
-### 方法 2: プロンプトを手動生成して外部 API に送信
-
-```python
-from src.investment_judgment import APIJudgmentEngine
-
-# エンジン作成
-engine = APIJudgmentEngine(model='gemini')
-
-# プロンプトを生成（API 送信はしない）
-prompt = engine._build_prompt(
-    ticker_data=ticker_data,
-    competitors={},
-    yuho_data=yuho_data,
-    macro_data=macro_data,
-    dcf_data=dcf_data,
-)
-
-# 生成されたプロンプトを表示
-print(prompt)
-
-# またはファイルに保存
-with open('investment_prompt.txt', 'w', encoding='utf-8') as f:
-    f.write(prompt)
-```
-
-**生成されるプロンプト例**:
-
-```
-あなたは優秀な金融アナリストです。
-以下のデータに基づいて、投資判断（BUY/WATCH/SELL）を出力してください。
-
-【対象銘柄】Toyota Motor (7203.T)
-【セクター】Consumer Cyclical
-
-【財務指標】
-- ROE: 10.5%
-- PER: 10.0 倍
-- PBR: 1.2 倍
-- 営業利益率：8.5%
-- 自己資本比率：40.0%
-- 配当利回り：2.8%
-
-【テクニカル】
-- 現在価格：2850
-- RSI: 45
-- MA25 乖離：-2.5%
-- BB 位置：35%
-
-【4 軸スコア】
-- Fundamental: 7.5/10
-- Valuation: 6.0/10
-- Technical: 5.5/10
-- Qualitative: 7.0/10
-- 総合：6.5/10
-
-【出力形式】
-以下の JSON 形式で出力してください：
-{
-    "signal": "BUY" or "WATCH" or "SELL",
-    "score": 0-10,
-    "confidence": 0-1,
-    "reasoning": "判断理由（200 文字以内）",
-    "entry_price": 数値，
-    "stop_loss": 数値，
-    "take_profit": 数値，
-    "position_size": 0.0-1.0,
-    "holding_period": "short" or "medium" or "long",
-    "risks": ["リスク 1", "リスク 2"],
-    "catalysts": ["カタリスト 1", "カタリスト 2"]
-}
-```
-
-### 方法 3: 既存のプロンプトビルダーを使用
-
-```bash
-# プロンプトを生成して.txt ファイルに保存
-python3 prompt_builder.py 7203.T
-
-# 画面にプロンプト用データを表示
-python3 get_prompt.py 7203.T
-```
-
-### 方法 4: 手動でカスタムプロンプトを作成
-
-```python
-def create_custom_prompt(ticker_data):
-    """カスタムプロンプトの作成"""
-    metrics = ticker_data.get('metrics', {})
-    scores = ticker_data.get('scores', {})
-    
-    prompt = f"""
-あなたはプロの投資アナリストです。
-以下の銘柄を分析し、投資判断を教えてください。
-
-## 銘柄情報
-- ティッカー：{ticker_data.get('ticker')}
-- 企業名：{ticker_data.get('name')}
-- セクター：{ticker_data.get('sector')}
-
-## 財務指標
-- ROE: {metrics.get('roe')}%
-- PER: {metrics.get('per')}倍
-- PBR: {metrics.get('pbr')}倍
-- 営業利益率：{metrics.get('op_margin')}%
-
-## 評価スコア
-- 総合スコア：{scores.get('total_score')}/10
-- ファンダメンタル：{scores.get('fundamental', {}).get('score')}/10
-- 割安度：{scores.get('valuation', {}).get('score')}/10
-
-## 質問
-1. この銘柄への投資判断（BUY/WATCH/SELL）とその理由
-2. 適切なエントリー価格
-3. 損切りラインと利確ライン
-4. 注意すべきリスク要因
-"""
-    return prompt
-
-# 使用例
-prompt = create_custom_prompt(ticker_data)
-print(prompt)
-```
-
-### 外部 API への送信例
-
-#### Gemini API
-
-```python
-from google import genai
-import os
-
-client = genai.Client(api_key=os.environ.get('GEMINI_API_KEY'))
-
-response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents=prompt,
-)
-
-# 結果をパース
-import json
-result = json.loads(response.text)
-print(f"判断：{result['signal']}")
-```
-
-#### Qwen API (DashScope)
-
-```python
-from openai import OpenAI
-import os
-
-client = OpenAI(
-    api_key=os.environ.get('DASHSCOPE_API_KEY'),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
-)
-
-response = client.chat.completions.create(
-    model="qwen-max",
-    messages=[
-        {"role": "system", "content": "あなたは優秀な金融アナリストです。JSON 形式で出力してください。"},
-        {"role": "user", "content": prompt}
-    ],
-    response_format={"type": "json_object"},
-)
-
-import json
-result = json.loads(response.choices[0].message.content)
-print(f"判断：{result['signal']}")
-```
-
-#### ChatGPT API
-
-```python
-from openai import OpenAI
-import os
-
-client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
-
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[
-        {"role": "system", "content": "あなたはプロの投資アナリストです。JSON 形式で出力してください。"},
-        {"role": "user", "content": prompt}
-    ],
-    response_format={"type": "json_object"},
-)
-
-import json
-result = json.loads(response.choices[0].message.content)
-print(f"判断：{result['signal']}")
-```
-
-#### Claude API
-
-```python
-import anthropic
-import os
-
-client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
-
-response = client.messages.create(
-    model="claude-sonnet-4-20250514",
-    max_tokens=1024,
-    messages=[
-        {"role": "user", "content": prompt}
-    ]
-)
-
-import json
-result = json.loads(response.content[0].text)
-print(f"判断：{result['signal']}")
-```
-
----
-
-## 4. Claude 回答のダッシュボード＆Notion保存（save_claude_result.py）
-
-`generate_prompt.py` で生成したプロンプトを Claude（Web UI / API）に送信した後、その回答を `save_claude_result.py` でダッシュボード（`data/results.json`）および Notion のデータベースに取り込みます。
-
-### エンドツーエンドのフロー
-
-```
-[1] generate_prompt.py 7203.T --copy
-        ↓ prompts/7203_T_context.json（自動保存）
-        ↓ プロンプトをクリップボードにコピー
-
-[2] Claude Web UI にプロンプトを貼り付けて実行
-        ↓ 回答全体をコピー
-
-[3] save_claude_result.py 7203.T --from-clipboard
-        ↓ data/results.json に保存（ダッシュボード反映）
-        ↓ Notion データベースに保存
-```
-
-### コマンド例
-
-```bash
-# クリップボードから（Claude の回答をコピー後・デフォルト）
 ./venv/bin/python3 save_claude_result.py 7203.T --from-clipboard
-
-# ファイルから読み込み
-./venv/bin/python3 save_claude_result.py 7203.T --from-file response.txt
-
-# 標準入力からパイプ
-cat response.txt | ./venv/bin/python3 save_claude_result.py 7203.T
-
-# 使用モデル名を記録する場合
-./venv/bin/python3 save_claude_result.py 7203.T --from-clipboard --model claude-sonnet-4-5
+./venv/bin/python3 save_claude_result.py AAPL --from-file response.txt
+cat response.txt | ./venv/bin/python3 save_claude_result.py AMAT
 ```
 
-### 引数一覧
+ポイント:
 
-| 引数 | 説明 | デフォルト |
-|------|------|----------|
-| `ticker` | 銘柄コード（例：`7203.T`, `AAPL`）| 必須 |
-| `--from-clipboard` | クリップボードから回答を読み込む | デフォルト動作 |
-| `--from-file PATH` | 指定ファイルから回答を読み込む | — |
-| `--model NAME` | 使用した AI モデル名（ログ記録用） | `claude-sonnet` |
+- 先に `generate_prompt.py` で `*_context.json` を作っておくと、スコアカードやテクニカル情報も一緒に保存されます。
+- 応答中の JSON ブロックから `signal / score / entry_price` などを抽出します。
+- `HOLD` は内部で `WATCH` に正規化されます。
+- `NOTION_API_KEY` と `NOTION_DATABASE_ID` があれば Notion 保存も試行します。
 
-> 標準入力（パイプ）が検出された場合は `--from-clipboard` より優先されます。
-
-### 保存先と内容
-
-`data/results.json` に以下の形式で追記されます（直近 20 件の履歴を保持）。
-
-```json
-{
-  "7203.T": {
-    "name": "Toyota Motor",
-    "sector": "Consumer Cyclical",
-    "currency": "JPY",
-    "history": [
-      {
-        "date": "2026-03-18 12:34",
-        "scores": {
-          "fundamental": 7.5,
-          "valuation": 6.0,
-          "technical": 5.5,
-          "qualitative": 7.0
-        },
-        "signal": "BUY",
-        "holding": true,
-        "position_size": 0.10,
-        "total_score": 6.5,
-        "metrics": { ... },
-        "technical_data": { ... },
-        "entry_price": 2850,
-        "stop_loss": 2700,
-        "take_profit": 3100,
-        "confidence": 0.8,
-        "ai_model": "claude-sonnet-4-5",
-        "report": "（Claude の回答全文）"
-      }
-    ]
-  }
-}
-```
-
-### 出力例
-
-```
-📥 Claude 回答を取得中...
-   3,241 文字取得
-📋 コンテキスト読み込み: 7203.T
-🔍 JSON 抽出中...
-   signal=BUY, score=7.5, confidence=0.8
-💾 ダッシュボードに保存中...
-📤 Notion に保存中...
-✅ ダッシュボード保存完了：7203.T (履歴 3 件)
-   シグナル  : BUY
-   総合スコア: 6.5
-   エントリー: 2850  損切: 2700  利確: 3100
-   保存先    : data/results.json (および Notion)
-```
-
-### 注意事項
-
-- `generate_prompt.py`（`--simple` なし）を先に実行してコンテキスト JSON を生成しておく必要があります。コンテキストがない場合は警告を表示して続行しますが、スコア等が空になります。
-- `pyperclip` パッケージが必要です（`pip install pyperclip`）。
-- `filelock` パッケージがある場合は `results.json` への書き込みが排他制御されます（`pip install filelock`）。
-- Claude の回答中に JSON ブロック（` ```json ... ``` ` 形式）が含まれる場合、自動で抽出してシグナル・エントリー価格等を取り込みます。
-
----
-
-## 5. バックテストの実行
-
-過去のデータを用いて、戦略の有効性をシミュレーションします。
-**Point-in-Time フィルタリング (v2.1.0 強化版)**: 財務データは決算発表のラグ（基本 45 日）を考慮して「当時利用可能だったデータ」のみを使用します。EPS 計算等の指標では季節性の歪みを防ぐため**TTM（過去 4 四半期合計）**ベースで算出され、ルックアヘッドバイアスを排除しています。
-
-### 基本コマンド
-
-`src.backtester` モジュールを使用します。
+## 6. GitHub Models API で一気通貫分析する
 
 ```bash
-# 例：トヨタ (7203.T) を 2024 年 1 月 1 日から 12 ヶ月間シミュレーション
-python3 -m src.backtester --ticker 7203.T --start 2024-01-01 --months 12
-
-# 戦略指定
-python3 -m src.backtester --ticker 7203.T --start 2024-01-01 --months 12 --strategy bounce
+./venv/bin/python3 analyze.py AMAT
+./venv/bin/python3 analyze.py 7203.T --model gpt-4o-mini
+./venv/bin/python3 analyze.py XOM --no-cache
+./venv/bin/python3 analyze.py NVDA -o my_report.md
+./venv/bin/python3 analyze.py --list-models
 ```
 
-### 高度なシミュレーション機能 (v2.1.0 強化版)
+確認できたモデル別名:
 
-#### 🎲 モンテカルロシミュレーション (リスク評価)
+- `gpt-4o`
+- `gpt-4o-mini`
+- `llama405b`
+- `llama70b`
+- `mistral`
 
-バックテスト実行時、トレード結果に基づくブートストラップ法を用いたモンテカルロシミュレーション（1000 回）が実行され、リスクや最悪のドローダウンを推定します。各トレードは設定された資金サイズ（`position_pct`）を考慮して計算されます。
+`analyze.py` は `generate_prompt.py` のロジックを再利用し、分析結果を Markdown に保存します。
 
-#### 🔄 ローリングバックテスト (Walk-Forward)
-
-一定期間（ウィンドウ）ごとに期間をずらしながらテストを繰り返し、戦略の堅牢性を検証します。各ウィンドウにおけるシャープレシオ（Sharpe Ratio）も集計され、安定性を評価できます。
+## 7. バックテストを実行する
 
 ```bash
-# 24 ヶ月の総期間を、12 ヶ月のウィンドウ、3 ヶ月ステップでスライド検証
-python3 -m src.backtester --ticker 7203.T --start 2023-01-01 --months 24 --rolling --window-months 12 --step-months 3
+./venv/bin/python3 -m src.backtester --ticker 7203.T --strategy long --start 2024-01-01 --months 12
+./venv/bin/python3 -m src.backtester --ticker 7203.T --strategy bounce --rolling --window-months 12 --step-months 3
 ```
 
-#### ⚙️ CLI パラメータ・オーバーライド
+確認できた主要オプション:
 
-`config.json` を書き換えることなく、一時的に戦略パラメータを変更してテストできます。
+| オプション | 内容 |
+| --- | --- |
+| `--ticker` | 対象ティッカー |
+| `--strategy` | `long / bounce / breakout` |
+| `--days`, `--start`, `--months` | 期間指定 |
+| `--rolling` | ローリングバックテスト |
+| `--window-months`, `--step-months` | ローリング設定 |
+| `--rsi-threshold`, `--volume-multiplier`, `--entry-price-ma` | 戦略パラメータ上書き |
 
-```bash
-# RSI 閾値を 25 に変更して Bounce 戦略を検証
-python3 -m src.backtester --ticker 7203.T --strategy bounce --rsi-threshold 25
-
-# 出来高急増判定を 1.5 倍に変更
-python3 -m src.backtester --ticker 7203.T --strategy breakout --volume-multiplier 1.5
-```
-
----
-
-## 6. LLM戦略最適化（新機能）
-
-LLMを使用して、バックテスト結果に基づく戦略パラメーターの自動最適化を行います。
-論文「大規模言語モデルを用いた株式投資戦略の自動生成におけるフィードバック設計」に基づいた高度なフィードバックループを実行します。
-
-### 最適化の実行
-
-最も基本的な実行方法です。デフォルトでClaude（未設定時はGeminiに自動フォールバック）を呼び出し、複数回の反復を通じて戦略を最適化します。
+## 8. 戦略最適化を回す
 
 ```bash
-# 実行（Claude → Gemini → GPT-4o フォールバック）
-./venv/bin/python3 scripts/optimize_strategy.py --ticker 8035.T --strategy bounce
-```
-
-### 事前確認とモデル比較
-
-既存の設定（`config.json`）を書き換えずに、LLMからの提案内容だけを確認したり、LLMモデル間の比較（A/Bテスト）を行うことができます。スコアリングモードの評価等にも役立ちます。
-
-```bash
-# 事前確認（DRY RUN：設定ファイルは変更されません）
 ./venv/bin/python3 scripts/optimize_strategy.py --ticker 8035.T --strategy bounce --dry-run
-
-# モデル比較（複数モデルでのパラメーター提案結果の比較）
-./venv/bin/python3 scripts/optimize_strategy.py --ticker 8035.T --strategy bounce --compare-models --dry-run
+./venv/bin/python3 scripts/optimize_strategy.py --ticker AAPL --strategy breakout --model gpt-4o
+./venv/bin/python3 scripts/optimize_strategy.py --group JP_financial --level P2
+./venv/bin/python3 scripts/optimize_strategy.py --ticker 8035.T --strategy bounce --compare-models
 ```
 
-最適化の履歴や詳細なメトリクスは、各実行後に都度 `data/optimization/` ディレクトリ配下に JSON 形式で保存されます。
+関連コマンド:
 
----
+```bash
+./venv/bin/python3 scripts/apply_optimization_results.py --dry-run
+./venv/bin/python3 scripts/apply_optimization_results.py --ticker 8035.T AMAT
+```
 
-## 7. 設定のカスタマイズ
+`scripts/optimize_strategy.py` は結果JSONを保存し、`scripts/apply_optimization_results.py` が `config.json` に反映します。
 
-`config.json` を編集することで、システムの恒久的な挙動をコントロールできます。
+## 9. 予測精度と重み調整を回す
 
-- **`ai_engine`**: 自動分析で使用する LLM の指定（`primary`, `fallback`）。
-- **`signals`**: BUY/SELL 判定の閾値（Regime ごとの上書き設定も可能）。
-- **`strategies`**: 各戦略のデフォルトパラメータ（RSI, 移動平均、出来高倍率など）。
-- **`exit_strategy`**: 戦略ごとの損切り（Stop Loss）および利確（Take Profit）の ATR 倍率。
-- **`sector_profiles`**: セクターごとのスコア配分（Tech 銘柄ならテクニカル重視など）。
-- **`position_sizing`**: 推奨ロットサイズ（`pct_per_trade`）およびセクター集中度の最大許容範囲。この値はモンテカルロリスク評価にも適用されます。
-- **`scoring_thresholds`**: スコアリングの閾値（CF 品質、R&D 比率、配当利回りなど）。
+```bash
+./venv/bin/python3 verify_predictions.py
+./venv/bin/python3 verify_predictions.py --ticker 8306.T --window 30
+./venv/bin/python3 verify_predictions.py --stats
+./venv/bin/python3 verify_predictions.py --dry-run
+./venv/bin/python3 verify_predictions.py --update-weights --model claude
+./venv/bin/python3 src/weight_optimizer.py --dry-run
+```
 
----
+`verify_predictions.py` は `data/results.json` を更新し、必要に応じて `data/accuracy_history.json` を蓄積します。
 
-## 8. トラブルシューティング
+## 10. アラートを送る
 
-- **yfinance の株価仕様注意点**: バックテストにて過去の株価を参照する際、yfinance の仕様により、その後に発生した**株式分割などで調整済みの価格（現在の基準）**が過去にも遡って適用されます（当時の実際の価格ではない点に留意してください）。
-- **財務データの欠損**: yfinance 等でデータが取得できない項目は、安全側のデフォルト値（NG 判定）や通期データによる補完が自動で行われます。
-- **文字化け・環境不整合**: Windows 環境では、実行時に `chcp 65001 > nul &&` (CMD) や `$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $env:PYTHONUTF8=1;` (PowerShell) を設定することを強く推奨します。
-- **複数システムからの並列実行**: `results.json` へのアクセスは `filelock` により排他制御されています。GitHub Actions 等で並列実行した場合も安全に書き込みが行われます。
-- **Notion 連携時の挙動**: Notion 書き込み時にデータベースのプロパティが不足している場合、エラーを検知して動的にプロパティを追加・リトライします（Add-On-Demand 機能）。またブロックの文字数制限（2000 文字）を回避するため、長文レポートは自動で安全なサイズにチャンク分割されて保存されます。
-- **実行ログ**: ターミナルの標準出力およびローカルディレクトリ (`data/reports/`) 内の Markdown ファイルで詳細を確認できます。Notion 連携を設定している場合は、指定したデータベースにも内容が自動書き込みされます。
-- **API キーのエラー**: `.env` ファイルに API キー（`GEMINI_API_KEY`, `EDINETDB_API_KEY`, `JQUANTS_API_KEY` 等）が正しく設定されているか確認してください。新機能のキー（J-Quants等）が未設定の場合は、該当セクションのみを自動でスキップして分析を継続します。
-- **投資判断エンジンのエラー**: `src/investment_judgment.py` のログ出力を確認してください。`logging` モジュールで INFO レベル以上のログが出力されます。
+```bash
+./venv/bin/python3 alert_check.py --dry-run
+./venv/bin/python3 alert_check.py
+./venv/bin/python3 alert_check.py --ticker 8306.T
+./venv/bin/python3 alert_check.py --all
+```
 
----
+トリガーは以下の3種類です。
 
-## 付録：投資判断エンジンの詳細
+1. `stop_loss` への接近
+2. 直近2回のシグナル変化
+3. 直近2回のスコア急落
 
-### API ベースエンジン vs ツールベースエンジン
+## 11. 補助スクリプト
 
-| 項目 | API ベース | ツールベース |
-|------|-----------|-------------|
-| 使用技術 | LLM (Gemini/Qwen) | ルールベース |
-| 処理時間 | 2-5 秒 | <0.1 秒 |
-| コスト | API 料金が必要 | 無料 |
-| 文脈理解 | ✅ 可能 | ❌ 限定的 |
-| 再現性 | ❌ 変動あり | ✅ 高い |
-| 定性分析 | ✅ 可能 | ❌ 数値のみ |
+| スクリプト | 役割 |
+| --- | --- |
+| `list_latest_models.py` | Gemini SDK で利用可能モデルを列挙 |
+| `get_prompt.py` | AIへ貼り付けるための素材を標準出力に整形 |
+| `prompt_builder.py` | プロンプト生成ライブラリ兼CLI |
+| `scripts/validate_catalyst_dates.py` | 業界カタリスト日付の検証 |
+| `analyze_trades.py` | 既定ティッカーのトレード一覧を書き出す簡易スクリプト |
 
-### 推奨使い分け
+## 12. 主な保存先
 
-- **API ベース**: 重要な投資判断、定性分析も含めて深く分析したい場合
-- **ツールベース**: 快速なスクリーニング、バックテスト、コスト削減したい場合
-- **デュアルエンジン**: 両方の結果を比較して、より信頼性の高い判断を得たい場合
+| パス | 内容 |
+| --- | --- |
+| `data/results.json` | 分析履歴と予測検証 |
+| `data/reports/YYYYMM/` | Markdownレポート |
+| `prompts/` | 生成プロンプトとコンテキスト |
+| `data/optimization/` | 最適化結果JSON |
 
----
----
-*Last Updated: 2026-03-27 (v2.4.1 --engine オプション追記・Notion保存機能追記・architecture / system_design 全面刷新)*
+## 13. 現在の注意点
 
+- `portfolio_manager.py` は台帳CLIの実装を含みますが、現スナップショットでは構文エラーがあり、そのままでは実行できません。
+- 除外設定は `.gignore` ではなく `.gitignore` です。
