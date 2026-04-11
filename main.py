@@ -724,6 +724,7 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
                     "fair_value": dcf_data.get("fair_value"),
                     "upside": dcf_data.get("upside"),
                     "wacc": dcf_data.get("wacc"),
+                    "reliability": dcf_data.get("reliability", "low"),
                 }
 
             # マクロ環境データがあれば追加
