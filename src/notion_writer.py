@@ -1,7 +1,6 @@
 import os
 import time
 from datetime import datetime
-from notion_client import Client
 
 def write_backtest_to_notion(ticker: str, result: dict, strategy: str = "long") -> bool:
     """バックテスト結果をNotionデータベースに保存する。
@@ -111,6 +110,7 @@ def get_notion_client():
     if not api_key:
         return None
     try:
+        from notion_client import Client
         return Client(auth=api_key)
     except Exception as e:
         print(f"⚠️ Notionクライアント初期化エラー: {e}")
