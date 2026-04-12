@@ -3,6 +3,106 @@ import time
 from datetime import datetime
 from notion_client import Client
 
+def write_backtest_to_notion(ticker: str, result: dict, strategy: str = "long") -> bool:
+    """バックテスト結果をNotionデータベースに保存する。
+
+    Args:
+        ticker: ティッカーシンボル（例: "AAPL"）
+        result: run_backtest() の返り値 dict
+        strategy: 使用した戦略名（例: "long", "bounce"）
+
+    Returns:
+        保存成功なら True、失敗なら False
+    """
+    from dotenv import load_dotenv
+    import os
+    load_dotenv()
+    db_id = os.environ.get("NOTION_DATABASE_ID")
+
+    notion = get_notion_client()
+    if not notion or not db_id:
+        print("⚠️ Notion設定が不完全です。NOTION_API_KEY / NOTION_DATABASE_ID を確認してください。")
+        return False
+
+    try:
+        title_text = f"{ticker} Backtest [{strategy}] {result.get('period', '')}"[:150]
+
+        properties = {
+            "Name": {"title": [{"text": {"content": title_text}}]},
+            "Ticker": {"rich_text": [{"text": {"content": str(ticker)[:50]}}]},
+            "Date": {"date": {"start": datetime.now().isoformat()}},
+            "Signal": {"select": {"name": "WATCH"}},  # バックテスト行は固定
+            "Score": {"number": 0.0},
+        }
+
+        # バックテスト固有フィールドは rich_text に格納（DB側プロパティが未作成でも安全）
+        summary_lines = [
+            f"戦略: {strategy}",
+            f"期間: {result.get('period', '-')}",
+            f"総リターン: {result.get('total_return_pct', '-')}%",
+            f"アルファ: {result.get('alpha', '-')}%",
+            f"最大DD: {result.get('max_drawdown_pct', '-')}%",
+            f"シャープ: {result.get('sharpe_ratio', '-')}",
+            f"勝率: {result.get('win_rate_pct', '-')}%",
+            f"トレード数: {result.get('trade_count', '-')}",
+        ]
+        summary_text = "\n".join(summary_lines)
+
+        blocks = [
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": summary_text}}]},
+            }
+        ]
+
+        # 売買履歴を追加（最大50件）
+        trades = result.get("trades", [])
+        if trades:
+            trade_lines = ["--- 売買履歴 ---"]
+            for t in trades[:50]:
+                line_parts = []
+                for k in ("date", "action", "price", "return", "exit_reason"):
+                    if k in t:
+                        line_parts.append(f"{k}: {t[k]}")
+                trade_lines.append("  ".join(line_parts))
+            trade_text = "\n".join(trade_lines)
+            for i in range(0, len(trade_text), 1500):
+                blocks.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {"rich_text": [{"type": "text", "text": {"content": trade_text[i:i+1500]}}]},
+                })
+
+        has_ensured_props = False
+        for attempt in range(4):
+            try:
+                response = notion.pages.create(
+                    parent={"type": "database_id", "database_id": db_id},
+                    properties=properties,
+                    children=blocks[:100],
+                )
+                print(f"✅ バックテスト結果をNotionに保存完了: {response.get('url')}")
+                return True
+            except Exception as e:
+                err_msg = str(e).lower()
+                if ("not a property" in err_msg or "property failed validation" in err_msg
+                        or "could not find property" in err_msg):
+                    if not has_ensured_props:
+                        ensure_database_properties(notion, db_id)
+                        has_ensured_props = True
+                        continue
+                    time.sleep(5)
+                    continue
+                print(f"❌ NotionAPI エラー: {e}")
+                raise e
+        return False
+
+    except Exception as e:
+        print(f"❌ Notion致命的エラー (backtest): {e}")
+        return False
+
+
 def get_notion_client():
     from dotenv import load_dotenv
     import os

@@ -139,7 +139,7 @@ def _validate_market_bug_logic(metrics: dict, all_data: dict, target_ticker: str
 def analyze_all(target_ticker: str, all_data: dict, competitors: dict,
                 yuho_data: dict = None, scorecard: dict = None,
                 macro_data: dict = None, dcf_data: dict = None,
-                engine: str = "gemini") -> tuple[str, str, str]:
+                engine: str = "gemini") -> tuple[str, str, str, float]:
     _today = datetime.now()
     _current_year = _today.year
     _current_quarter = f"{_current_year}Q{(_today.month - 1) // 3 + 1}"

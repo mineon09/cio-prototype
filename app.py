@@ -292,16 +292,24 @@ if run_analysis and ticker_input:
         # Step 7: Report (Gemini)
         st.write("📝 最終レポート生成中...")
         from main import analyze_all, save_to_dashboard_json
-        
-        report, table_str, model_name = analyze_all(
-            ticker, {ticker: target_data}, competitors,
-            yuho_data=yuho_data, scorecard=scorecard,
-        )
+
+        try:
+            _result = analyze_all(
+                ticker, {ticker: target_data}, competitors,
+                yuho_data=yuho_data, scorecard=scorecard,
+            )
+            report, table_str, model_name, rec_pct = _result
+        except Exception as _e:
+            import traceback as _tb
+            st.error(f"analyze_all エラー: {type(_e).__name__}: {_e}")
+            st.code(_tb.format_exc())
+            st.stop()
 
         # Save
-        # APP-003: model_name を渡すよう修正
+        # APP-003: model_name を渡すよう修正 / rec_pct を追加
         save_to_dashboard_json(ticker, target_data, scorecard, report,
-                               dcf_data=dcf_data, macro_data=macro_data, model_name=model_name)
+                               dcf_data=dcf_data, macro_data=macro_data,
+                               model_name=model_name, rec_pct=rec_pct)
 
         status.update(label=f"✅ {ticker} 分析完了!", state="complete")
 
@@ -390,9 +398,20 @@ if st.session_state.get("backtest_result") and st.session_state.get("backtest_ti
         trades_df = pd.DataFrame(res["trades"])
         st.dataframe(trades_df, use_container_width=True)
         
-    if st.button("🔙 分析結果に戻る"):
-        del st.session_state["backtest_result"]
-        st.rerun()
+    col_bt1, col_bt2 = st.columns([1, 1])
+    with col_bt1:
+        if st.button("🔙 分析結果に戻る"):
+            del st.session_state["backtest_result"]
+            st.rerun()
+    with col_bt2:
+        if st.button("💾 Notionに保存", key="save_backtest_notion"):
+            from src.notion_writer import write_backtest_to_notion
+            _bt_strategy = st.session_state.get("backtest_strategy", "long")
+            _ok = write_backtest_to_notion(view_ticker, res, strategy=_bt_strategy)
+            if _ok:
+                st.success("✅ Notionに保存しました")
+            else:
+                st.error("❌ Notion保存に失敗しました。NOTION_API_KEY / NOTION_DATABASE_ID を確認してください。")
     
     st.markdown("---")
 
