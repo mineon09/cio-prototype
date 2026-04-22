@@ -129,7 +129,15 @@ def verify_entry(ticker: str, entry: dict, windows: list,
                 signal_hit = price_change_pct > 0
             elif signal == "SELL":
                 signal_hit = price_change_pct < 0
-            # WATCH は signal_hit = None のまま
+            elif signal == "WATCH":
+                # WATCHシグナルはtotal_scoreベースで方向性を評価:
+                # total_score > 5.0 ならBUY寄り(上昇で命中)、< 5.0ならSELL寄り
+                total_score = entry.get("total_score", 5.0)
+                if total_score > 5.0:
+                    signal_hit = price_change_pct > 0
+                elif total_score < 5.0:
+                    signal_hit = price_change_pct < 0
+                # total_score == 5.0 は完全ニュートラル → signal_hit = None のまま
 
         verification = {
             "verified_at":      target_date.isoformat(),

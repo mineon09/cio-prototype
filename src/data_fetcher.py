@@ -821,14 +821,41 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         else:
             metrics['equity_ratio'] = None
 
-        # 4. CF品質 (Operating CF / Net Income)
-        # net_income が None（日本株等で quarterly に NI がない場合）は ttm_net_income を代替使用
-        op_cf = get_val(cf_latest, ['Operating Cash Flow', 'Total Cash From Operating Activities'])
-        _ni_denom = net_income if net_income is not None else ttm_net_income
-        if op_cf and _ni_denom and _ni_denom != 0:
-             metrics['cf_quality'] = round(op_cf / _ni_denom, 2)
+        # 4. CF品質 (TTM Operating CF / TTM Net Income)
+        # 単四半期での期ズレによる異常値(0.02等)を排除するため、TTMベースで計算
+        _cf_keys = ['Operating Cash Flow', 'Total Cash From Operating Activities']
+        ttm_op_cf = None
+        if cf_result and stock.quarterly_cashflow is not None:
+            qcf = stock.quarterly_cashflow
+            cf_valid_cols = cf_result[1] if len(cf_result) > 1 else []
+            cf_ttm_cols = cf_valid_cols[:4]  # 最新4四半期（PITフィルタ済み）
+            cf_values = []
+            for col in cf_ttm_cols:
+                val = get_val(qcf[col] if col in qcf.columns else pd.Series(), _cf_keys)
+                if val is not None:
+                    cf_values.append(val)
+            if len(cf_values) >= 4:
+                ttm_op_cf = sum(cf_values)  # 完全TTM
+            elif len(cf_values) >= 2:
+                ttm_op_cf = sum(cf_values) / len(cf_values) * 4  # 推定TTM
+            elif len(cf_values) == 1:
+                ttm_op_cf = cf_values[0] * 4  # フォールバック: 単四半期×4
+        # フォールバック: cf_latest から単四半期値を使用
+        if ttm_op_cf is None:
+            _op_cf_single = get_val(cf_latest, _cf_keys)
+            if _op_cf_single:
+                ttm_op_cf = _op_cf_single * 4
+
+        if ttm_op_cf and ttm_net_income and ttm_net_income != 0:
+            cf_ratio = round(ttm_op_cf / ttm_net_income, 2)
+            # 異常値検出: 0.1未満または10超は算出方法の問題を示唆
+            if cf_ratio < 0.1 or cf_ratio > 10:
+                metrics['cf_quality_warning'] = (
+                    f"CF/NI={cf_ratio} は異常域。四半期データの期ズレまたは一時的要因の可能性"
+                )
+            metrics['cf_quality'] = cf_ratio
         else:
-             metrics['cf_quality'] = None
+            metrics['cf_quality'] = None
 
         # 5. R&D比率 (DF-002: バックテスト時のみ省略、ライブ分析では取得試行)
         # CRIT-005注記: バックテスト時(as_of_date指定時)は yfinance の R&D データが
