@@ -80,10 +80,19 @@ def _parse_analyzed_at(entry: dict) -> Optional[datetime]:
     raw = entry.get("analyzed_at") or entry.get("date", "")
     if not raw:
         return None
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
-                "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+    # fmt文字列自体の長さではなく「期待されるデータ文字数」を明示（Bug #1修正）
+    # 例: '%Y-%m-%d %H:%M' は len=14 だが '2026-02-18 10:58' は16文字 → [:14]で切れてパース失敗
+    FMT_MAP = [
+        ("%Y-%m-%dT%H:%M:%S.%f", 26),
+        ("%Y-%m-%dT%H:%M:%S",    19),
+        ("%Y-%m-%dT%H:%M",       16),
+        ("%Y-%m-%d %H:%M:%S",    19),
+        ("%Y-%m-%d %H:%M",       16),
+        ("%Y-%m-%d",             10),
+    ]
+    for fmt, expected_len in FMT_MAP:
         try:
-            return datetime.strptime(raw[:len(fmt)], fmt)
+            return datetime.strptime(raw[:expected_len], fmt)
         except ValueError:
             continue
     return None
@@ -148,8 +157,8 @@ def verify_entry(ticker: str, entry: dict, windows: list,
 
         if dry_run:
             hit_str = "✅" if signal_hit else ("❌" if signal_hit is False else "—")
-            print(f"    [DRY RUN] {hit_str} {key}: 実績 {actual_price:.0f} "
-                  f"({price_change_pct:+.1f}% if price_change_pct is not None else 'N/A')")
+            pct_str = f"{price_change_pct:+.1f}%" if price_change_pct is not None else "N/A"
+            print(f"    [DRY RUN] {hit_str} {key}: 実績 {actual_price:.0f} ({pct_str})")
         else:
             entry[key] = verification
             changed = True
