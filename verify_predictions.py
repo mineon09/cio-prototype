@@ -341,23 +341,34 @@ def main():
     suffix = " [DRY RUN]" if args.dry_run else ""
     print(f"\n✅ 完了{suffix}: {total_checked} エントリー確認, {total_verified} 件新規検証")
 
-    # 完了後に統計表示
-    if not args.dry_run and total_verified > 0:
-        stats = compute_accuracy_stats(results)
-        print("\n📊 更新後の予測精度統計")
-        print(f"{'期間':>6}  {'件数':>4}  {'勝率':>6}  {'平均リターン':>10}")
-        print("-" * 35)
-        for w in WINDOWS:
-            s = stats[w]
-            wr  = f"{s['win_rate']*100:.1f}%" if s["win_rate"] is not None else "—"
-            ret = f"{s['avg_return']:+.1f}%"  if s["avg_return"] is not None else "—"
-            print(f"{w:>4}日  {s['total']:>4}  {wr:>6}  {ret:>10}")
+    if args.dry_run:
+        return
 
-        # 精度履歴の蓄積（weight_optimizer と共有）
+    # 新規検証があった場合は統計を更新して保存
+    stats = compute_accuracy_stats(results)
+    if total_verified > 0:
+        print("\n📊 更新後の予測精度統計")
+    else:
+        print("\n📊 現在の予測精度統計")
+    print(f"{'期間':>6}  {'件数':>4}  {'勝率':>6}  {'平均リターン':>10}")
+    print("-" * 35)
+    for w in WINDOWS:
+        s = stats[w]
+        wr  = f"{s['win_rate']*100:.1f}%" if s["win_rate"] is not None else "—"
+        ret = f"{s['avg_return']:+.1f}%"  if s["avg_return"] is not None else "—"
+        print(f"{w:>4}日  {s['total']:>4}  {wr:>6}  {ret:>10}")
+
+    # 精度履歴の蓄積（新規検証があった場合のみ追記）
+    if total_verified > 0:
         store_accuracy_history(results)
 
-        if args.update_weights:
-            print("\n🔄 重みの自動最適化を実行中...")
+    # --update-weights: 新規検証の有無にかかわらず実行可能
+    if args.update_weights:
+        total_30d = stats.get(30, {}).get("total", 0) or 0
+        if total_30d == 0:
+            print("\n⏳ 重み最適化スキップ: 30日検証データがまだありません")
+        else:
+            print(f"\n🔄 重みの自動最適化を実行中... (30日データ: {total_30d}件)")
             try:
                 from src.weight_optimizer import run_weight_optimization
                 opt_results = run_weight_optimization(
