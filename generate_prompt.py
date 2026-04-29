@@ -1030,10 +1030,11 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
     metrics = data.get('metrics', {}) if data else {}
     technical = data.get('technical', {}) if data else {}
 
-    # yfinance_info_only フォールバックで取得した場合の警告
-    if data and data.get('_data_source') == 'yfinance_info_only':
-        print(f"[WARN] {ticker}: yfinance レート制限のため info のみ取得 (metrics={len(metrics)}件, technical={len(technical)}件)。"
-              f" テクニカル指標は一部省略されます。")
+    # yfinance_info_only / jquants_fallback フォールバックで取得した場合の警告
+    data_source = data.get('_data_source') if data else None
+    if data_source in ['yfinance_info_only', 'jquants_fallback']:
+        print(f"[WARN] {ticker}: yfinance レート制限のため {data_source} にて代替取得 (metrics={len(metrics)}件, technical={len(technical)}件)。"
+              f" 一部の指標は省略されます。")
 
     # metrics が極めて少ない（2件未満）かつ technical もない場合のみ簡易フォールバック。
     # 部分的にでもデータがあれば build_enhanced_prompt_with_data を使う。

@@ -1195,5 +1195,31 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
             except Exception as _info_e:
                 print(f"[RATE_LIMIT] Layer 4 失敗: {_info_e}")
 
+            # ── Layer 5: J-Quants フォールバック（日本株・yfinance完全ブロック時）──
+            if ticker.endswith('.T'):
+                print(f"[RATE_LIMIT] Layer 5: J-Quants フォールバックを試みます ({ticker})...")
+                try:
+                    from src.jquants_client import get_latest_price
+                    _jq_latest = get_latest_price(ticker)
+                    if _jq_latest and _jq_latest.get('close'):
+                        _fallback_data = {
+                            "ticker": ticker,
+                            "name": ticker,
+                            "sector": "Unknown",
+                            "currency": "JPY",
+                            "metrics": {},
+                            "technical": {
+                                "current_price": float(_jq_latest['close']),
+                                "volume": int(_jq_latest.get('volume', 0))
+                            },
+                            "news": [],
+                            "description": "",
+                            "_data_source": "jquants_fallback",
+                        }
+                        print(f"[RATE_LIMIT] Layer 5 成功: J-Quants から最新価格 {_jq_latest['close']} を取得")
+                        return _fallback_data
+                except Exception as _jq_e:
+                    print(f"[RATE_LIMIT] Layer 5 失敗: {_jq_e}")
+
         return {"ticker": ticker, "name": ticker, "currency": "JPY" if ticker.endswith('.T') else "USD",
                 "metrics": {}, "technical": {}, "news": [], "description": ""}
