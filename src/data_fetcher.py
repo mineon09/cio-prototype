@@ -1232,9 +1232,18 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
                     with urllib.request.urlopen(req, timeout=10) as resp:
                         html = resp.read().decode('utf-8')
-                    match = re.search(r'class="YMlKec fxKbKc">([^<]+)</div>', html)
-                    if match:
-                        price_str = match.group(1).replace('¥', '').replace(',', '').replace('$', '').strip()
+                    
+                    # 複数のパターンで価格抽出を試みる
+                    price_str = None
+                    m_data = re.search(r'data-last-price="([0-9.]+)"', html)
+                    m_class = re.search(r'class="[^"]*YMlKec fxKbKc[^"]*">([^<]+)</div>', html)
+                    
+                    if m_data:
+                        price_str = m_data.group(1)
+                    elif m_class:
+                        price_str = m_class.group(1).replace('¥', '').replace(',', '').replace('$', '').strip()
+
+                    if price_str:
                         current_price = float(price_str)
                         _fallback_data = {
                             "ticker": ticker,
