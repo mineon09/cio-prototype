@@ -90,7 +90,7 @@ cache/    SEC 解析などのキャッシュ
 | `ANTHROPIC_API_KEY` | Claude 系最適化 |
 | `SEC_USER_AGENT` | SEC 取得 |
 | `EDINET_API_KEY` | 日本株開示取得 |
-| `FINNHUB_API_KEY` | 米国株ニュース/フォールバック |
+| `FINNHUB_KEY` | 米国株ニュース/フォールバック |
 | `NOTION_API_KEY`, `NOTION_DATABASE_ID` | Notion 保存 |
 | `LINE_NOTIFY_TOKEN` | LINE Notify |
 | `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_USER_ID` | LINE Messaging API |

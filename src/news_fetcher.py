@@ -11,7 +11,7 @@ Gemini で分析・アノテーションを行う。
 
 取得ソースの分岐：
 - 日本株（.T / .OS）: yfinance + Google News RSS（無料・APIキー不要・日本語対応）
-- 米国株・その他:    yfinance + Finnhub（FINNHUB_API_KEY 設定時）
+- 米国株・その他:    yfinance + Finnhub（FINNHUB_KEY 設定時）
 
 キャッシュシステム：
 - 日付別でニュースをキャッシュ（7 日間保持）
@@ -462,9 +462,9 @@ def fetch_finnhub_news(ticker: str, days: int = 14, limit: int = 10) -> List[Dic
     Returns
     -------
     ニュースリスト（data_source: "finnhub" 付き）
-    FINNHUB_API_KEY 未設定時は空リストを返す（グレースフルデグレード）
+    FINNHUB_KEY 未設定時は空リストを返す（グレースフルデグレード）
     """
-    api_key = os.getenv("FINNHUB_API_KEY", "")
+    api_key = os.getenv("FINNHUB_KEY", "")
     if not api_key:
         return []
 
@@ -961,9 +961,9 @@ def fetch_all_news(
         if finnhub_news:
             print(f"    ✓ Finnhub: {len(finnhub_news)} 件")
         else:
-            api_key = os.getenv("FINNHUB_API_KEY", "")
+            api_key = os.getenv("FINNHUB_KEY", "")
             if not api_key:
-                print(f"    ⚠️ Finnhub: APIキー未設定（FINNHUB_API_KEY）→ yfinance のみで継続")
+                print(f"    ⚠️ Finnhub: APIキー未設定（FINNHUB_KEY）→ yfinance のみで継続")
             else:
                 print(f"    ⚠️ Finnhub: 0 件")
 
@@ -1015,11 +1015,11 @@ def fetch_all_news(
 
     # ── Step 4: ニュースが少ない場合の警告 ──
     if len(merged_news) < 3:
-        api_key = os.getenv("FINNHUB_API_KEY", "")
-        if api_key:
-            print(f"    ⚠️ ニュースが{len(merged_news)}件のみ（日本株は英語ニュースが少ない場合があります）")
-        else:
-            print(f"    ⚠️ ニュースが{len(merged_news)}件のみ（FINNHUB_API_KEY 未設定）")
+        api_key = os.getenv("FINNHUB_KEY", "")
+        if yf_limit and len(merged_news) < yf_limit and api_key:
+            pass
+        elif yf_limit and len(merged_news) < yf_limit:
+            print(f"    ⚠️ ニュースが{len(merged_news)}件のみ（FINNHUB_KEY 未設定）")
 
     # ── Step 5: ニュースを日付順に並べる（Gemini アノテーションは廃止） ──
     annotated_news = merged_news
@@ -1246,7 +1246,7 @@ if __name__ == "__main__":
     ticker = sys.argv[1] if len(sys.argv) > 1 else "AMAT"
 
     print(f"🧪 News Fetcher テスト：{ticker}")
-    print(f"  FINNHUB_API_KEY: {'設定済み（US株専用。日本株はGoogle News RSSを使用）' if os.getenv('FINNHUB_API_KEY') else '未設定'}")
+    print(f"  FINNHUB_KEY: {'設定済み（US株専用。日本株はGoogle News RSSを使用）' if os.getenv('FINNHUB_KEY') else '未設定'}")
     result = fetch_all_news(ticker, include_google=True)
 
     print("\n" + "=" * 60)

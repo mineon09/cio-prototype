@@ -72,7 +72,7 @@ cp .env.example .env
 | 総合分析でほぼ必須 | `GEMINI_API_KEY` |
 | 米国株のSEC取得 | `SEC_USER_AGENT` |
 | 日本株の追加データソース | `EDINET_API_KEY`, `EDINETDB_API_KEY`, `JQUANTS_API_KEY` |
-| ニュース/検索強化 | `FINNHUB_API_KEY`, `EXA_API_KEY`, `PERPLEXITY_API_KEY`, `TAVILY_API_KEY` |
+| ニュース/検索強化 | `FINNHUB_KEY`, `EXA_API_KEY`, `PERPLEXITY_API_KEY`, `TAVILY_API_KEY` |
 | Claude最適化 | `ANTHROPIC_API_KEY` |
 | Notion保存 | `NOTION_API_KEY`, `NOTION_DATABASE_ID` |
 | LINE通知 | `LINE_NOTIFY_TOKEN` または `LINE_CHANNEL_ACCESS_TOKEN`, `LINE_USER_ID` |

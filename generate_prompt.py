@@ -1417,7 +1417,7 @@ def check_env() -> None:
         ("EDINET_API_KEY",         "有報 PDF（EDINET）"),
         ("EDINETDB_API_KEY",       "有報 DB（EDINET DB）"),
         ("JQUANTS_API_KEY",        "株価 OHLC（J-Quants）"),
-        ("FINNHUB_API_KEY",        "US ニュース（Finnhub）"),
+        ("FINNHUB_KEY",        "US ニュース（Finnhub）"),
         ("EXA_API_KEY",            "Web 検索ニュース（Exa）"),
         ("PERPLEXITY_API_KEY",     "Web 検索ニュース（Perplexity）"),
         ("TAVILY_API_KEY",         "Web 検索ニュース（Tavily）"),

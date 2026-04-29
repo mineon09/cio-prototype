@@ -451,14 +451,14 @@ def _fetch_finnhub_fallback(ticker: str) -> dict | None:
     """
     yfinance レート制限時の Finnhub フォールバック（US株専用）。
 
-    FINNHUB_API_KEY が未設定または日本株の場合は None を返す。
+    FINNHUB_KEY が未設定または日本株の場合は None を返す。
     取得できた場合は fetch_stock_data と同形式の dict を返す。
     """
     if ticker.endswith('.T'):
         return None
-    api_key = os.environ.get("FINNHUB_API_KEY", "")
+    api_key = os.environ.get("FINNHUB_KEY", "")
     if not api_key:
-        print(f"  [RATE_LIMIT] FINNHUB_API_KEY 未設定 → Finnhub フォールバック不可")
+        print(f"  [RATE_LIMIT] FINNHUB_KEY 未設定 → Finnhub フォールバック不可")
         return None
 
     try:
@@ -1139,7 +1139,7 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
 
             print(f"[RATE_LIMIT] ステールキャッシュなし → フォールバックへ")
 
-            # ── Layer 3: Finnhub フォールバック（US株・FINNHUB_API_KEY 設定時）──
+            # ── Layer 3: Finnhub フォールバック（US株・FINNHUB_KEY 設定時）──
             finnhub_data = _fetch_finnhub_fallback(ticker)
             if finnhub_data:
                 # Finnhub 取得結果もキャッシュ保存（次回は通常 TTL で使用可能）
