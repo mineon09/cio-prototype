@@ -33,6 +33,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
+# プロジェクトルートの .env を読み込む（GEMINI_API_KEY / ANTHROPIC_API_KEY 等）
+# override=True: シェルに空の環境変数がある場合でも .env の値で上書きする
+load_dotenv(override=True)
+
 logger = logging.getLogger("WeightOptimizer")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -223,10 +229,24 @@ def _get_axis_scores(entry: dict) -> dict | None:
 # ======================================================================
 
 def _get_llm_caller(model: str = "claude"):
-    """Claude / Gemini / Groq の LLM 呼び出し関数を返す。"""
+    """Claude / Gemini の LLM 呼び出し関数を返す。
+
+    利用可能モデル:
+      - "claude"  : anthropic パッケージ + ANTHROPIC_API_KEY 必須
+      - "gemini"  : google-genai パッケージ (google.genai) + GEMINI_API_KEY 必須
+    """
     if model in ("claude", "anthropic"):
-        import anthropic
+        try:
+            import anthropic
+        except ImportError:
+            raise ImportError(
+                "anthropic パッケージが未インストールです。\n"
+                "  ./venv/bin/pip install anthropic\n"
+                "または --model gemini を使用してください。"
+            )
         api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY が .env に設定されていません。")
         client = anthropic.Anthropic(api_key=api_key)
 
         def call_claude(prompt: str) -> str:
@@ -241,17 +261,27 @@ def _get_llm_caller(model: str = "claude"):
         return call_claude
 
     elif model in ("gemini", "google"):
-        import google.generativeai as genai
+        # google-genai (新SDK) を使用。google.generativeai (旧SDK) ではない。
+        try:
+            from google import genai as google_genai
+            from google.genai import types as genai_types
+        except ImportError:
+            raise ImportError(
+                "google-genai パッケージが未インストールです。\n"
+                "  ./venv/bin/pip install google-genai"
+            )
         api_key = os.environ.get("GEMINI_API_KEY")
-        genai.configure(api_key=api_key)
-        gmodel = genai.GenerativeModel(
-            "gemini-2.0-flash",
-            system_instruction=SYSTEM_PROMPT,
-        )
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY が .env に設定されていません。")
+        client = google_genai.Client(api_key=api_key)
 
         def call_gemini(prompt: str) -> str:
-            resp = gmodel.generate_content(prompt)
-            return resp.text
+            full_prompt = SYSTEM_PROMPT + "\n\n" + prompt
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=full_prompt,
+            )
+            return response.text
 
         return call_gemini
 
