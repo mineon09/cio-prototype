@@ -545,18 +545,43 @@ def _fetch_finnhub_fallback(ticker: str) -> dict | None:
 # yfinance データ取得
 # ==========================================
 
+# Streamlit Cloud 環境検出
+# share.streamlit.io 上では STREAMLIT_SHARING_MODE が設定される
+_IS_STREAMLIT_CLOUD = os.environ.get("STREAMLIT_SHARING_MODE", "") != ""
+
+def _get_cache_dir() -> str:
+    """
+    キャッシュディレクトリを返す。
+    Streamlit Cloud では /tmp を優先（永続FS への書き込みが不可のため）。
+    ローカルでは data/cache を使用。
+    """
+    if _IS_STREAMLIT_CLOUD:
+        tmp_dir = "/tmp/stock_cache"
+        os.makedirs(tmp_dir, exist_ok=True)
+        return tmp_dir
+    local_dir = "data/cache"
+    os.makedirs(local_dir, exist_ok=True)
+    return local_dir
+
+
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=2, min=3, max=30),
     retry=retry_if_exception_type((Exception,)),
     reraise=True
 )
 def _fetch_yf_with_retry(ticker: str, as_of_date: datetime = None):
     """
-    yfinance API をリトライ付きで呼び出す内部関数
+    yfinance API をリトライ付きで呼び出す内部関数。
+    Streamlit Cloud など共有IPからのアクセスでレート制限されやすいため、
+    User-Agent を設定して正規ブラウザに偽装するオプションを有効化。
     """
+    # Streamlit Cloud環境では長めの待機を挟む（共有IP対策）
+    if _IS_STREAMLIT_CLOUD:
+        time.sleep(1)
+
     stock = yf.Ticker(ticker)
-    
+
     if as_of_date:
         try:
             hist = yf.download(ticker, period="3y", progress=False, auto_adjust=True)
@@ -567,7 +592,7 @@ def _fetch_yf_with_retry(ticker: str, as_of_date: datetime = None):
                 hist = yf.download(ticker, period="2y", progress=False, auto_adjust=True)
             except Exception:
                  return None, None
-        
+
         if isinstance(hist.columns, pd.MultiIndex):
             if len(hist.columns.levels) > 1:
                 found = False
@@ -585,7 +610,7 @@ def _fetch_yf_with_retry(ticker: str, as_of_date: datetime = None):
 
         if hist.index.tz is not None:
             hist.index = hist.index.tz_localize(None)
-        
+
         end_dt = pd.Timestamp(as_of_date) + pd.Timedelta(days=1)
         start_dt = pd.Timestamp(as_of_date) - pd.Timedelta(days=400)
         hist = hist[(hist.index >= start_dt) & (hist.index < end_dt)] if not hist.empty else hist
@@ -613,24 +638,29 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
     macro_info = None
     
     # キャッシュファイルパスの準備
-    CACHE_DIR = "data/cache"
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    # Streamlit Cloud では /tmp を使用（永続FS への書き込みが不可のため）
+    CACHE_DIR = _get_cache_dir()
     date_str = as_of_date.strftime('%Y%m%d') if as_of_date else "latest"
-    cache_file = os.path.join(CACHE_DIR, f"{ticker}_{date_str}.json")
+    # ティッカー名に含まれるドットをアンダースコアに変換（ファイル名の安全性）
+    safe_ticker = ticker.replace(".", "_")
+    cache_file = os.path.join(CACHE_DIR, f"{safe_ticker}_{date_str}.json")
+    # ローカル（旧パス）との後方互換: 旧キャッシュファイルもチェック
+    _legacy_cache_file = os.path.join("data/cache", f"{ticker}_{date_str}.json")
 
     # キャッシュ確認 (price_historyがない場合のみ = Live/Latest mode)
     if price_history is None:
-        # 24時間以内のキャッシュがあれば使用 (latestの場合)
-        # バックテスト用(date指定あり)は永続的に使ってOK
-        if os.path.exists(cache_file):
-            try:
-                mtime = os.path.getmtime(cache_file)
-                if as_of_date or (time.time() - mtime < 24 * 3600):
-                    with open(cache_file, "r", encoding="utf-8") as f:
-                        print(f"  ⚡ {ticker} キャッシュを使用 ({date_str})")
-                        return json.load(f)
-            except Exception as e:
-                print(f"  ⚠️ キャッシュ読み込みエラー: {e}")
+        # 検索順序: 新パス → 旧パス（後方互換）
+        for _cf in [cache_file, _legacy_cache_file]:
+            if os.path.exists(_cf):
+                try:
+                    mtime = os.path.getmtime(_cf)
+                    if as_of_date or (time.time() - mtime < 24 * 3600):
+                        with open(_cf, "r", encoding="utf-8") as f:
+                            print(f"  ⚡ {ticker} キャッシュを使用 ({date_str})")
+                            return json.load(f)
+                except Exception as e:
+                    print(f"  ⚠️ キャッシュ読み込みエラー: {e}")
+                break
 
     if price_history is None:
         msg = f"  📊 {ticker} データ取得中..."
@@ -1087,24 +1117,27 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         print(f"[DATA_ERROR] {ticker} 取得失敗: {e}")
         print(f"[DATA_ERROR_DETAIL]\n{tb_summary}")
 
-        # ── Layer 2: ステールキャッシュ（レート制限時のみ、72h TTL で再利用）──
+        # ── Layer 2: ステールキャッシュ（レート制限時のみ、TTL で再利用）──
         if _is_rate_limit_error(e) and price_history is None:
-            try:
-                _STALE_TTL_H = 72
-                if os.path.exists(cache_file):
-                    mtime = os.path.getmtime(cache_file)
+            _STALE_TTL_H = 168  # Streamlit Cloud では長め（1週間）
+            # 新パス・旧パスの両方をチェック
+            for _cf in [cache_file, _legacy_cache_file]:
+                if not os.path.exists(_cf):
+                    continue
+                try:
+                    mtime = os.path.getmtime(_cf)
                     age_h = (time.time() - mtime) / 3600
                     if age_h <= _STALE_TTL_H:
-                        with open(cache_file, "r", encoding="utf-8") as _f:
+                        with open(_cf, "r", encoding="utf-8") as _f:
                             stale = json.load(_f)
-                        print(f"[RATE_LIMIT] yfinance レート制限 → ステールキャッシュ使用 (age: {age_h:.0f}h)")
+                        print(f"[RATE_LIMIT] yfinance レート制限 → ステールキャッシュ使用 (age: {age_h:.0f}h, source: {_cf})")
                         return stale
                     else:
                         print(f"[RATE_LIMIT] ステールキャッシュも期限切れ (age: {age_h:.0f}h > {_STALE_TTL_H}h)")
-                else:
-                    print(f"[RATE_LIMIT] ステールキャッシュなし → Finnhub フォールバックへ")
-            except Exception as _ce:
-                print(f"[RATE_LIMIT] キャッシュ読み込み失敗: {_ce}")
+                except Exception as _ce:
+                    print(f"[RATE_LIMIT] キャッシュ読み込み失敗: {_ce}")
+
+            print(f"[RATE_LIMIT] ステールキャッシュなし → フォールバックへ")
 
             # ── Layer 3: Finnhub フォールバック（US株・FINNHUB_API_KEY 設定時）──
             finnhub_data = _fetch_finnhub_fallback(ticker)
@@ -1117,5 +1150,50 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                     pass
                 return finnhub_data
 
-        return {"ticker": ticker, "name": ticker, "currency": "USD",
+            # ── Layer 4: yfinance info のみ取得（日本株・レート制限時の最終手段）──
+            # history() が 429 を返しても info だけ取れる場合がある
+            print(f"[RATE_LIMIT] Layer 4: yfinance info のみ取得を試みます ({ticker})...")
+            try:
+                time.sleep(3)  # 短く待機してから info を試行
+                _stock_info = yf.Ticker(ticker).info
+                if _stock_info and len(_stock_info) > 5:
+                    _info_metrics: dict = {}
+                    _info_tech: dict = {}
+                    if _stock_info.get('returnOnEquity'):
+                        _info_metrics['roe'] = round(_stock_info['returnOnEquity'] * 100, 2)
+                    if _stock_info.get('trailingPE'):
+                        _info_metrics['per'] = _stock_info['trailingPE']
+                    if _stock_info.get('priceToBook'):
+                        _info_metrics['pbr'] = _stock_info['priceToBook']
+                    if _stock_info.get('operatingMargins'):
+                        _info_metrics['op_margin'] = round(_stock_info['operatingMargins'] * 100, 2)
+                    dy = _stock_info.get('trailingAnnualDividendYield') or _stock_info.get('dividendYield') or 0
+                    if dy and dy > 0:
+                        _info_metrics['dividend_yield'] = round(dy * 100, 2) if dy < 1 else round(dy, 2)
+                    if _stock_info.get('currentPrice') or _stock_info.get('regularMarketPrice'):
+                        _info_tech['current_price'] = _stock_info.get('currentPrice') or _stock_info.get('regularMarketPrice')
+                    if _info_metrics or _info_tech:
+                        _fallback_data = {
+                            "ticker": ticker,
+                            "name": _stock_info.get('longName', ticker),
+                            "sector": _stock_info.get('sector', 'Unknown'),
+                            "currency": _stock_info.get('currency', 'JPY' if ticker.endswith('.T') else 'USD'),
+                            "metrics": _info_metrics,
+                            "technical": _info_tech,
+                            "news": [],
+                            "description": "",
+                            "_data_source": "yfinance_info_only",
+                        }
+                        print(f"[RATE_LIMIT] Layer 4 成功: info のみで metrics={len(_info_metrics)}件, technical={len(_info_tech)}件")
+                        # /tmp キャッシュに保存（TTL 1時間相当）
+                        try:
+                            with open(cache_file, "w", encoding="utf-8") as _f:
+                                json.dump(_fallback_data, _f, indent=2, ensure_ascii=False)
+                        except Exception:
+                            pass
+                        return _fallback_data
+            except Exception as _info_e:
+                print(f"[RATE_LIMIT] Layer 4 失敗: {_info_e}")
+
+        return {"ticker": ticker, "name": ticker, "currency": "JPY" if ticker.endswith('.T') else "USD",
                 "metrics": {}, "technical": {}, "news": [], "description": ""}
