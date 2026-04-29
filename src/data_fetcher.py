@@ -1221,5 +1221,41 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                 except Exception as _jq_e:
                     print(f"[RATE_LIMIT] Layer 5 失敗: {_jq_e}")
 
+            # ── Layer 6: Google Finance スクレイピング（完全無料・APIキー不要の最終手段）──
+            if ticker.endswith('.T'):
+                print(f"[RATE_LIMIT] Layer 6: Google Finance スクレイピングを試みます ({ticker})...")
+                try:
+                    import urllib.request
+                    import re
+                    base_code = ticker.split('.')[0]
+                    url = f"https://www.google.com/finance/quote/{base_code}:TYO"
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        html = resp.read().decode('utf-8')
+                    match = re.search(r'class="YMlKec fxKbKc">([^<]+)</div>', html)
+                    if match:
+                        price_str = match.group(1).replace('¥', '').replace(',', '').replace('$', '').strip()
+                        current_price = float(price_str)
+                        _fallback_data = {
+                            "ticker": ticker,
+                            "name": ticker,
+                            "sector": "Unknown",
+                            "currency": "JPY",
+                            "metrics": {},
+                            "technical": {
+                                "current_price": current_price,
+                                "volume": 0
+                            },
+                            "news": [],
+                            "description": "",
+                            "_data_source": "google_finance_scrape",
+                        }
+                        print(f"[RATE_LIMIT] Layer 6 成功: Google Finance から最新価格 {current_price} を取得")
+                        return _fallback_data
+                    else:
+                        print(f"[RATE_LIMIT] Layer 6 失敗: HTML構造から価格を抽出できませんでした")
+                except Exception as _gf_e:
+                    print(f"[RATE_LIMIT] Layer 6 失敗: {_gf_e}")
+
         return {"ticker": ticker, "name": ticker, "currency": "JPY" if ticker.endswith('.T') else "USD",
                 "metrics": {}, "technical": {}, "news": [], "description": ""}

@@ -1030,9 +1030,9 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
     metrics = data.get('metrics', {}) if data else {}
     technical = data.get('technical', {}) if data else {}
 
-    # yfinance_info_only / jquants_fallback フォールバックで取得した場合の警告
+    # yfinance_info_only / jquants_fallback / google_finance_scrape フォールバックで取得した場合の警告
     data_source = data.get('_data_source') if data else None
-    if data_source in ['yfinance_info_only', 'jquants_fallback']:
+    if data_source in ['yfinance_info_only', 'jquants_fallback', 'google_finance_scrape']:
         print(f"[WARN] {ticker}: yfinance レート制限のため {data_source} にて代替取得 (metrics={len(metrics)}件, technical={len(technical)}件)。"
               f" 一部の指標は省略されます。")
 
