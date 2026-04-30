@@ -6,7 +6,8 @@
 
 - Python は常に `./venv/bin/python3` を使う
 - 依存追加後は `requirements.txt` に反映する
-- `.env` の内容は読んでよいが **出力・変更は禁止**
+- `.env` は **絶対に読み込み・確認・変更・出力を行わないこと**（ユーザーから毎回の指示がなくても、このルールを事前情報として厳守する）
+- 変更を行った際は、**必ず関連する doc（ドキュメント）をデフォルトで更新すること**
 - `cache/` ・ `data/` 配下の実データは **変更しない**
 
 ---
@@ -56,7 +57,7 @@ grep -L '"""' src/*.py
 ## よくあるバグパターンと対処
 
 | エラーメッセージ | 原因 | 対処 |
-|---|---|---|
+| --- | --- | --- |
 | `'str' object has no attribute 'get'` | タプルをdictとして扱っている | アンパック `x, y = func()` に修正 |
 | `ArbitraryTypeWarning: any is not a Python type` | `any`（組み込み関数）を型ヒントに使っている | `from typing import Any` に変更 |
 | `FutureWarning: default value changed` | ライブラリのデフォルト変更 | 該当引数を明示的に指定する |
