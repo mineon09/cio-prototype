@@ -489,11 +489,29 @@ def _fetch_finnhub_fallback(ticker: str) -> dict | None:
         if m.get('operatingMarginTTM') is not None:
             metrics['op_margin'] = round(float(m['operatingMarginTTM']), 2)
         if m.get('dividendYieldIndicatedAnnual') is not None:
-            metrics['dividend_yield'] = round(float(m['dividendYieldIndicatedAnnual']), 2)
+            _dy = float(m['dividendYieldIndicatedAnnual'])
+            if _dy > 0:  # 0は無配当（None扱い）
+                metrics['dividend_yield'] = round(_dy, 2)
         if m.get('netProfitMarginTTM') is not None:
             metrics['net_margin'] = round(float(m['netProfitMarginTTM']), 2)
         if m.get('debtToEquityAnnual') is not None:
-            metrics['debt_equity'] = round(float(m['debtToEquityAnnual']), 2)
+            _de = float(m['debtToEquityAnnual'])
+            metrics['debt_equity'] = round(_de, 2)
+            # D/E から自己資本比率を逆算: equity_ratio = 1 / (1 + D/E) * 100
+            # ただし D/E が異常値（>50）の場合は信頼性低いため除外
+            if 0 <= _de <= 50:
+                metrics['equity_ratio'] = round(100.0 / (1.0 + _de), 2)
+        # R&D比率: Finnhub は researchDevelopmentExpenseToRevenueTTM を提供する場合がある
+        if m.get('researchDevelopmentExpenseToRevenueTTM') is not None:
+            metrics['rd_ratio'] = round(float(m['researchDevelopmentExpenseToRevenueTTM']) * 100, 2)
+        # cf_quality 近似: FCFマージン / 純利益マージンから推計（参考値）
+        _fcf_margin = m.get('fcfMarginTTM')
+        _net_margin = m.get('netProfitMarginTTM')
+        if _fcf_margin is not None and _net_margin is not None and float(_net_margin) != 0:
+            _cf_approx = round(float(_fcf_margin) / float(_net_margin), 2)
+            # 異常値フィルタ（FCFは償却前≒CF品質の近似として利用）
+            if 0.0 < _cf_approx <= 10.0:
+                metrics['cf_quality'] = _cf_approx
 
         # --- technical 変換 ---
         technical: dict = {}
@@ -849,7 +867,15 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         if equity and assets and assets != 0:
             metrics['equity_ratio'] = round((equity / assets) * 100, 2)
         else:
-            metrics['equity_ratio'] = None
+            # フォールバック: info から bookValue（1株純資産）と shares で推計
+            _shares_info = info.get('sharesOutstanding') or info.get('impliedSharesOutstanding')
+            _bvps = info.get('bookValue')  # 1株純資産
+            _total_assets_info = info.get('totalAssets')
+            if _bvps and _shares_info and _total_assets_info and _total_assets_info != 0:
+                _equity_est = _bvps * _shares_info
+                metrics['equity_ratio'] = round((_equity_est / _total_assets_info) * 100, 2)
+            else:
+                metrics['equity_ratio'] = None
 
         # 4. CF品質 (TTM Operating CF / TTM Net Income)
         # 単四半期での期ズレによる異常値(0.02等)を排除するため、TTMベースで計算
