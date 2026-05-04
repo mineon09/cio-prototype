@@ -272,14 +272,24 @@ def run_backtest(ticker: str, start_date_str: str, duration_months: int = 12, st
                 buy_threshold=buy_threshold
             )
             
+            # その月末に最も近い日の高値・安値を past_slice から取得（ATRストップ用）
+            day_high = price
+            day_low = price
+            if not past_slice.empty:
+                # current_date 前後の直近日足データを参照
+                recent_row = past_slice.iloc[-1] if not past_slice.empty else None
+                if recent_row is not None:
+                    day_high = float(recent_row.get('High', price))
+                    day_low = float(recent_row.get('Low', price))
+
             results.append({
                 "date": current_date,
                 "price": price,
-                "high": price,
-                "low": price,
+                "high": day_high,
+                "low": day_low,
                 "signal": scorecard.get("signal"),
                 "score": scorecard.get("total_score"),
-                "tech_data": scorecard.get("technical", {}), 
+                "tech_data": scorecard.get("technical", {}),
                 "fundamental": scorecard.get("fundamental", 0.0),
                 "regime": regime
             })

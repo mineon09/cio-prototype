@@ -96,23 +96,63 @@ class LongStrategy(BaseStrategy):
         return {"is_entry": is_entry, "details": details, "metrics": metrics}
 
     def should_sell(self, row, past_slice, ta, ctx) -> tuple[bool, str, float]:
-        # Watch Zone Exit: スコア低迷が続いたらエグジット
-        wz_cfg = self.config.get("exit_strategy", {}).get("long", {}).get("watch_zone_exit", {})
+        long_cfg = self.config.get("exit_strategy", {}).get("long", {})
+        price = row['price']
+        buy_price = ctx.get('buy_price', price)
+        trailing_high = ctx.get('trailing_high', price)
+        entry_atr = ctx.get('entry_atr', 0)
+
+        # --- 1. 損切り (Hard Stop / ATR Stop) ---
+        atr_sl_mult = long_cfg.get("stop_loss_atr_multiplier", 2.0)
+        if entry_atr and entry_atr > 0 and atr_sl_mult > 0:
+            stop_price = buy_price - (entry_atr * atr_sl_mult)
+            low = row.get('low', price)
+            if isinstance(low, (int, float)) and low <= stop_price:
+                return True, f"ATR Stop (x{atr_sl_mult})", stop_price
+        else:
+            # 固定%損切り（config未設定時: -12%）
+            fixed_stop_pct = long_cfg.get("fixed_stop_loss_pct", -12.0)
+            if fixed_stop_pct and (price - buy_price) / buy_price * 100 <= fixed_stop_pct:
+                return True, f"Hard Stop ({fixed_stop_pct}%)", price
+
+        # --- 2. 利確トレーリングストップ（ATRベース）---
+        # 一定の利益（デフォルト8%）が出たら発動
+        activation_pct = long_cfg.get("atr_trailing_activation_pct", 8.0)
+        atr_trail_mult = long_cfg.get("trailing_stop_atr_multiplier", 3.0)
+        gain_pct = (trailing_high - buy_price) / buy_price * 100 if buy_price > 0 else 0
+
+        if gain_pct >= activation_pct and entry_atr and entry_atr > 0 and atr_trail_mult > 0:
+            trail_stop = trailing_high - (entry_atr * atr_trail_mult)
+            low = row.get('low', price)
+            if isinstance(low, (int, float)) and low <= trail_stop:
+                return True, f"Trailing Stop (gain={gain_pct:.1f}%, x{atr_trail_mult})", trail_stop
+
+        # --- 3. 固定利確（config で take_profit_pct が設定されている場合）---
+        tp_pct = long_cfg.get("take_profit_pct", 0.0)
+        if tp_pct > 0:
+            tp_price = buy_price * (1 + tp_pct / 100)
+            high = row.get('high', price)
+            if isinstance(high, (int, float)) and high >= tp_price:
+                return True, f"Take Profit ({tp_pct}%)", tp_price
+
+        # --- 4. Watch Zone Exit: スコア低迷が続いたらエグジット ---
+        wz_cfg = long_cfg.get("watch_zone_exit", {})
         if wz_cfg.get("enabled", False):
             if row['score'] < wz_cfg.get("score_threshold", 4.5):
                 ctx['low_score_months'] = ctx.get('low_score_months', 0) + 1
             else:
                 ctx['low_score_months'] = 0
-            
+
             if ctx.get('low_score_months', 0) >= wz_cfg.get("consecutive_months", 3):
-                return True, "Watch Zone Exit", row['price']
-        
-        # 通常のスコア悪化エグジット
+                return True, "Watch Zone Exit", price
+
+        # --- 5. 通常のスコア悪化エグジット ---
         sig_cfg = self.config.get("signals", {}).get("SELL", {"max_score": 3.5})
         if row['score'] <= sig_cfg.get("max_score", 3.5):
-            return True, "Signal SELL", row['price']
-            
+            return True, "Signal SELL", price
+
         return False, "", 0.0
+
 
 
 class BounceStrategy(BaseStrategy):

@@ -4,7 +4,34 @@
 
 ---
 
-## [v2.4.2] - 2026-05-04 (app.py ニュース未取得・DCF表示バグ修正)
+## [v2.4.3] - 2026-05-04 (long戦略バックテスト: 1トレードのみ問題を修正)
+
+### バグ修正 / 設計改善
+- **`LongStrategy.should_sell()` に利確・損切りロジックを追加** (`src/strategies.py`):
+  - 旧実装では「スコアが悪化したら売る」しかなく、XOM のような安定優良株では1年間1トレードになっていた
+  - **追加した出口条件（優先順位順）**:
+    1. ATR損切り（`stop_loss_atr_multiplier: 2.0` × エントリー時ATR）
+    2. 固定%損切りフォールバック（ATR未取得時、デフォルト -12%）
+    3. ATRトレーリングストップ（含み益が `atr_trailing_activation_pct`% = 15% を超えたら発動、`trailing_stop_atr_multiplier: 3.0`）
+    4. 固定利確（`take_profit_pct > 0` の場合。デフォルト 0 = 無効）
+    5. Watch Zone Exit（スコア4.5未満が3ヶ月連続）
+    6. Signal SELL（スコア3.5以下）
+
+- **`config.json` の `exit_strategy.long` に不足パラメータを追加**:
+  - `atr_trailing_activation_pct: 15.0` — 長期保有向けに余裕を持たせた発動閾値
+  - `take_profit_pct: 0.0` — デフォルト無効（スコアベース出口を優先）
+  - `fixed_stop_loss_pct: -12.0` — ATR取得失敗時の深めのストップ
+
+- **`backtester.py` の long戦略で `high/low` が常に終値と同じだったバグを修正**:
+  - `results.append()` で `"high": price, "low": price` → `past_slice` の当日実績 OHLC から取得
+  - ATR ストップ・トレーリングストップが機能するために必須
+
+### 理由
+XOM の1年バックテストで売買が1回しか発生せず (Total Return 48% は1回の保有で End of Period クローズ)、バックテストとして意味を成さなかった。原因は `LongStrategy.should_sell()` に利確ロジックが存在しなかったこと、および月次評価で `high/low` が終値と同一だったこと。
+
+---
+
+
 
 ### バグ修正
 - **ニュースが「ニュースなし」になる問題を修正** (`app.py`):
