@@ -535,7 +535,7 @@ with tab3:
             with st.spinner("LLM に重み提案を依頼中..."):
                 import subprocess
                 _cmd = [
-                    _get_python_exe(),
+                    get_python_cmd(),
                     str(_ROOT / "src" / "weight_optimizer.py"),
                     "--model", _model,
                 ]
@@ -556,7 +556,7 @@ with tab3:
         if st.button("▶ verify_predictions.py を実行"):
             with st.spinner("実績価格を取得中..."):
                 import subprocess
-                _vcmd = [_get_python_exe(), str(_ROOT / "verify_predictions.py")]
+                _vcmd = [get_python_cmd(), str(_ROOT / "verify_predictions.py")]
                 if _upd_weights:
                     _vcmd += ["--update-weights", "--model", _model]
                 _vres = subprocess.run(_vcmd, capture_output=True, text=True, cwd=str(_ROOT))
