@@ -535,7 +535,7 @@ with tab3:
             with st.spinner("LLM に重み提案を依頼中..."):
                 import subprocess
                 _cmd = [
-                    get_python_cmd(),
+                    get_python_cmd(), 
                     str(_ROOT / "src" / "weight_optimizer.py"),
                     "--model", _model,
                 ]
