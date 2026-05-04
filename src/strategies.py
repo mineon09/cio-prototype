@@ -378,9 +378,11 @@ class BreakoutStrategy(BaseStrategy):
         cmf_ok, cmf_val = ta.check_cmf(period=20)
         details.append(f"CMF (>0.05): {'OK' if cmf_ok else 'NG'} (Val: {cmf_val:.3f})")
         
-        # ATR%レンジ相場フィルター
-        atr_pct_ok, atr_pct_val = ta.check_atr_pct(period=14, min_pct=1.5)
-        details.append(f"ATR% (>1.5%): {'OK' if atr_pct_ok else 'NG'} (Val: {atr_pct_val:.2f}%)")
+        # ATR%レンジ相場フィルター（閾値は config.entry.atr_pct_min で設定可能、デフォルト 1.0%）
+        atr_pct_min = entry_cfg.get("atr_pct_min", 1.0)
+        atr_pct_ok, atr_pct_val = ta.check_atr_pct(period=14, min_pct=atr_pct_min)
+        details.append(f"ATR% (>{atr_pct_min}%): {'OK' if atr_pct_ok else 'NG'} (Val: {atr_pct_val:.2f}%)")
+
         
         # エントリー条件の再構築
         # 必須: 終値ブレイクアウト + 陽線 + MA75より上 + ボラ十分(ATR%) + トレンド確認(ADX or CMF)

@@ -4,7 +4,31 @@
 
 ---
 
-## [v2.4.3] - 2026-05-04 (long戦略バックテスト: 1トレードのみ問題を修正)
+## [v2.4.4] - 2026-05-04 (バックテスト構造的バグ修正 — Dogfooding)
+
+### バグ修正（Critical）
+
+- **`config.json`: bounce/breakout の `enabled_regimes` に US レジーム名が未設定だったバグ**:
+  - バックテストで US 株に使用される `_determine_us_regime_v2()` は `FED_HIKE / FED_PAUSE / FED_CUT / USD_STRONG` を出力するが、`enabled_regimes` には旧判定の名前しか記載されていなかった
+  - XOM breakout が2トレードのみになった直接原因: 2023〜2024年は `FED_PAUSE` 期間が大半 → エントリーが全ブロックされていた
+  - **修正**: bounce/breakout の `enabled_regimes` に `FED_HIKE`, `FED_PAUSE`, `FED_CUT`, `USD_STRONG`, `RATE_HIKE` を追加。bounce には `RISK_OFF` も追加（売られ過ぎ局面でこそ反発を狙う戦略のため）
+
+- **`backtester.py`: long 戦略でエントリー ATR が常に 0 になっていたバグ**:
+  - `entry_atr = ... if strategy_name != "long" else row.get('atr', 0)` の条件分岐により、long 戦略では ATR が常に 0 → ATR損切り・トレーリングストップが機能しなかった
+  - **修正**: `long` 戦略でも `get_atr_at_entry()` を使用するよう統一
+
+- **`strategies.py`: `BreakoutStrategy` の ATR% 閾値がハードコード 1.5% だったバグ**:
+  - XOM など低ボラ株の ATR% は通常 1.0〜1.3% → 常に NG でエントリー不可
+  - **修正**: `entry.atr_pct_min` を config から読むよう変更（デフォルト 1.0%）
+  - `config.json` の `breakout.entry` に `atr_pct_min: 1.0` を追加
+
+### 診断レポート
+XOM breakout 2023-08〜2024-12 が2トレードになった原因を Dogfooding で分析。
+根本原因は「US バックテスト用レジーム判定関数が出力する名前」と「config の enabled_regimes に記載された名前」の**完全不一致**。bounce/breakout 戦略は JP 株向けに設計・チューニングされており、US 株は実質的にテスト不可能な状態だった。
+
+---
+
+
 
 ### バグ修正 / 設計改善
 - **`LongStrategy.should_sell()` に利確・損切りロジックを追加** (`src/strategies.py`):

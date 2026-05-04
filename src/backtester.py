@@ -352,7 +352,7 @@ def calculate_performance(results: list, strategy_name: str = "long", benchmark_
                     holdings = cash / (price * (1 + cost_rate))
                     cash = 0
                     buy_price = price
-                    entry_atr = get_atr_at_entry(daily_data, date, config, strategy_name) if strategy_name != "long" else row.get('atr', 0)
+                    entry_atr = get_atr_at_entry(daily_data, date, config, strategy_name)
                     if entry_atr is None or entry_atr <= 0:
                         entry_atr = price * 0.02  # フォールバック: 価格の2%
                         logger.debug(f"  ⚠️ ATR unavailable, using fallback: {entry_atr:.1f}")
