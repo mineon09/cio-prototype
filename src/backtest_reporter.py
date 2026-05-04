@@ -152,6 +152,7 @@ def _format_rolling_summary(rolling_result: dict) -> str:
 
 
 
+def build_p1_prompt(backtest_result: dict, strategy: str, ticker: str, config: dict | None = None) -> str:
     """P1: 基本的なバックテスト指標のテキストフィードバック（論文 Prompt 1 相当）"""
     r = backtest_result
     regime_section = _format_regime_breakdown(r.get("regime_breakdown", {}))

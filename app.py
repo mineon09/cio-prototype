@@ -403,21 +403,37 @@ if st.session_state.get("backtest_result") and st.session_state.get("backtest_ti
     st.caption(f"Strategy: {st.session_state.get('backtest_strategy')} | Period: {res.get('period')}")
     
     # Metrics
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Return", f"{res.get('total_return_pct')}%")
-    c2.metric("Alpha", f"{res.get('alpha')}%")
-    c3.metric("Max Drawdown", f"{res.get('max_drawdown_pct')}%")
-    c4.metric("Sharpe Ratio", res.get('sharpe_ratio'))
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    total_ret = res.get('total_return_pct', 0)
+    alpha_val  = res.get('alpha', 0)
+    mdd_val    = res.get('max_drawdown_pct', 0)
+    c1.metric("Total Return",   f"{total_ret:+.2f}%",
+              delta_color="normal" if total_ret >= 0 else "inverse")
+    c2.metric("Alpha",          f"{alpha_val:+.2f}%",
+              delta_color="normal" if alpha_val >= 0 else "inverse")
+    c3.metric("Max Drawdown",   f"{mdd_val:.2f}%")
+    c4.metric("Sharpe Ratio",   f"{res.get('sharpe_ratio', 0):.2f}")
+    c5.metric("Win Rate",       f"{res.get('win_rate_pct', 0):.1f}%")
+    c6.metric("Profit Factor",  f"{res.get('profit_factor', 0):.2f}")
     
-    # Chart
+    # Chart: 累積リターン(%)表示 — 絶対値ではなく変化率で描画してスケール問題を解消
     # APP-004: 中国語 typo 修正 (资产 -> 資産)
     st.subheader("資産推移 (Equity Curve)")
     if "history" in res:
         hist_df = pd.DataFrame(res["history"])
         if not hist_df.empty:
+            initial_capital = res.get("initial_capital", 1_000_000)
             hist_df['date'] = pd.to_datetime(hist_df['date'])
             hist_df = hist_df.set_index('date')
-            st.line_chart(hist_df['value'])
+            # 絶対値ではなく累積リターン(%)に変換してスケールを正規化
+            hist_df['累積リターン(%)'] = (hist_df['value'] / initial_capital - 1) * 100
+            # ドローダウン(%)も計算して並べて表示
+            peak = hist_df['value'].cummax()
+            hist_df['ドローダウン(%)'] = (hist_df['value'] / peak - 1) * 100
+            st.line_chart(
+                hist_df[['累積リターン(%)', 'ドローダウン(%)']],
+                color=["#22c55e", "#ef4444"],
+            )
     
     # Trades
     st.subheader("売買履歴")
