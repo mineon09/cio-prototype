@@ -4,6 +4,26 @@
 
 ---
 
+## [v2.4.2] - 2026-05-04 (app.py ニュース未取得・DCF表示バグ修正)
+
+### バグ修正
+- **ニュースが「ニュースなし」になる問題を修正** (`app.py`):
+  - `app.py` の分析フローに `fetch_all_news` 呼び出し（Step 3.5）が欠けており、Streamlit GUI 経由での分析でニュースが常に空になっていた
+  - `main.py` の `run()` には実装済みだったが、`app.py` → `analyze_all()` ルートでは呼ばれていなかった
+- **DCF 現在株価が $0 になるバグを修正** (`main.py`):
+  - `save_to_dashboard_json()` の DCF 保存ブロックに `current_price` / `margin_of_safety` / `scenarios` キーが欠落しており、ダッシュボードで「現在株価 $0」「安全域 0%」が表示されていた
+  - これらのフィールドを `dcf_data` から正しく保存するよう修正
+- **`macro.description` キー欠落を修正** (`main.py`):
+  - `save_to_dashboard_json()` は `detail` キーで保存していたが、`app.py` 表示側は `description` を参照しており不一致だった
+  - `description` キーを追加（`detail` は後方互換のために残存）
+- **`analyze_all()` に `macro_data` / `dcf_data` が未渡しだった問題を修正** (`app.py`):
+  - Streamlit GUI からのレポート生成時にマクロ環境・DCF情報がプロンプトに含まれておらず、分析精度が低下していた
+
+### 理由
+AMAT の分析結果でニュースが取得されず「センチメント: 中立 (ニュースなし)」となり、DCF 現在株価が $0 になるという報告を受けて調査・修正。`app.py` と `main.py` の処理フローが乖離していたことが根本原因。
+
+---
+
 ## [v2.4.1] - 2026-03-27 (カタリスト日付ガード・ドキュメント全面刷新)
 
 ### バグ修正

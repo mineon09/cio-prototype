@@ -1334,7 +1334,8 @@ def collect_data_minimal(ticker: str, use_cache: bool = True) -> tuple:
                 yuho_data = extract_sec_data(ticker, no_cache=not use_cache)
                 yuho_summary = format_yuho_for_prompt(yuho_data)
                 if not yuho_data or not yuho_data.get('available'):
-                    yuho_summary = "（SEC 10-K/10-Q データなし）"
+                    reason = yuho_data.get('reason', '原因不明') if yuho_data else 'データなし'
+                    yuho_summary = f"（SEC 10-K/10-Q データなし: {reason}）"
                 sec_chunking_meta = yuho_data.get('chunking_meta') if isinstance(yuho_data, dict) else None
             except Exception as e:
                 yuho_summary = f"（SEC 取得エラー: {e}）"

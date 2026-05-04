@@ -721,17 +721,21 @@ def save_to_dashboard_json(ticker, target_data, scorecard, report,
             # DCF データがあれば追加
             if dcf_data and dcf_data.get("available"):
                 new_entry["dcf"] = {
-                    "fair_value": dcf_data.get("fair_value"),
-                    "upside": dcf_data.get("upside"),
-                    "wacc": dcf_data.get("wacc"),
-                    "reliability": dcf_data.get("reliability", "low"),
+                    "fair_value":    dcf_data.get("fair_value"),
+                    "current_price": dcf_data.get("current_price", 0),  # 表示用：$0バグ修正
+                    "upside":        dcf_data.get("upside"),
+                    "margin_of_safety": dcf_data.get("margin_of_safety", 0),
+                    "wacc":          dcf_data.get("wacc"),
+                    "reliability":   dcf_data.get("reliability", "low"),
+                    "scenarios":     dcf_data.get("scenarios", {}),
                 }
 
             # マクロ環境データがあれば追加
             if macro_data and macro_data.get("regime"):
                 new_entry["macro"] = {
-                    "regime": macro_data.get("regime"),
-                    "detail": macro_data.get("detail", ""),
+                    "regime":      macro_data.get("regime"),
+                    "description": macro_data.get("description", macro_data.get("detail", "")),  # 表示側展示用
+                    "detail":      macro_data.get("detail", ""),  # 互换用
                 }
 
             # EDINET DB データがあれば追加（日本株のみ）

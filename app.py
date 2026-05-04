@@ -261,6 +261,32 @@ if run_analysis and ticker_input:
             st.write("🇺🇸 SEC 10-K/10-Q を検索中...")
             yuho_data = extract_sec_data(ticker)
 
+        # Step 3.5: ニュース取得（yfinance + Finnhub）
+        if not target_data.get('news'):
+            st.write("📰 ニュース取得中...")
+            try:
+                from src.news_fetcher import fetch_all_news
+                news_data = fetch_all_news(
+                    ticker=ticker,
+                    company_name=target_data.get('name', ''),
+                    include_google=True,
+                    yf_limit=5,
+                    google_limit=10,
+                    google_days=14
+                )
+                all_news = news_data.get('all_news', [])
+                if all_news:
+                    target_data['news'] = []
+                    for n in all_news[:10]:
+                        date = n.get('published_at', '')[:10] if n.get('published_at') else ''
+                        title = n.get('title', '')
+                        source = n.get('publisher', '') or n.get('source', '')
+                        if title:
+                            target_data['news'].append(f"[{date}] {title} ({source})")
+                    target_data['news_sentiment'] = news_data.get('sentiment', {})
+            except Exception as _news_e:
+                st.warning(f"⚠️ ニュース取得スキップ: {_news_e}")
+
         # Step 4: DCF
         st.write("💰 DCF理論株価を算出中...")
         dcf_data = estimate_fair_value(ticker)
@@ -297,6 +323,7 @@ if run_analysis and ticker_input:
             _result = analyze_all(
                 ticker, {ticker: target_data}, competitors,
                 yuho_data=yuho_data, scorecard=scorecard,
+                macro_data=macro_data, dcf_data=dcf_data,
             )
             report, table_str, model_name, rec_pct = _result
         except Exception as _e:

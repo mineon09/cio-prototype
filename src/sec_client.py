@@ -27,6 +27,33 @@ SEC_HEADERS = {
     "Accept": "application/json",
 }
 
+def _request_with_retry(url: str, max_retries: int = 3, timeout: int = 15, **kwargs) -> requests.Response:
+    """HTTPリクエストをバックオフ付きで再試行する（レートリミット対策）"""
+    import urllib.error
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, timeout=timeout, **kwargs)
+            if resp.status_code == 429:
+                delay = 2 ** attempt
+                print(f"  ⚠️ SEC Rate Limit (429). Retrying in {delay}s...")
+                time.sleep(delay)
+                continue
+            elif resp.status_code == 403:
+                # 403 Forbidden の場合も一時的なブロックの可能性があるためリトライ
+                delay = 2 ** attempt
+                print(f"  ⚠️ SEC Forbidden (403). Retrying in {delay}s...")
+                time.sleep(delay)
+                continue
+            resp.raise_for_status()
+            return resp
+        except requests.exceptions.RequestException as e:
+            if attempt == max_retries - 1:
+                raise
+            delay = 2 ** attempt
+            print(f"  ⚠️ SEC Request Failed ({e}). Retrying in {delay}s...")
+            time.sleep(delay)
+    raise Exception(f"Failed to fetch {url} after {max_retries} attempts.")
+
 # Gemini / Groq（data_fetcherから借用）
 try:
     from .data_fetcher import call_gemini, call_groq
@@ -72,30 +99,48 @@ def is_us_stock(ticker: str) -> bool:
 
 
 def _get_cik(ticker: str) -> str | None:
-    """ティッカーから CIK（Central Index Key）を逆引きする"""
-    try:
-        url = "https://www.sec.gov/files/company_tickers.json"
-        resp = requests.get(url, headers=SEC_HEADERS, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
+    """ティッカーから CIK（Central Index Key）を逆引きする（キャッシュ付き）"""
+    from pathlib import Path
+    
+    # ローカルキャッシュのパス（data/company_tickers.json）
+    cache_path = Path(__file__).parent.parent / "data" / "company_tickers.json"
+    data = None
+    
+    # キャッシュが存在し、24時間以内ならそれを使用
+    if cache_path.exists() and (time.time() - cache_path.stat().st_mtime) < 86400:
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
 
-        ticker_upper = ticker.upper().replace('.', '')
-        for entry in data.values():
-            if entry.get('ticker', '').upper() == ticker_upper:
-                cik = str(entry['cik_str']).zfill(10)
-                return cik
-        return None
-    except Exception as e:
-        print(f"  ⚠️ CIK検索失敗: {e}")
-        return None
+    # キャッシュがない、または古い場合はダウンロード
+    if not data:
+        try:
+            url = "https://www.sec.gov/files/company_tickers.json"
+            resp = _request_with_retry(url, headers=SEC_HEADERS, timeout=15)
+            data = resp.json()
+            # 取得できたら保存
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception as e:
+            print(f"  ⚠️ CIKリスト取得失敗: {e}")
+            return None
+
+    ticker_upper = ticker.upper().replace('.', '')
+    for entry in data.values():
+        if entry.get('ticker', '').upper() == ticker_upper:
+            cik = str(entry['cik_str']).zfill(10)
+            return cik
+    return None
 
 
 def _get_latest_filing(cik: str, form_type: str = "10-K") -> dict | None:
     """CIK から最新の 10-K または 10-Q のファイリング情報を取得する"""
     try:
         url = f"https://data.sec.gov/submissions/CIK{cik}.json"
-        resp = requests.get(url, headers=SEC_HEADERS, timeout=15)
-        resp.raise_for_status()
+        resp = _request_with_retry(url, headers=SEC_HEADERS, timeout=15)
         data = resp.json()
 
         entity_name = data.get('name', '')
@@ -139,8 +184,7 @@ def _download_filing_text(filing: dict, max_chars: int = 80000) -> str | None:
         unhyphenated_acc = acc.replace('-', '')
         url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{unhyphenated_acc}/{doc}"
 
-        resp = requests.get(url, headers=SEC_HEADERS, timeout=30)
-        resp.raise_for_status()
+        resp = _request_with_retry(url, headers=SEC_HEADERS, timeout=30)
         text = resp.text
 
         # ----------------------------------------------------------------------------
@@ -153,7 +197,7 @@ def _download_filing_text(filing: dict, max_chars: int = 80000) -> str | None:
             print(f"  ℹ️ テキストが異常に短いです ({len(text)}文字)。直接ファイルではなくインデックスの可能性があります。実際のファイルを検索します...")
             index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{unhyphenated_acc}/index.json"
             try:
-                idx_resp = requests.get(index_url, headers=SEC_HEADERS, timeout=15)
+                idx_resp = _request_with_retry(index_url, headers=SEC_HEADERS, timeout=15)
                 if idx_resp.status_code == 200:
                     idx_data = idx_resp.json()
                     files = idx_data.get('directory', {}).get('item', [])
@@ -176,8 +220,7 @@ def _download_filing_text(filing: dict, max_chars: int = 80000) -> str | None:
                     if target_file and target_file != doc:
                         url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{unhyphenated_acc}/{target_file}"
                         print(f"  🔗 代替URLで再取得中: {url}")
-                        resp = requests.get(url, headers=SEC_HEADERS, timeout=30)
-                        resp.raise_for_status()
+                        resp = _request_with_retry(url, headers=SEC_HEADERS, timeout=30)
                         text = resp.text
             except Exception as e:
                 print(f"  ⚠️ 代替ファイルの検索に失敗しました: {e}")
@@ -406,7 +449,7 @@ def extract_sec_data(ticker: str, no_cache: bool = False) -> dict:
     cik = _get_cik(ticker)
     if not cik:
         print(f"  ⚠️ {ticker} の CIK が見つかりません")
-        return {"available": False}
+        return {"available": False, "reason": "CIK未検出"}
 
     print(f"  ✅ CIK: {cik}")
 
@@ -420,7 +463,7 @@ def extract_sec_data(ticker: str, no_cache: bool = False) -> dict:
 
     if not filing:
         print(f"  ⚠️ {ticker} のファイリングが見つかりません")
-        return {"available": False}
+        return {"available": False, "reason": "最新ファイリング未検出"}
 
     print(f"  📄 {form_type} 取得: {filing['date']}")
 
@@ -442,7 +485,7 @@ def extract_sec_data(ticker: str, no_cache: bool = False) -> dict:
             _sec_cache.save_text(ticker, filing_date, text)
 
     if not text:
-        return {"available": False}
+        return {"available": False, "reason": "本文テキスト取得またはパース失敗"}
 
     print(f"  📝 テキスト取得: {len(text):,} 文字")
 
