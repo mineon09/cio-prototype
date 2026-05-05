@@ -82,7 +82,7 @@ def call_groq(prompt: str, parse_json: bool = False, model: str = "llama-3.3-70b
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
-            max_tokens=8192,
+            max_tokens=3000, # Groq無料枠TPM(12000)回避のため、出力枠を減らして入力枠を確保
             top_p=1,
             stream=False,
             response_format={"type": "json_object"} if parse_json else None
@@ -1165,22 +1165,12 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
 
             print(f"[RATE_LIMIT] ステールキャッシュなし → フォールバックへ")
 
-            # ── Layer 3: Finnhub フォールバック（US株・FINNHUB_KEY 設定時）──
-            finnhub_data = _fetch_finnhub_fallback(ticker)
-            if finnhub_data:
-                # Finnhub 取得結果もキャッシュ保存（次回は通常 TTL で使用可能）
-                try:
-                    with open(cache_file, "w", encoding="utf-8") as _f:
-                        json.dump(finnhub_data, _f, indent=2, ensure_ascii=False)
-                except Exception:
-                    pass
-                return finnhub_data
-
-            # ── Layer 4: yfinance info のみ取得（日本株・レート制限時の最終手段）──
-            # history() が 429 を返しても info だけ取れる場合がある
-            print(f"[RATE_LIMIT] Layer 4: yfinance info のみ取得を試みます ({ticker})...")
+            # ── Layer 3: yfinance info のみ取得（レート制限時の有力な手段）──
+            # history() が 429 を返しても info だけ取れる場合が多いため、先に試す
+            print(f"[RATE_LIMIT] Layer 3: yfinance info のみ取得を試みます ({ticker})...")
+            _info_fallback = None
             try:
-                time.sleep(3)  # 短く待機してから info を試行
+                time.sleep(1)  # 短く待機
                 _stock_info = yf.Ticker(ticker).info
                 if _stock_info and len(_stock_info) > 5:
                     _info_metrics: dict = {}
@@ -1196,10 +1186,31 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                     dy = _stock_info.get('trailingAnnualDividendYield') or _stock_info.get('dividendYield') or 0
                     if dy and dy > 0:
                         _info_metrics['dividend_yield'] = round(dy * 100, 2) if dy < 1 else round(dy, 2)
+                    
+                    # 自己資本比率の補完
+                    _de = _stock_info.get('debtToEquity')
+                    if _de is not None:
+                        _info_metrics['debt_equity'] = round(_de, 2)
+                        if 0 <= _de <= 5000: # infoのdebtToEquityはパーセント表記の場合と倍率の場合がある
+                            _de_ratio = _de / 100 if _de > 50 else _de
+                            _info_metrics['equity_ratio'] = round(100.0 / (1.0 + _de_ratio), 2)
+                    elif _stock_info.get('totalAssets') and _stock_info.get('bookValue') and _stock_info.get('sharesOutstanding'):
+                        _eq_est = _stock_info['bookValue'] * _stock_info['sharesOutstanding']
+                        _info_metrics['equity_ratio'] = round((_eq_est / _stock_info['totalAssets']) * 100, 2)
+
+                    # CF品質の補完
+                    _fcf = _stock_info.get('freeCashflow')
+                    _ni = _stock_info.get('netIncomeToCommon')
+                    if _fcf and _ni and _ni != 0:
+                        _cf_approx = round(_fcf / _ni, 2)
+                        if 0 < _cf_approx <= 10.0:
+                            _info_metrics['cf_quality'] = _cf_approx
+
                     if _stock_info.get('currentPrice') or _stock_info.get('regularMarketPrice'):
                         _info_tech['current_price'] = _stock_info.get('currentPrice') or _stock_info.get('regularMarketPrice')
+                    
                     if _info_metrics or _info_tech:
-                        _fallback_data = {
+                        _info_fallback = {
                             "ticker": ticker,
                             "name": _stock_info.get('longName', ticker),
                             "sector": _stock_info.get('sector', 'Unknown'),
@@ -1210,16 +1221,37 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                             "description": "",
                             "_data_source": "yfinance_info_only",
                         }
-                        print(f"[RATE_LIMIT] Layer 4 成功: info のみで metrics={len(_info_metrics)}件, technical={len(_info_tech)}件")
-                        # /tmp キャッシュに保存（TTL 1時間相当）
-                        try:
-                            with open(cache_file, "w", encoding="utf-8") as _f:
-                                json.dump(_fallback_data, _f, indent=2, ensure_ascii=False)
-                        except Exception:
-                            pass
-                        return _fallback_data
+                        print(f"[RATE_LIMIT] Layer 3 成功: info のみで metrics={len(_info_metrics)}件")
             except Exception as _info_e:
-                print(f"[RATE_LIMIT] Layer 4 失敗: {_info_e}")
+                print(f"[RATE_LIMIT] Layer 3 失敗: {_info_e}")
+
+            # ── Layer 4: Finnhub フォールバック（US株・FINNHUB_KEY 設定時）──
+            finnhub_data = _fetch_finnhub_fallback(ticker)
+            
+            # Layer 3 (info) と Layer 4 (finnhub) をマージ（info優先）
+            if _info_fallback and finnhub_data:
+                finnhub_data['metrics'].update(_info_fallback['metrics'])
+                for k, v in _info_fallback['technical'].items():
+                    if k not in finnhub_data['technical']:
+                        finnhub_data['technical'][k] = v
+                finnhub_data['_data_source'] = "yfinance_info_merged_with_finnhub"
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as _f:
+                        json.dump(finnhub_data, _f, indent=2, ensure_ascii=False)
+                except Exception: pass
+                return finnhub_data
+            elif _info_fallback:
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as _f:
+                        json.dump(_info_fallback, _f, indent=2, ensure_ascii=False)
+                except Exception: pass
+                return _info_fallback
+            elif finnhub_data:
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as _f:
+                        json.dump(finnhub_data, _f, indent=2, ensure_ascii=False)
+                except Exception: pass
+                return finnhub_data
 
             # ── Layer 5: J-Quants フォールバック（日本株・yfinance完全ブロック時）──
             if ticker.endswith('.T'):

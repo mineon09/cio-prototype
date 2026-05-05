@@ -575,18 +575,20 @@ def extract_sec_data(ticker: str, no_cache: bool = False) -> dict:
         else:
             analysis_result = _analyze_sec_with_gemini(text, ticker)
             if not analysis_result:
-                print(f"  🔀 Groq 単発解析にフォールバック（{len(groq_fallback_text):,}文字）...")
+                _safe_groq_text = groq_fallback_text[:_GROQ_MAX_CHARS]
+                print(f"  🔀 Groq 単発解析にフォールバック（{len(_safe_groq_text):,}文字）...")
                 analysis_result, chunking_meta = _analyze_sec_with_groq_single(
-                    groq_fallback_text, ticker, verbose=True
+                    _safe_groq_text, ticker, verbose=True
                 )
             if analysis_result and filing_date:
                 _sec_cache.save_analysis(ticker, filing_date, analysis_result, chunking_meta or {})
     else:
         analysis_result = _analyze_sec_with_gemini(text, ticker)
         if not analysis_result:
-            print(f"  🔀 Groq 単発解析にフォールバック（{len(groq_fallback_text):,}文字）...")
+            _safe_groq_text = groq_fallback_text[:_GROQ_MAX_CHARS]
+            print(f"  🔀 Groq 単発解析にフォールバック（{len(_safe_groq_text):,}文字）...")
             analysis_result, chunking_meta = _analyze_sec_with_groq_single(
-                groq_fallback_text, ticker, verbose=True
+                _safe_groq_text, ticker, verbose=True
             )
 
     return {
