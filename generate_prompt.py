@@ -1139,14 +1139,16 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
             return None
 
     def _fetch_sec():
+        """(yuho_dict, formatted_str) のタプルを返す"""
         try:
             from src.sec_client import extract_sec_data
             from src.analyzers import format_yuho_for_prompt
             yuho_data = extract_sec_data(ticker, no_cache=False)
-            return format_yuho_for_prompt(yuho_data)
+            formatted = format_yuho_for_prompt(yuho_data)
+            return yuho_data, formatted
         except Exception as e:
             print(f"  ⚠️ SEC 取得エラー：{e}")
-            return None
+            return None, None
 
     # --- 独立タスクを並列実行 ---
     print(f"  🔀 並列データ取得開始...")
@@ -1155,6 +1157,7 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
     edinetdb_data = None
     edinet_raw_summary = None
     sec_summary = None
+    sec_yuho_data = None  # スコアカード生成用の構造化データ
     jquants_data = None
     jquants_source = "jquants"
     web_news_data = None
@@ -1191,7 +1194,11 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
                 elif key == "edinet_raw":
                     edinet_raw_summary = result
                 elif key == "sec":
-                    sec_summary = result
+                    result_tuple = result
+                    if isinstance(result_tuple, tuple) and len(result_tuple) == 2:
+                        sec_yuho_data, sec_summary = result_tuple
+                    else:
+                        sec_summary = result_tuple
                 elif key == "jquants":
                     jquants_source, jquants_data = result
                 elif key == "web_news":
@@ -1246,7 +1253,7 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         scorecard = generate_scorecard(
             metrics=data.get('metrics', {}),
             technical=data.get('technical', {}),
-            yuho_data=None,
+            yuho_data=sec_yuho_data,  # SECデータを反映
             sector=data.get('sector'),
             macro_data={"regime": "NEUTRAL"},
             buy_threshold=6.5,

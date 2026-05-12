@@ -469,20 +469,25 @@ def fetch_finnhub_news(ticker: str, days: int = 14, limit: int = 10) -> List[Dic
         return []
 
     try:
-        import finnhub
-        client = finnhub.Client(api_key=api_key)
-
+        import requests as _req
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-
         finnhub_symbol = _to_finnhub_symbol(ticker)
-        raw_news = client.company_news(
-            finnhub_symbol,
-            _from=start_date.strftime("%Y-%m-%d"),
-            to=end_date.strftime("%Y-%m-%d"),
-        )
 
-        if not raw_news:
+        # Finnhub Python SDK は timeout が正しく伝播しないため、
+        # requests.get で直接 REST API を呼び出し、timeout を確実に適用する
+        url = "https://finnhub.io/api/v1/company-news"
+        params = {
+            "symbol": finnhub_symbol,
+            "from": start_date.strftime("%Y-%m-%d"),
+            "to": end_date.strftime("%Y-%m-%d"),
+            "token": api_key,
+        }
+        resp = _req.get(url, params=params, timeout=12)
+        resp.raise_for_status()
+        raw_news = resp.json()
+
+        if not raw_news or not isinstance(raw_news, list):
             return []
 
         news_list = []
@@ -512,8 +517,13 @@ def fetch_finnhub_news(ticker: str, days: int = 14, limit: int = 10) -> List[Dic
         return news_list[:limit]
 
     except Exception as e:
-        print(f"  ⚠️ Finnhub ニュース取得エラー：{e}")
+        err_str = str(e)
+        if "timed out" in err_str or "timeout" in err_str.lower() or "Read timed" in err_str:
+            print(f"  ⚠️ Finnhub タイムアウト（12秒）— スキップ")
+        else:
+            print(f"  ⚠️ Finnhub ニュース取得エラー：{e}")
         return []
+
 
 
 def fetch_gemini_news_analysis(

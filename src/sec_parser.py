@@ -14,15 +14,15 @@ import re
 # 10-K Item 見出しパターン（大文字小文字混在に対応）
 _ITEM_PATTERNS = {
     "1a_start": re.compile(
-        r"item\s+1a\.?\s*[\-–—:]?\s*risk\s+factors",
+        r"item\s+1a\.?\s*[\-\u2013\u2014:]?\s*risk\s+factors",
         re.IGNORECASE,
     ),
     "1a_end": re.compile(
-        r"item\s+1b[\.\s:\-–—]|item\s+2[\.\s:\-–—]|item\s+2\s+properties",
+        r"item\s+1b[.\s:\-\u2013\u2014]|item\s+2[.\s:\-\u2013\u2014]|item\s+2\s+properties",
         re.IGNORECASE,
     ),
     "7_start": re.compile(
-        r"item\s+7\.?\s*[\-–—:]?\s*management.{0,30}discussion",
+        r"item\s+7\.?\s*[\-\u2013\u2014:]?\s*management.{0,30}discussion",
         re.IGNORECASE,
     ),
     # "Item 7:" の後に "management discussion" が続かない形式（目次後の本文など）用
@@ -31,7 +31,11 @@ _ITEM_PATTERNS = {
         re.IGNORECASE,
     ),
     "7_end": re.compile(
-        r"item\s+7a[\.\s:\-–—]|item\s+8[\.\s:\-–—]",
+        # Item 7A または Item 8 のどちらかが終端
+        # 形式多様性に対応：ピリオド・コロン・ダッシュ・スペース
+        # さらに「Quantitative and Qualitative Disclosures」も終端として認識
+        r"item\s+7a[\s.:\-\u2013\u2014]|item\s+8[\s.:\-\u2013\u2014]"
+        r"|quantitative\s+and\s+qualitative\s+disclosures\s+about\s+market\s+risk",
         re.IGNORECASE,
     ),
 }
@@ -101,19 +105,37 @@ def extract_sections(
         max_chars=max_7,
         fallback_max=30_000,
     )
+
     # Item 7 が短すぎる場合（目次エントリのみにマッチした可能性）、
     # "Management's Discussion and Analysis" 単独ヘッダーで再試行する
     if len(result["7"]) < _MIN_ITEM7_CHARS:
         if result["7"]:
             print(f"  ⚠️  Item 7 が短すぎます ({len(result['7'])}文字) "
                   f"— フォールバックパターンで再試行します")
-        result["7"] = _extract_between(
+        fb = _extract_between(
             full_text, text_lower,
             _ITEM_PATTERNS["7_start_fallback"],
             _ITEM_PATTERNS["7_end"],
             max_chars=max_7,
             fallback_max=30_000,
         )
+        if len(fb) > len(result["7"]):
+            result["7"] = fb
+
+        # 最終手段：両パターンで失敗した場合、全マッチの中で最後尾のものを採用
+        # （iXBRL形式では目次が先頭・本文が後方にあるためlastが正解）
+        if len(result["7"]) < _MIN_ITEM7_CHARS:
+            print(f"  ⚠️  Item 7 抽出失敗（両パターン）— 最後尾マッチから強制取得します")
+            m7 = list(_ITEM_PATTERNS["7_start"].finditer(text_lower))
+            m7_fb = list(_ITEM_PATTERNS["7_start_fallback"].finditer(text_lower))
+            all_m7 = sorted(m7 + m7_fb, key=lambda m: m.start())
+            if all_m7:
+                # 最後のマッチ（本文の可能性が高い）から max_7 文字分を取得
+                last = all_m7[-1]
+                candidate = full_text[last.start():last.start() + max_7]
+                if len(candidate) > len(result["7"]):
+                    result["7"] = candidate
+
     if result["7"]:
         result["sections_found"].append("7")
 
