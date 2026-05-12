@@ -1138,12 +1138,23 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
             print(f"  ⚠️ Web News (US) 取得エラー：{e}")
             return None
 
+    def _fetch_sec():
+        try:
+            from src.sec_client import extract_sec_data
+            from src.analyzers import format_yuho_for_prompt
+            yuho_data = extract_sec_data(ticker, no_cache=False)
+            return format_yuho_for_prompt(yuho_data)
+        except Exception as e:
+            print(f"  ⚠️ SEC 取得エラー：{e}")
+            return None
+
     # --- 独立タスクを並列実行 ---
     print(f"  🔀 並列データ取得開始...")
     news_data = None
     analyst_data = None
     edinetdb_data = None
     edinet_raw_summary = None
+    sec_summary = None
     jquants_data = None
     jquants_source = "jquants"
     web_news_data = None
@@ -1162,6 +1173,8 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
     elif include_qualitative:
         # US株でもExa/Perplexity等でウェブ検索ニュースを取得する
         task_fns["web_news"] = _fetch_web_news_us
+        if HAS_SEC:
+            task_fns["sec"] = _fetch_sec
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(task_fns) or 1)
     try:
@@ -1177,6 +1190,8 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
                     edinetdb_data = result
                 elif key == "edinet_raw":
                     edinet_raw_summary = result
+                elif key == "sec":
+                    sec_summary = result
                 elif key == "jquants":
                     jquants_source, jquants_data = result
                 elif key == "web_news":
@@ -1190,8 +1205,11 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
 
     # EDINET: DB が利用不可の場合のみ生テキスト結果を採用
     yuho_summary = None
-    if is_japanese and not (edinetdb_data and edinetdb_data.get("available")):
-        yuho_summary = edinet_raw_summary
+    if is_japanese:
+        if not (edinetdb_data and edinetdb_data.get("available")):
+            yuho_summary = edinet_raw_summary
+    else:
+        yuho_summary = sec_summary
 
     # Web検索結果を本文ニュースセクション（all_news）にマージ
     if web_news_data and news_data and news_data.get("available"):
