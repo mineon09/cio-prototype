@@ -1088,7 +1088,9 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         return None
 
     def _fetch_jquants():
-        """J-Quants OHLC 取得（失敗時は yfinance フォールバック）。(source, data) タプルを返す。"""
+        """OHLC 取得: J-Quants → yfinance の2段フォールバック。(source, data) タプルを返す。
+        Stooq は 2025年以降 API キー必須になったため除外。"""
+        # ── 1. J-Quants（日本株専用・高精度）
         try:
             from src.jquants_client import get_price_history
             result = get_price_history(ticker, days=20)
@@ -1096,7 +1098,8 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
                 return ("jquants", result)
         except Exception as e:
             print(f"  ⚠️ J-Quants取得エラー：{e}")
-        # yfinance フォールバック
+
+        # ── 2. yfinance（無料・日本株/米国株対応）
         try:
             import yfinance as yf
             hist = yf.Ticker(ticker).history(period="20d")
@@ -1119,6 +1122,8 @@ def build_full_prompt(ticker: str, include_qualitative: bool = True):
         except Exception as e:
             print(f"  ⚠️ yfinance OHLC フォールバック失敗：{e}")
         return ("jquants", None)
+
+
 
     def _fetch_web_news():
         try:

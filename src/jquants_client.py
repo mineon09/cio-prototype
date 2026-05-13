@@ -62,6 +62,11 @@ def _save_cache(path: Path, data) -> None:
         pass
 
 
+# プランによる制限を一度受けたらセッション内で以降のリクエストをスキップするフラグ
+# （毎回 403 を受けて待つ無駄を防ぐ）
+_plan_blocked: set[str] = set()
+
+
 def _get(endpoint: str, params: dict, ttl_hours: float = 1.0) -> dict:
     """
     J-Quants V2 API に GET リクエストを送る。
@@ -71,6 +76,10 @@ def _get(endpoint: str, params: dict, ttl_hours: float = 1.0) -> dict:
     API レスポンスの dict。失敗時は {}
     """
     if not _api_key():
+        return {}
+
+    # プラン制限で一度ブロックされたエンドポイントはスキップ
+    if endpoint in _plan_blocked:
         return {}
 
     cache = _cache_path(endpoint, params)
@@ -93,6 +102,7 @@ def _get(endpoint: str, params: dict, ttl_hours: float = 1.0) -> dict:
     except requests.exceptions.HTTPError as e:
         status = getattr(e.response, "status_code", None)
         if status == 403:
+            _plan_blocked.add(endpoint)  # 以降スキップ
             print(
                 f"  ⚠️ [J-Quants] プランの制限により株価データを取得できません。"
                 f"Free プランでは {endpoint} は利用不可です。yfinance にフォールバックします。"
@@ -103,6 +113,7 @@ def _get(endpoint: str, params: dict, ttl_hours: float = 1.0) -> dict:
     except Exception as e:
         print(f"  ⚠️ [J-Quants] リクエスト失敗 {endpoint}: {e}")
         return {}
+
 
 
 # ─── ティッカー変換 ──────────────────────────────────────
