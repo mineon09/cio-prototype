@@ -4,6 +4,37 @@
 
 ---
 
+## [v2.4.5] - 2026-05-20 (スマホ/Cloud環境でのデータ欠落バグ修正)
+
+### バグ修正（High）
+
+- **Streamlit Cloud（スマホアクセス）で `自己資本比率` / `RSI` が取得できない問題を修正**:
+
+  #### 根本原因
+  3つの問題が連鎖していた：
+  1. **Cloud環境検出の不完全さ**: `STREAMLIT_SHARING_MODE` 環境変数のみで判定していたが、Streamlit Cloud 側でこの変数が設定されない場合があった
+  2. **不完全なキャッシュの再利用**: yfinanceがCloud共有IPでレート制限を受けると不完全なデータ（metrics=5件程度）が返り、その不完全データがそのままキャッシュされ、以降も読み続けた
+  3. **キャッシュ先が `/tmp`**: Cloud環境では `data/cache/` への書き込み不可判定 → `/tmp/stock_cache/` に保存 → Cloud再起動で消失 → 毎回yfinanceへ再リクエスト → レート制限
+
+  #### 修正内容 (`src/data_fetcher.py`)
+  - **Cloud環境検出を多重条件に改善**: `STREAMLIT_SHARING_MODE` OR `STREAMLIT_SERVER_HEADLESS=true` OR `/app` ディレクトリ存在（かつ `/home` なし）の3条件でOR判定
+  - **キャッシュディレクトリの動的決定**: `data/cache/` への書き込みを先に試み、失敗した場合のみ `/tmp/stock_cache/` にフォールバック（書き込み権限テスト付き）
+  - **不完全キャッシュの自動無効化**: キャッシュ読み込み時に有効な metrics 件数をチェック（5件未満 → 再取得）
+  - **Cloud共有IP対策**: `_fetch_yf_with_retry` の待機を 1秒 → 2秒に延長
+  - **`equity_ratio` フォールバック強化**: バランスシートが取れない場合、`info.debtToEquity` からの逆算（D/E比率 → 自己資本比率）を追加（フォールバック2）
+
+  #### 修正内容 (`src/data_cache.py`)
+  - **DataCache キャッシュディレクトリのCloud対応**: `.edinet_cache/` への書き込みを試み、失敗時は `/tmp/stock_api_cache/` にフォールバック
+
+  #### 修正内容 (`generate_prompt.py`)
+  - **DataCache 経由のキャッシュ品質チェック**: `collect_data_minimal()` で DataCache から読み込んだ `stock_data` の metrics が5件未満の場合、不完全データと判定して再取得・キャッシュ削除
+  - **保存前品質チェック**: 取得後データも metrics 5件未満の場合は DataCache に保存しない（不完全データの蓄積防止）
+
+### 理由
+スマホ（Streamlit Cloud）からアクセスすると `自己資本比率: -` / `RSI: -` / `MA25乖離率: -%` になる報告を受けて調査。PCローカルでは `data/cache/AMD_latest.json` に完全データが保存されていたが、Cloud では `/tmp` の別キャッシュを参照、またはレート制限後の不完全データを再利用し続けていた。
+
+---
+
 ## [v2.4.4] - 2026-05-04 (バックテスト構造的バグ修正 — Dogfooding)
 
 ### バグ修正（Critical）

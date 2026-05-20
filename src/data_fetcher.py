@@ -564,22 +564,38 @@ def _fetch_finnhub_fallback(ticker: str) -> dict | None:
 # ==========================================
 
 # Streamlit Cloud 環境検出
-# share.streamlit.io 上では STREAMLIT_SHARING_MODE が設定される
-_IS_STREAMLIT_CLOUD = os.environ.get("STREAMLIT_SHARING_MODE", "") != ""
+# 複数の環境変数を OR 条件で判定（STREAMLIT_SHARING_MODE は設定されない場合もある）
+_IS_STREAMLIT_CLOUD = any([
+    os.environ.get("STREAMLIT_SHARING_MODE", "") != "",
+    os.environ.get("STREAMLIT_SERVER_HEADLESS", "").lower() == "true",
+    # Streamlit Cloud のコンテナは /app 直下にコードが展開される
+    os.path.exists("/app") and not os.path.exists("/home"),
+])
+
+# キャッシュに最低限含まれるべき metrics キー数（不完全キャッシュの無効化判定）
+_CACHE_MIN_METRICS = 5
 
 def _get_cache_dir() -> str:
     """
     キャッシュディレクトリを返す。
-    Streamlit Cloud では /tmp を優先（永続FS への書き込みが不可のため）。
-    ローカルでは data/cache を使用。
+    ローカル（data/cache）への書き込みを先に試みる。
+    書き込み不可（Cloud等）の場合のみ /tmp/stock_cache にフォールバック。
     """
-    if _IS_STREAMLIT_CLOUD:
-        tmp_dir = "/tmp/stock_cache"
-        os.makedirs(tmp_dir, exist_ok=True)
-        return tmp_dir
     local_dir = "data/cache"
-    os.makedirs(local_dir, exist_ok=True)
-    return local_dir
+    try:
+        os.makedirs(local_dir, exist_ok=True)
+        # 書き込み権限テスト
+        _test = os.path.join(local_dir, ".write_test")
+        with open(_test, "w") as _f:
+            _f.write("ok")
+        os.unlink(_test)
+        return local_dir
+    except (OSError, PermissionError):
+        pass
+    # ローカルが使えない場合は /tmp を使用
+    tmp_dir = "/tmp/stock_cache"
+    os.makedirs(tmp_dir, exist_ok=True)
+    return tmp_dir
 
 
 @retry(
@@ -594,9 +610,9 @@ def _fetch_yf_with_retry(ticker: str, as_of_date: datetime = None):
     Streamlit Cloud など共有IPからのアクセスでレート制限されやすいため、
     User-Agent を設定して正規ブラウザに偽装するオプションを有効化。
     """
-    # Streamlit Cloud環境では長めの待機を挟む（共有IP対策）
+    # Streamlit Cloud環境（共有IP）ではレート制限を受けやすいため待機を挟む
     if _IS_STREAMLIT_CLOUD:
-        time.sleep(1)
+        time.sleep(2)
 
     stock = yf.Ticker(ticker)
 
@@ -674,8 +690,18 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                     mtime = os.path.getmtime(_cf)
                     if as_of_date or (time.time() - mtime < 24 * 3600):
                         with open(_cf, "r", encoding="utf-8") as f:
-                            print(f"  ⚡ {ticker} キャッシュを使用 ({date_str})")
-                            return json.load(f)
+                            _cached = json.load(f)
+                        # 品質チェック: metrics が少なすぎる不完全キャッシュは再取得
+                        _cached_metrics = _cached.get("metrics", {})
+                        _valid_metrics = sum(
+                            1 for v in _cached_metrics.values()
+                            if v is not None and v != 0
+                        )
+                        if _valid_metrics < _CACHE_MIN_METRICS and not as_of_date:
+                            print(f"  ⚠️ {ticker} キャッシュの指標数が不足 ({_valid_metrics}件 < {_CACHE_MIN_METRICS}件) → 再取得")
+                            break  # キャッシュをスキップして再取得へ
+                        print(f"  ⚡ {ticker} キャッシュを使用 ({date_str})")
+                        return _cached
                 except Exception as e:
                     print(f"  ⚠️ キャッシュ読み込みエラー: {e}")
                 break
@@ -867,7 +893,7 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
         if equity and assets and assets != 0:
             metrics['equity_ratio'] = round((equity / assets) * 100, 2)
         else:
-            # フォールバック: info から bookValue（1株純資産）と shares で推計
+            # フォールバック1: info から bookValue（1株純資産）と shares で推計
             _shares_info = info.get('sharesOutstanding') or info.get('impliedSharesOutstanding')
             _bvps = info.get('bookValue')  # 1株純資産
             _total_assets_info = info.get('totalAssets')
@@ -875,7 +901,22 @@ def fetch_stock_data(ticker: str, as_of_date: datetime = None, price_history: pd
                 _equity_est = _bvps * _shares_info
                 metrics['equity_ratio'] = round((_equity_est / _total_assets_info) * 100, 2)
             else:
-                metrics['equity_ratio'] = None
+                # フォールバック2: D/E比率から逆算 equity_ratio = 100 / (1 + D/E)
+                # Cloud環境でバランスシートが取得できない場合（レート制限時）に有効
+                _de = info.get('debtToEquity')
+                if _de is not None:
+                    try:
+                        _de_f = float(_de)
+                        # yfinance の debtToEquity はパーセント表記（例: 50.0 = 50%）の場合がある
+                        _de_ratio = _de_f / 100 if _de_f > 10 else _de_f
+                        if 0 <= _de_ratio <= 50:
+                            metrics['equity_ratio'] = round(100.0 / (1.0 + _de_ratio), 2)
+                        else:
+                            metrics['equity_ratio'] = None
+                    except (TypeError, ValueError):
+                        metrics['equity_ratio'] = None
+                else:
+                    metrics['equity_ratio'] = None
 
         # 4. CF品質 (TTM Operating CF / TTM Net Income)
         # 単四半期での期ズレによる異常値(0.02等)を排除するため、TTMベースで計算

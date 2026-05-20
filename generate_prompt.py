@@ -1317,13 +1317,31 @@ def collect_data_minimal(ticker: str, use_cache: bool = True) -> tuple:
     else:
         data = None
 
+    # キャッシュ品質チェック: 有効な metrics が少なすぎる場合は不完全データとして再取得
+    # （Cloud環境でのレート制限後に保存された不完全なキャッシュを検出）
+    _MIN_VALID_METRICS = 5
+    if data is not None:
+        _cached_metrics = data.get('metrics', {})
+        _valid_count = sum(1 for v in _cached_metrics.values() if v is not None and v != 0)
+        if _valid_count < _MIN_VALID_METRICS:
+            print(f"  ⚠️ DataCache の metrics が不足 ({_valid_count}件 < {_MIN_VALID_METRICS}件) → 再取得")
+            data = None
+            if cache:
+                cache.invalidate(ticker, "stock_data")  # 不完全なキャッシュを削除
+
     if data is None:
         try:
             from src.data_fetcher import fetch_stock_data
             data = fetch_stock_data(ticker)
             api_calls = 1
             if cache and data:
-                cache.set(ticker, "stock_data", data, ttl_hours=1.0)
+                # 保存前にも品質チェック（取得失敗の場合はキャッシュしない）
+                _m = data.get('metrics', {})
+                _vc = sum(1 for v in _m.values() if v is not None and v != 0)
+                if _vc >= _MIN_VALID_METRICS:
+                    cache.set(ticker, "stock_data", data, ttl_hours=1.0)
+                else:
+                    print(f"  ⚠️ 取得データも metrics 不足 ({_vc}件) → DataCache 保存をスキップ")
         except Exception as e:
             print(f"⚠️ データ取得失敗：{e}")
             return None, api_calls, yuho_summary
@@ -1331,6 +1349,7 @@ def collect_data_minimal(ticker: str, use_cache: bool = True) -> tuple:
     if not data or not data.get('metrics'):
         print(f"⚠️ 財務データが取得できませんでした")
         return None, api_calls, yuho_summary
+
 
     # スコアカード生成
     try:

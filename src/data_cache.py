@@ -28,8 +28,24 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional, Dict, Callable, TypeVar, ParamSpec
 
-# キャッシュディレクトリ
-CACHE_DIR = Path(".edinet_cache")
+# キャッシュディレクトリ（ローカル優先、書き込み不可時は /tmp にフォールバック）
+def _resolve_cache_dir(preferred: str = ".edinet_cache") -> Path:
+    """書き込み可能なキャッシュディレクトリを返す。"""
+    candidate = Path(preferred)
+    try:
+        candidate.mkdir(exist_ok=True)
+        _test = candidate / ".write_test"
+        _test.write_text("ok")
+        _test.unlink()
+        return candidate
+    except (OSError, PermissionError):
+        pass
+    # フォールバック: /tmp
+    fallback = Path("/tmp/stock_api_cache")
+    fallback.mkdir(exist_ok=True)
+    return fallback
+
+CACHE_DIR = _resolve_cache_dir(".edinet_cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
 T = TypeVar('T')
